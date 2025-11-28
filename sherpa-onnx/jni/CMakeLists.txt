@@ -19,6 +19,7 @@ set(sources
   offline-recognizer.cc
   offline-speech-denoiser.cc
   offline-stream.cc
+  fast-clustering.cc
   online-punctuation.cc
   online-recognizer.cc
   online-stream.cc
