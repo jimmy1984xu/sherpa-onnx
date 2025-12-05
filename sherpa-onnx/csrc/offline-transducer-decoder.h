@@ -24,6 +24,10 @@ struct OfflineTransducerDecoderResult {
   /// (post-subsampling). It is converted to seconds by higher layers
   /// (e.g., Convert() in offline-recognizer-transducer-impl.h).
   std::vector<float> durations;
+
+  /// confidence contains the average confidence score for the entire recognition
+  /// result. Range: [0.0, 1.0], or -1.0 if not available.
+  float confidence = -1.0f;
 };
 
 class OfflineTransducerDecoder {

@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "sherpa-onnx/csrc/confidence-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/offline-model-config.h"
 #include "sherpa-onnx/csrc/offline-recognizer-impl.h"
@@ -93,6 +94,11 @@ class OfflineRecognizerParaformerRknnImpl : public OfflineRecognizerImpl {
 
     OfflineParaformerDecoderResult r;
     const float *p = logits.data();
+    
+    // Collect log probabilities to calculate average confidence
+    std::vector<float> token_log_probs;
+    token_log_probs.reserve(num_tokens);
+    
     for (int32_t i = 0; i < num_tokens; ++i) {
       auto max_idx = static_cast<int64_t>(
           std::distance(p, std::max_element(p, p + vocab_size)));
@@ -101,8 +107,13 @@ class OfflineRecognizerParaformerRknnImpl : public OfflineRecognizerImpl {
         break;
       }
       r.tokens.push_back(max_idx);
+      // Save the log probability of the selected token for confidence calculation
+      token_log_probs.push_back(p[max_idx]);
       p += vocab_size;
     }
+    
+    // Calculate average confidence from log probabilities
+    r.confidence = CalculateAverageConfidence(token_log_probs);
 
     auto result = Convert(r, symbol_table_);
     result.text = ApplyInverseTextNormalization(std::move(result.text));

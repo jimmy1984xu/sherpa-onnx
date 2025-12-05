@@ -5,14 +5,34 @@
 #include "sherpa-onnx/csrc/offline-transducer-greedy-search-nemo-decoder.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 #include <utility>
 #include <vector>
 
+#include "sherpa-onnx/csrc/confidence-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
 
 namespace sherpa_onnx {
+
+// Compute log_softmax: log_softmax(x_i) = x_i - log(sum(exp(x_j)))
+// Returns the log probability of the selected token
+static float ComputeLogSoftmaxAndGetLogProb(const float *logits, int32_t vocab_size,
+                                            int32_t selected_idx) {
+  // Find max for numerical stability
+  float max_logit = *std::max_element(logits, logits + vocab_size);
+  
+  // Compute log(sum(exp(x_j - max))) for numerical stability
+  float log_sum_exp = 0.0f;
+  for (int32_t i = 0; i != vocab_size; ++i) {
+    log_sum_exp += std::exp(logits[i] - max_logit);
+  }
+  log_sum_exp = std::log(log_sum_exp) + max_logit;
+  
+  // Return log probability: logits[selected_idx] - log_sum_exp
+  return logits[selected_idx] - log_sum_exp;
+}
 
 static std::pair<Ort::Value, Ort::Value> BuildDecoderInput(
     int32_t token, OrtAllocator *allocator) {
@@ -48,6 +68,10 @@ static OfflineTransducerDecoderResult DecodeOne(
   int32_t blank_id = vocab_size - 1;
   int32_t max_symbols_per_frame = 10;
 
+  // Collect log probabilities for confidence calculation
+  std::vector<float> token_log_probs;
+  token_log_probs.reserve(num_rows * max_symbols_per_frame);
+
   auto decoder_input_pair = BuildDecoderInput(blank_id, model->Allocator());
 
   std::pair<Ort::Value, std::vector<Ort::Value>> decoder_output_pair =
@@ -80,6 +104,11 @@ static OfflineTransducerDecoderResult DecodeOne(
         ans.tokens.push_back(y);
         ans.timestamps.push_back(t);
 
+        // Compute log probability for confidence calculation
+        float log_prob = ComputeLogSoftmaxAndGetLogProb(
+            static_cast<const float *>(p_logit), vocab_size, y);
+        token_log_probs.push_back(log_prob);
+
         decoder_input_pair = BuildDecoderInput(y, model->Allocator());
 
         decoder_output_pair =
@@ -91,6 +120,9 @@ static OfflineTransducerDecoderResult DecodeOne(
       }  // if (y != blank_id)
     }
   }  // for (int32_t i = 0; i != num_rows; ++i)
+
+  // Calculate average confidence from log probabilities
+  ans.confidence = CalculateAverageConfidence(token_log_probs);
 
   return ans;
 }
@@ -105,6 +137,10 @@ static OfflineTransducerDecoderResult DecodeOneTDT(
 
   int32_t vocab_size = model->VocabSize();
   int32_t blank_id = vocab_size - 1;
+
+  // Collect log probabilities for confidence calculation
+  std::vector<float> token_log_probs;
+  token_log_probs.reserve(num_rows);
 
   auto decoder_input_pair = BuildDecoderInput(blank_id, model->Allocator());
 
@@ -155,6 +191,11 @@ static OfflineTransducerDecoderResult DecodeOneTDT(
       ans.timestamps.push_back(t);
       ans.durations.push_back(skip);
 
+      // Compute log probability for confidence calculation
+      float log_prob = ComputeLogSoftmaxAndGetLogProb(
+          token_logits, vocab_size, y);
+      token_log_probs.push_back(log_prob);
+
       decoder_input_pair = BuildDecoderInput(y, model->Allocator());
 
       decoder_output_pair =
@@ -179,6 +220,9 @@ static OfflineTransducerDecoderResult DecodeOneTDT(
       skip = 1;
     }
   }  // for (int32_t t = 0; t < num_rows; t += skip)
+
+  // Calculate average confidence from log probabilities
+  ans.confidence = CalculateAverageConfidence(token_log_probs);
 
   return ans;
 }

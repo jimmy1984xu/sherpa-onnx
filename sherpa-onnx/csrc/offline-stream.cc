@@ -442,6 +442,13 @@ std::string OfflineRecognitionResult::AsJsonString() const {
   }
   os << "], ";
 
+  os << "\""
+     << "confidence"
+     << "\""
+     << ": ";
+  os << std::fixed << std::setprecision(6) << confidence;
+  os << ", ";
+
   sep = "";
 
   os << "\""

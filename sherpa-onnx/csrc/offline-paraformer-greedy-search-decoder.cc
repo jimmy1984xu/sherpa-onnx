@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "sherpa-onnx/csrc/confidence-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 
 namespace sherpa_onnx {
@@ -27,6 +28,11 @@ OfflineParaformerGreedySearchDecoder::Decode(
   for (int32_t i = 0; i != batch_size; ++i) {
     const float *p =
         log_probs.GetTensorData<float>() + i * num_tokens * vocab_size;
+    
+    // Collect log probabilities to calculate average confidence
+    std::vector<float> token_log_probs;
+    token_log_probs.reserve(num_tokens);
+    
     for (int32_t k = 0; k != num_tokens; ++k) {
       auto max_idx = static_cast<int64_t>(
           std::distance(p, std::max_element(p, p + vocab_size)));
@@ -35,9 +41,14 @@ OfflineParaformerGreedySearchDecoder::Decode(
       }
 
       results[i].tokens.push_back(max_idx);
+      // Save the log probability of the selected token for confidence calculation
+      token_log_probs.push_back(p[max_idx]);
 
       p += vocab_size;
     }
+    
+    // Calculate average confidence from log probabilities
+    results[i].confidence = CalculateAverageConfidence(token_log_probs);
 
     if (us_cif_peak) {
       int32_t dim = us_cif_peak.GetTensorTypeAndShapeInfo().GetShape().back();

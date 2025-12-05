@@ -62,7 +62,8 @@ public class OfflineRecognizer {
         String emotion = (String) arr[4];
         String event = (String) arr[5];
         float[] durations = (float[]) arr[6];
-        return new OfflineRecognizerResult(text, tokens, timestamps, lang, emotion, event, durations);
+        float confidence = ((Float) arr[7]).floatValue();
+        return new OfflineRecognizerResult(text, tokens, timestamps, lang, emotion, event, durations, confidence);
     }
 
     private native void delete(long ptr);

@@ -42,6 +42,10 @@ struct OfflineRecognitionResult {
   /// only)
   std::vector<float> durations;
 
+  /// confidence contains the average confidence score for the entire recognition
+  /// result (Paraformer models only). Range: [0.0, 1.0], or -1.0 if not available.
+  float confidence = -1.0f;
+
   std::vector<int32_t> words;
 
   std::string AsJsonString() const;

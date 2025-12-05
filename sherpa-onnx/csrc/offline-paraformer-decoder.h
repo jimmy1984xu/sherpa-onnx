@@ -19,6 +19,10 @@ struct OfflineParaformerDecoderResult {
   //
   // len(timestamps) == len(tokens)
   std::vector<float> timestamps;
+
+  // Average confidence score for the entire recognition result (0.0-1.0)
+  // Calculated from log probabilities of all tokens
+  float confidence = -1.0f;
 };
 
 class OfflineParaformerDecoder {

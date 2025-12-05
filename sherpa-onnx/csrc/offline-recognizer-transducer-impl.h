@@ -72,6 +72,9 @@ static OfflineRecognitionResult Convert(
     r.durations.push_back(d * frame_shift_s);
   }
 
+  // Copy confidence score
+  r.confidence = src.confidence;
+
   return r;
 }
 

@@ -12,6 +12,7 @@ data class OfflineRecognizerResult(
 
     // valid only for TDT models
     val durations: FloatArray,
+    val confidence: Float,
 )
 
 data class OfflineTransducerModelConfig(
@@ -155,6 +156,7 @@ class OfflineRecognizer(
         val emotion = objArray[4] as String
         val event = objArray[5] as String
         val durations = objArray[6] as FloatArray
+        val confidence = (objArray[7] as java.lang.Float).toFloat()
         return OfflineRecognizerResult(
             text = text,
             tokens = tokens,
@@ -163,6 +165,7 @@ class OfflineRecognizer(
             emotion = emotion,
             event = event,
             durations = durations,
+            confidence = confidence,
         )
     }
 

@@ -27,6 +27,7 @@ OfflineRecognitionResult Convert(const OfflineParaformerDecoderResult &src,
   OfflineRecognitionResult r;
   r.tokens.reserve(src.tokens.size());
   r.timestamps = src.timestamps;
+  r.confidence = src.confidence;
 
   std::string text;
 

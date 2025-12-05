@@ -455,8 +455,9 @@ Java_com_k2fsa_sherpa_onnx_OfflineRecognizer_getResult(JNIEnv *env,
   // [4]: emotion, jstring
   // [5]: event, jstring
   // [6]: durations, array of float
+  // [7]: confidence, float
   jobjectArray obj_arr = (jobjectArray)env->NewObjectArray(
-      7, env->FindClass("java/lang/Object"), nullptr);
+      8, env->FindClass("java/lang/Object"), nullptr);
 
   jstring text = env->NewStringUTF(result.text.c_str());
   env->SetObjectArrayElement(obj_arr, 0, text);
@@ -495,6 +496,12 @@ Java_com_k2fsa_sherpa_onnx_OfflineRecognizer_getResult(JNIEnv *env,
                            result.durations.data());
 
   env->SetObjectArrayElement(obj_arr, 6, durations_arr);
+
+  // [7]: confidence, float
+  jclass float_class = env->FindClass("java/lang/Float");
+  jmethodID float_constructor = env->GetMethodID(float_class, "<init>", "(F)V");
+  jobject confidence_obj = env->NewObject(float_class, float_constructor, result.confidence);
+  env->SetObjectArrayElement(obj_arr, 7, confidence_obj);
 
   return obj_arr;
 }
