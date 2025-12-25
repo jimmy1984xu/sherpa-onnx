@@ -61,6 +61,8 @@ class SpeakerEmbeddingExtractor(
     }
 }
 
+data class SpeakerMatch(val name: String, val score: Float)
+
 class SpeakerEmbeddingManager(val dim: Int) {
     private var ptr: Long
 
@@ -80,6 +82,41 @@ class SpeakerEmbeddingManager(val dim: Int) {
     fun add(name: String, embedding: Array<FloatArray>) = addList(ptr, name, embedding)
     fun remove(name: String) = remove(ptr, name)
     fun search(embedding: FloatArray, threshold: Float) = search(ptr, embedding, threshold)
+    
+    /**
+     * Get the best matching speakers whose embeddings match the given embedding.
+     *
+     * It is for speaker identification.
+     *
+     * It computes the cosine similarity between a given embedding and all
+     * other embeddings and finds the embeddings that have the largest scores
+     * and the scores are above or equal to the threshold. Returns a list of
+     * SpeakerMatch structures containing the speaker names and scores for the
+     * embeddings if found; otherwise, returns an empty list.
+     *
+     * @param embedding The input embedding.
+     * @param threshold A value between 0 and 1.
+     * @param n The number of top matches to return.
+     * @return A list of SpeakerMatch objects. If matches are found, the
+     *         list contains the names and scores of the speakers. Otherwise,
+     *         it returns an empty list.
+     */
+    fun getBestMatches(embedding: FloatArray, threshold: Float, n: Int): List<SpeakerMatch> {
+        val matches = getBestMatches(ptr, embedding, threshold, n)
+        return matches?.toList() ?: emptyList()
+    }
+    
+    /**
+     * Compute the cosine similarity score between the input embedding and
+     * the embedding of the given speaker.
+     *
+     * @param name The target speaker name.
+     * @param embedding The input embedding to check.
+     * @return The cosine similarity score. Returns -2.0 if the speaker
+     *         name is not found.
+     */
+    fun score(name: String, embedding: FloatArray): Float = score(ptr, name, embedding)
+    
     fun verify(name: String, embedding: FloatArray, threshold: Float) =
         verify(ptr, name, embedding, threshold)
 
@@ -105,6 +142,19 @@ class SpeakerEmbeddingManager(val dim: Int) {
     private external fun numSpeakers(ptr: Long): Int
 
     private external fun allSpeakerNames(ptr: Long): Array<String>
+    
+    private external fun getBestMatches(
+        ptr: Long,
+        embedding: FloatArray,
+        threshold: Float,
+        n: Int
+    ): Array<SpeakerMatch>?
+    
+    private external fun score(
+        ptr: Long,
+        name: String,
+        embedding: FloatArray
+    ): Float
 
     companion object {
         init {
