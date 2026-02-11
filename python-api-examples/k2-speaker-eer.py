@@ -190,7 +190,48 @@ def main() -> None:
     print("[4/4] Computing EER...")
     tar = np.asarray(target_scores, dtype=np.float64)
     non = np.asarray(non_target_scores, dtype=np.float64)
-    eer, threshold = bob.measure.eer(tar, non)
+
+    def estimate_eer_and_threshold(scores_pos: np.ndarray, scores_neg: np.ndarray) -> Tuple[float, float]:
+        """
+        估计 EER 与对应阈值（假设 score 越大越相似；score>=thr 判为同一说话人）。
+        该实现用于 bob.measure 缺少阈值接口时的兜底。
+        """
+        thresholds = np.unique(np.concatenate([scores_pos, scores_neg]))
+        if thresholds.size == 0:
+            raise ValueError("Empty scores for EER threshold estimation.")
+
+        # 为了覆盖边界情况，补两个极值阈值
+        thresholds = np.concatenate([[thresholds[0] - 1e-6], thresholds, [thresholds[-1] + 1e-6]])
+
+        best_idx = 0
+        best_gap = float("inf")
+        best_eer = 1.0
+
+        # FAR: negative accepted as positive
+        # FRR: positive rejected as negative
+        for i, thr in enumerate(thresholds):
+            far = float(np.mean(scores_neg >= thr))
+            frr = float(np.mean(scores_pos < thr))
+            gap = abs(far - frr)
+            if gap < best_gap:
+                best_gap = gap
+                best_idx = i
+                best_eer = 0.5 * (far + frr)
+
+        return best_eer, float(thresholds[best_idx])
+
+    res = bob.measure.eer(tar, non)
+    if isinstance(res, tuple) and len(res) == 2:
+        eer = float(res[0])
+        threshold = float(res[1])
+    else:
+        eer = float(res)
+        # bob.measure 的不同版本可能提供 eer_threshold；没有则自己估计一个
+        if hasattr(bob.measure, "eer_threshold"):
+            threshold = float(bob.measure.eer_threshold(tar, non))
+        else:
+            eer, threshold = estimate_eer_and_threshold(tar, non)
+
     print(f"\nEER = {eer:.4f}")
     print(f"Threshold = {threshold:.4f}")
 
