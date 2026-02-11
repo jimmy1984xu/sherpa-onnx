@@ -36,6 +36,25 @@ except ImportError:
         "请安装 bob.measure: pip install bob.measure"
     )
 
+def parse_recording_id_from_segment_id(seg_id: str) -> str:
+    """
+    从 segment_id 推断“录音/会话”ID，用于将 speaker label 限定在录音内。
+
+    约定 segment_id 形如: <recording_id>_<offset_ms>_<duration_ms>
+    例如: meeting_zh_925190_3750 -> recording_id=meeting_zh
+
+    若无法解析，则返回原 seg_id（退化为最保守的唯一值）。
+    """
+    parts = seg_id.split("_")
+    if len(parts) >= 3:
+        try:
+            int(parts[-1])
+            int(parts[-2])
+            return "_".join(parts[:-2])
+        except ValueError:
+            pass
+    return seg_id
+
 
 def read_embeddings(path: Path) -> Dict[str, np.ndarray]:
     """
@@ -148,6 +167,30 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Path to speaker file (format: segment_id speaker_name per line; 'multi' excluded)",
     )
+    parser.add_argument(
+        "--speaker-scope",
+        type=str,
+        default="global",
+        choices=["global", "per_recording"],
+        help="How to interpret speaker label. "
+        "'global' uses speaker name as-is; "
+        "'per_recording' prefixes speaker name with recording_id parsed from segment_id "
+        "(useful when labels like spk0/spk1 repeat across recordings).",
+    )
+    parser.add_argument(
+        "--score-direction",
+        type=str,
+        default="higher",
+        choices=["higher", "lower"],
+        help="Similarity score direction. "
+        "'higher' means larger score => more likely same speaker (cosine similarity). "
+        "'lower' means smaller score => more likely same speaker (will negate scores internally).",
+    )
+    parser.add_argument(
+        "--debug-stats",
+        action="store_true",
+        help="Print basic stats of target/non-target score distributions.",
+    )
     return parser.parse_args()
 
 
@@ -163,6 +206,13 @@ def main() -> None:
     print("[2/4] Loading speaker labels...")
     speaker_map = load_speaker_labels(speaker_path)
     print(f"      Loaded {len(speaker_map)} speaker labels.")
+
+    if args.speaker_scope == "per_recording":
+        # 将 speaker label 限定在录音内，避免不同录音里同名 label 被当作同一人
+        speaker_map = {
+            seg_id: f"{parse_recording_id_from_segment_id(seg_id)}::{spk}"
+            for seg_id, spk in speaker_map.items()
+        }
 
     # 仅保留有 embedding 且 speaker 不为 multi 的片段
     valid_ids = [
@@ -190,6 +240,22 @@ def main() -> None:
     print("[4/4] Computing EER...")
     tar = np.asarray(target_scores, dtype=np.float64)
     non = np.asarray(non_target_scores, dtype=np.float64)
+    if args.debug_stats:
+        def _stats(x: np.ndarray) -> str:
+            return (
+                f"n={x.size}, mean={float(np.mean(x)):.4f}, std={float(np.std(x)):.4f}, "
+                f"min={float(np.min(x)):.4f}, p50={float(np.median(x)):.4f}, max={float(np.max(x)):.4f}"
+            )
+        print(f"      [debug] target_scores:     {_stats(tar)}")
+        print(f"      [debug] non_target_scores: {_stats(non)}")
+
+    # 统一成“分数越大越像同一人”的方向，便于阈值解释与兜底估计
+    if args.score_direction == "lower":
+        tar_for_eval = -tar
+        non_for_eval = -non
+    else:
+        tar_for_eval = tar
+        non_for_eval = non
 
     def estimate_eer_and_threshold(scores_pos: np.ndarray, scores_neg: np.ndarray) -> Tuple[float, float]:
         """
@@ -220,17 +286,23 @@ def main() -> None:
 
         return best_eer, float(thresholds[best_idx])
 
-    res = bob.measure.eer(tar, non)
+    res = bob.measure.eer(tar_for_eval, non_for_eval)
     if isinstance(res, tuple) and len(res) == 2:
         eer = float(res[0])
-        threshold = float(res[1])
+        threshold_eval = float(res[1])
     else:
         eer = float(res)
         # bob.measure 的不同版本可能提供 eer_threshold；没有则自己估计一个
         if hasattr(bob.measure, "eer_threshold"):
-            threshold = float(bob.measure.eer_threshold(tar, non))
+            threshold_eval = float(bob.measure.eer_threshold(tar_for_eval, non_for_eval))
         else:
-            eer, threshold = estimate_eer_and_threshold(tar, non)
+            eer, threshold_eval = estimate_eer_and_threshold(tar_for_eval, non_for_eval)
+
+    # 把阈值映射回原始 score 空间（若做了取负）
+    if args.score_direction == "lower":
+        threshold = -threshold_eval
+    else:
+        threshold = threshold_eval
 
     print(f"\nEER = {eer:.4f}")
     print(f"Threshold = {threshold:.4f}")
