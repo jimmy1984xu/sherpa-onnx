@@ -19,6 +19,7 @@
 #include "sherpa-onnx/csrc/audio-tagging.h"
 #include "sherpa-onnx/csrc/circular-buffer.h"
 #include "sherpa-onnx/csrc/display.h"
+#include "sherpa-onnx/csrc/fast-clustering.h"
 #include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/keyword-spotter.h"
 #include "sherpa-onnx/csrc/macros.h"
@@ -64,6 +65,82 @@ struct SherpaOnnxDisplay {
 };
 
 #define SHERPA_ONNX_OR(x, y) (x ? x : y)
+
+static sherpa_onnx::FastClusteringConfig GetFastClusteringConfig(
+    const SherpaOnnxFastClusteringConfig *config) {
+  sherpa_onnx::FastClusteringConfig ans;
+  ans.num_clusters = SHERPA_ONNX_OR(config->num_clusters, -1);
+  ans.threshold = SHERPA_ONNX_OR(config->threshold, 0.5f);
+  return ans;
+}
+
+struct SherpaOnnxFastClustering {
+  std::unique_ptr<sherpa_onnx::FastClustering> impl;
+};
+
+const SherpaOnnxFastClustering *SherpaOnnxCreateFastClustering(
+    const SherpaOnnxFastClusteringConfig *config) {
+  if (!config) {
+    SHERPA_ONNX_LOGE("SherpaOnnxCreateFastClustering: config is null");
+    return nullptr;
+  }
+
+  auto c = GetFastClusteringConfig(config);
+  if (!c.Validate()) {
+    SHERPA_ONNX_LOGE("Invalid FastClusteringConfig: %s", c.ToString().c_str());
+    return nullptr;
+  }
+
+  auto *p = new SherpaOnnxFastClustering;
+  p->impl = std::make_unique<sherpa_onnx::FastClustering>(c);
+  return p;
+}
+
+void SherpaOnnxDestroyFastClustering(const SherpaOnnxFastClustering *p) {
+  delete p;
+}
+
+const int32_t *SherpaOnnxFastClusteringCluster(const SherpaOnnxFastClustering *p,
+                                              const float *embeddings,
+                                              int32_t num_segments,
+                                              int32_t embedding_dim) {
+  if (!p || !p->impl) {
+    SHERPA_ONNX_LOGE("SherpaOnnxFastClusteringCluster: clustering is null");
+    return nullptr;
+  }
+
+  if (!embeddings) {
+    SHERPA_ONNX_LOGE("SherpaOnnxFastClusteringCluster: embeddings is null");
+    return nullptr;
+  }
+
+  if (num_segments <= 0 || embedding_dim <= 0) {
+    SHERPA_ONNX_LOGE(
+        "SherpaOnnxFastClusteringCluster: invalid shape: num_segments=%d, "
+        "embedding_dim=%d",
+        num_segments, embedding_dim);
+    return nullptr;
+  }
+
+  int64_t n = static_cast<int64_t>(num_segments) * embedding_dim;
+  std::vector<float> copy(static_cast<size_t>(n));
+  std::copy(embeddings, embeddings + n, copy.begin());
+
+  auto labels = p->impl->Cluster(copy.data(), num_segments, embedding_dim);
+  if (static_cast<int32_t>(labels.size()) != num_segments) {
+    SHERPA_ONNX_LOGE(
+        "SherpaOnnxFastClusteringCluster: internal error: labels.size()=%d, "
+        "num_segments=%d",
+        static_cast<int32_t>(labels.size()), num_segments);
+    return nullptr;
+  }
+
+  int32_t *out = new int32_t[num_segments];
+  std::copy(labels.begin(), labels.end(), out);
+  return out;
+}
+
+void SherpaOnnxFastClusteringFreeLabels(const int32_t *p) { delete[] p; }
 
 static sherpa_onnx::OnlineRecognizerConfig GetOnlineRecognizerConfig(
     const SherpaOnnxOnlineRecognizerConfig *config) {
@@ -1835,6 +1912,17 @@ int32_t SherpaOnnxSpeakerEmbeddingManagerContains(
 int32_t SherpaOnnxSpeakerEmbeddingManagerNumSpeakers(
     const SherpaOnnxSpeakerEmbeddingManager *p) {
   return p->impl->NumSpeakers();
+}
+
+int32_t SherpaOnnxSpeakerEmbeddingManagerDim(
+    const SherpaOnnxSpeakerEmbeddingManager *p) {
+  return p->impl->Dim();
+}
+
+float SherpaOnnxSpeakerEmbeddingManagerScore(
+    const SherpaOnnxSpeakerEmbeddingManager *p, const char *name,
+    const float *v) {
+  return p->impl->Score(name, v);
 }
 
 const char *const *SherpaOnnxSpeakerEmbeddingManagerGetAllSpeakers(

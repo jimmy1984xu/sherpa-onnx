@@ -33,6 +33,201 @@ bool WriteWave(const std::string &filename, const Wave &wave) {
                              wave.sample_rate, filename.c_str());
 }
 
+SpeakerEmbeddingExtractor::SpeakerEmbeddingExtractor(
+    const SherpaOnnxSpeakerEmbeddingExtractor *p)
+    : MoveOnly<SpeakerEmbeddingExtractor, SherpaOnnxSpeakerEmbeddingExtractor>(p) {}
+
+SpeakerEmbeddingExtractor SpeakerEmbeddingExtractor::Create(
+    const SpeakerEmbeddingExtractorConfig &config) {
+  struct SherpaOnnxSpeakerEmbeddingExtractorConfig c;
+  memset(&c, 0, sizeof(c));
+  c.model = config.model.c_str();
+  c.num_threads = config.num_threads;
+  c.debug = config.debug;
+  c.provider = config.provider.c_str();
+
+  auto p = SherpaOnnxCreateSpeakerEmbeddingExtractor(&c);
+  return SpeakerEmbeddingExtractor(p);
+}
+
+void SpeakerEmbeddingExtractor::Destroy(
+    const SherpaOnnxSpeakerEmbeddingExtractor *p) const {
+  SherpaOnnxDestroySpeakerEmbeddingExtractor(p);
+}
+
+int32_t SpeakerEmbeddingExtractor::Dim() const {
+  return SherpaOnnxSpeakerEmbeddingExtractorDim(p_);
+}
+
+OnlineStream SpeakerEmbeddingExtractor::CreateStream() const {
+  auto s = SherpaOnnxSpeakerEmbeddingExtractorCreateStream(p_);
+  return OnlineStream{s};
+}
+
+bool SpeakerEmbeddingExtractor::IsReady(const OnlineStream *s) const {
+  return SherpaOnnxSpeakerEmbeddingExtractorIsReady(p_, s->Get());
+}
+
+std::vector<float> SpeakerEmbeddingExtractor::Compute(
+    const OnlineStream *s) const {
+  auto v = SherpaOnnxSpeakerEmbeddingExtractorComputeEmbedding(p_, s->Get());
+  std::vector<float> ans;
+  if (v) {
+    int32_t dim = Dim();
+    ans.resize(dim);
+    std::copy(v, v + dim, ans.data());
+    SherpaOnnxSpeakerEmbeddingExtractorDestroyEmbedding(v);
+  }
+  return ans;
+}
+
+SpeakerEmbeddingManager::SpeakerEmbeddingManager(
+    const SherpaOnnxSpeakerEmbeddingManager *p)
+    : MoveOnly<SpeakerEmbeddingManager, SherpaOnnxSpeakerEmbeddingManager>(p) {}
+
+SpeakerEmbeddingManager SpeakerEmbeddingManager::Create(int32_t dim) {
+  auto p = SherpaOnnxCreateSpeakerEmbeddingManager(dim);
+  return SpeakerEmbeddingManager(p);
+}
+
+void SpeakerEmbeddingManager::Destroy(
+    const SherpaOnnxSpeakerEmbeddingManager *p) const {
+  SherpaOnnxDestroySpeakerEmbeddingManager(p);
+}
+
+int32_t SpeakerEmbeddingManager::Dim() const {
+  return SherpaOnnxSpeakerEmbeddingManagerDim(p_);
+}
+
+int32_t SpeakerEmbeddingManager::NumSpeakers() const {
+  return SherpaOnnxSpeakerEmbeddingManagerNumSpeakers(p_);
+}
+
+bool SpeakerEmbeddingManager::Contains(const std::string &name) const {
+  return SherpaOnnxSpeakerEmbeddingManagerContains(p_, name.c_str());
+}
+
+bool SpeakerEmbeddingManager::Add(const std::string &name,
+                                 const float *embedding) const {
+  return SherpaOnnxSpeakerEmbeddingManagerAdd(p_, name.c_str(), embedding);
+}
+
+bool SpeakerEmbeddingManager::Add(
+    const std::string &name,
+    const std::vector<std::vector<float>> &embedding_list) const {
+  if (embedding_list.empty()) {
+    return false;
+  }
+
+  std::vector<const float *> ptrs;
+  ptrs.reserve(embedding_list.size() + 1);
+  for (const auto &e : embedding_list) {
+    ptrs.push_back(e.data());
+  }
+  ptrs.push_back(nullptr);
+
+  return SherpaOnnxSpeakerEmbeddingManagerAddList(p_, name.c_str(), ptrs.data());
+}
+
+bool SpeakerEmbeddingManager::AddListFlattened(const std::string &name,
+                                              const float *v, int32_t n) const {
+  return SherpaOnnxSpeakerEmbeddingManagerAddListFlattened(p_, name.c_str(), v, n);
+}
+
+bool SpeakerEmbeddingManager::Remove(const std::string &name) const {
+  return SherpaOnnxSpeakerEmbeddingManagerRemove(p_, name.c_str());
+}
+
+std::string SpeakerEmbeddingManager::Search(const float *embedding,
+                                           float threshold) const {
+  auto r = SherpaOnnxSpeakerEmbeddingManagerSearch(p_, embedding, threshold);
+  if (!r) {
+    return "";
+  }
+  std::string ans = r;
+  SherpaOnnxSpeakerEmbeddingManagerFreeSearch(r);
+  return ans;
+}
+
+std::vector<SpeakerMatch> SpeakerEmbeddingManager::GetBestMatches(
+    const float *embedding, float threshold, int32_t n) const {
+  std::vector<SpeakerMatch> ans;
+  auto r = SherpaOnnxSpeakerEmbeddingManagerGetBestMatches(p_, embedding, threshold, n);
+  if (!r) {
+    return ans;
+  }
+
+  ans.reserve(r->count);
+  for (int32_t i = 0; i != r->count; ++i) {
+    SpeakerMatch m;
+    m.score = r->matches[i].score;
+    if (r->matches[i].name) {
+      m.name = r->matches[i].name;
+    }
+    ans.push_back(std::move(m));
+  }
+  SherpaOnnxSpeakerEmbeddingManagerFreeBestMatches(r);
+  return ans;
+}
+
+float SpeakerEmbeddingManager::Score(const std::string &name,
+                                    const float *embedding) const {
+  return SherpaOnnxSpeakerEmbeddingManagerScore(p_, name.c_str(), embedding);
+}
+
+bool SpeakerEmbeddingManager::Verify(const std::string &name,
+                                    const float *embedding,
+                                    float threshold) const {
+  return SherpaOnnxSpeakerEmbeddingManagerVerify(p_, name.c_str(), embedding,
+                                                threshold);
+}
+
+std::vector<std::string> SpeakerEmbeddingManager::GetAllSpeakers() const {
+  std::vector<std::string> ans;
+  auto names = SherpaOnnxSpeakerEmbeddingManagerGetAllSpeakers(p_);
+  if (!names) {
+    return ans;
+  }
+
+  const char *const *p = names;
+  while (p && p[0]) {
+    ans.emplace_back(p[0]);
+    ++p;
+  }
+  SherpaOnnxSpeakerEmbeddingManagerFreeAllSpeakers(names);
+  return ans;
+}
+
+FastClustering::FastClustering(const SherpaOnnxFastClustering *p)
+    : MoveOnly<FastClustering, SherpaOnnxFastClustering>(p) {}
+
+FastClustering FastClustering::Create(const FastClusteringConfig &config) {
+  struct SherpaOnnxFastClusteringConfig c;
+  memset(&c, 0, sizeof(c));
+  c.num_clusters = config.num_clusters;
+  c.threshold = config.threshold;
+  auto p = SherpaOnnxCreateFastClustering(&c);
+  return FastClustering(p);
+}
+
+void FastClustering::Destroy(const SherpaOnnxFastClustering *p) const {
+  SherpaOnnxDestroyFastClustering(p);
+}
+
+std::vector<int32_t> FastClustering::Cluster(const float *embeddings,
+                                             int32_t num_segments,
+                                             int32_t embedding_dim) const {
+  std::vector<int32_t> ans;
+  auto labels = SherpaOnnxFastClusteringCluster(p_, embeddings, num_segments, embedding_dim);
+  if (!labels) {
+    return ans;
+  }
+  ans.resize(num_segments);
+  std::copy(labels, labels + num_segments, ans.data());
+  SherpaOnnxFastClusteringFreeLabels(labels);
+  return ans;
+}
+
 OnlineStream::OnlineStream(const SherpaOnnxOnlineStream *p)
     : MoveOnly<OnlineStream, SherpaOnnxOnlineStream>(p) {}
 

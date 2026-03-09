@@ -707,6 +707,102 @@ class SHERPA_ONNX_API LinearResampler
   explicit LinearResampler(const SherpaOnnxLinearResampler *p);
 };
 
+// ============================================================================
+// Speaker embedding extractor & manager
+// ============================================================================
+struct SpeakerEmbeddingExtractorConfig {
+  std::string model;
+  int32_t num_threads = 1;
+  bool debug = false;
+  std::string provider = "cpu";
+};
+
+class SHERPA_ONNX_API SpeakerEmbeddingExtractor
+    : public MoveOnly<SpeakerEmbeddingExtractor, SherpaOnnxSpeakerEmbeddingExtractor> {
+ public:
+  static SpeakerEmbeddingExtractor Create(const SpeakerEmbeddingExtractorConfig &config);
+
+  void Destroy(const SherpaOnnxSpeakerEmbeddingExtractor *p) const;
+
+  int32_t Dim() const;
+
+  OnlineStream CreateStream() const;
+
+  bool IsReady(const OnlineStream *s) const;
+
+  // Return embedding vector
+  std::vector<float> Compute(const OnlineStream *s) const;
+
+ private:
+  explicit SpeakerEmbeddingExtractor(const SherpaOnnxSpeakerEmbeddingExtractor *p);
+};
+
+struct SpeakerMatch {
+  std::string name;
+  float score;
+};
+
+class SHERPA_ONNX_API SpeakerEmbeddingManager
+    : public MoveOnly<SpeakerEmbeddingManager, SherpaOnnxSpeakerEmbeddingManager> {
+ public:
+  static SpeakerEmbeddingManager Create(int32_t dim);
+
+  void Destroy(const SherpaOnnxSpeakerEmbeddingManager *p) const;
+
+  int32_t Dim() const;
+
+  int32_t NumSpeakers() const;
+
+  bool Contains(const std::string &name) const;
+
+  bool Add(const std::string &name, const float *embedding) const;
+
+  bool Add(const std::string &name,
+           const std::vector<std::vector<float>> &embedding_list) const;
+
+  bool AddListFlattened(const std::string &name, const float *v, int32_t n) const;
+
+  bool Remove(const std::string &name) const;
+
+  // Return empty string if not found.
+  std::string Search(const float *embedding, float threshold) const;
+
+  std::vector<SpeakerMatch> GetBestMatches(const float *embedding, float threshold,
+                                          int32_t n) const;
+
+  float Score(const std::string &name, const float *embedding) const;
+
+  bool Verify(const std::string &name, const float *embedding, float threshold) const;
+
+  std::vector<std::string> GetAllSpeakers() const;
+
+ private:
+  explicit SpeakerEmbeddingManager(const SherpaOnnxSpeakerEmbeddingManager *p);
+};
+
+// ============================================================================
+// Standalone fast clustering
+// ============================================================================
+struct FastClusteringConfig {
+  int32_t num_clusters = -1;
+  float threshold = 0.5f;
+};
+
+class SHERPA_ONNX_API FastClustering
+    : public MoveOnly<FastClustering, SherpaOnnxFastClustering> {
+ public:
+  static FastClustering Create(const FastClusteringConfig &config);
+
+  void Destroy(const SherpaOnnxFastClustering *p) const;
+
+  // embeddings is row-major with shape (num_segments, embedding_dim)
+  std::vector<int32_t> Cluster(const float *embeddings, int32_t num_segments,
+                               int32_t embedding_dim) const;
+
+ private:
+  explicit FastClustering(const SherpaOnnxFastClustering *p);
+};
+
 SHERPA_ONNX_API std::string GetVersionStr();
 SHERPA_ONNX_API std::string GetGitSha1();
 SHERPA_ONNX_API std::string GetGitDate();

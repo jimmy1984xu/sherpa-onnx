@@ -1454,6 +1454,22 @@ SHERPA_ONNX_API int32_t SherpaOnnxSpeakerEmbeddingManagerContains(
 SHERPA_ONNX_API int32_t SherpaOnnxSpeakerEmbeddingManagerNumSpeakers(
     const SherpaOnnxSpeakerEmbeddingManager *p);
 
+// Return embedding dimension of the manager.
+SHERPA_ONNX_API int32_t SherpaOnnxSpeakerEmbeddingManagerDim(
+    const SherpaOnnxSpeakerEmbeddingManager *p);
+
+// Compute cosine similarity score between a registered speaker and an input
+// embedding.
+//
+// @param name The registered speaker name.
+// @param v Pointer to an array containing the embedding vector, length must be
+//          SherpaOnnxSpeakerEmbeddingManagerDim(p).
+// @return Similarity score. If the speaker does not exist, the behavior follows
+//         the underlying implementation (typically returns a negative value).
+SHERPA_ONNX_API float SherpaOnnxSpeakerEmbeddingManagerScore(
+    const SherpaOnnxSpeakerEmbeddingManager *p, const char *name,
+    const float *v);
+
 // Return the name of all speakers in the manager.
 //
 // @return Return an array of pointers `ans`. If there are n speakers, then
@@ -1680,6 +1696,34 @@ SHERPA_ONNX_API typedef struct SherpaOnnxFastClusteringConfig {
   // The larger, the fewer clusters it will generate.
   float threshold;
 } SherpaOnnxFastClusteringConfig;
+
+// Standalone fast clustering.
+//
+// It takes embeddings in row-major order (num_segments x embedding_dim) and
+// returns an array of int32 labels with length num_segments.
+//
+// Note: Internally, the clustering implementation normalizes embeddings.
+// The input embeddings passed into SherpaOnnxFastClusteringCluster() are NOT
+// modified (we will make a copy).
+SHERPA_ONNX_API typedef struct SherpaOnnxFastClustering SherpaOnnxFastClustering;
+
+// The user has to invoke SherpaOnnxDestroyFastClustering() to free the returned
+// pointer to avoid memory leak.
+SHERPA_ONNX_API const SherpaOnnxFastClustering *SherpaOnnxCreateFastClustering(
+    const SherpaOnnxFastClusteringConfig *config);
+
+SHERPA_ONNX_API void SherpaOnnxDestroyFastClustering(
+    const SherpaOnnxFastClustering *p);
+
+// The user has to invoke SherpaOnnxFastClusteringFreeLabels() to free the
+// returned pointer to avoid memory leak.
+//
+// Returned pointer is the start address of an array of length num_segments.
+SHERPA_ONNX_API const int32_t *SherpaOnnxFastClusteringCluster(
+    const SherpaOnnxFastClustering *p, const float *embeddings,
+    int32_t num_segments, int32_t embedding_dim);
+
+SHERPA_ONNX_API void SherpaOnnxFastClusteringFreeLabels(const int32_t *p);
 
 SHERPA_ONNX_API typedef struct SherpaOnnxOfflineSpeakerDiarizationConfig {
   SherpaOnnxOfflineSpeakerSegmentationModelConfig segmentation;
