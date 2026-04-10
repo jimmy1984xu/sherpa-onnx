@@ -742,6 +742,7 @@ const SherpaOnnxOfflineRecognizerResult *SherpaOnnxGetOfflineStreamResult(
   std::copy(json.begin(), json.end(), pJson);
   pJson[json.size()] = 0;
   r->json = pJson;
+  r->confidence = result.confidence;
 
   // copy tokens
   auto count = result.tokens.size();
@@ -786,6 +787,7 @@ const SherpaOnnxOfflineRecognizerResult *SherpaOnnxGetOfflineStreamResult(
     r->timestamps = nullptr;
     r->tokens = nullptr;
     r->tokens_arr = nullptr;
+    r->durations = nullptr;
   }
 
   return r;
