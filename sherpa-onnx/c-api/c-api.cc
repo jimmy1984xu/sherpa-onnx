@@ -1201,6 +1201,27 @@ int32_t SherpaOnnxVoiceActivityDetectorDetected(
   return p->impl->IsSpeechDetected();
 }
 
+int32_t SherpaOnnxVoiceActivityDetectorCurrentSegmentStart(
+    const SherpaOnnxVoiceActivityDetector *p) {
+  return p->impl->CurrentSegmentStart();
+}
+
+int32_t SherpaOnnxVoiceActivityDetectorBufferHead(
+    const SherpaOnnxVoiceActivityDetector *p) {
+  return p->impl->BufferHead();
+}
+
+int32_t SherpaOnnxVoiceActivityDetectorBufferTail(
+    const SherpaOnnxVoiceActivityDetector *p) {
+  return p->impl->BufferTail();
+}
+
+int32_t SherpaOnnxVoiceActivityDetectorCopyBufferRange(
+    const SherpaOnnxVoiceActivityDetector *p, int32_t start, int32_t end,
+    float *out, int32_t n) {
+  return p->impl->CopyBufferRange(start, end, out, n);
+}
+
 void SherpaOnnxVoiceActivityDetectorPop(
     const SherpaOnnxVoiceActivityDetector *p) {
   p->impl->Pop();

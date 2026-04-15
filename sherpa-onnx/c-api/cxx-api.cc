@@ -924,6 +924,24 @@ bool VoiceActivityDetector ::IsDetected() const {
   return SherpaOnnxVoiceActivityDetectorDetected(p_);
 }
 
+int32_t VoiceActivityDetector::CurrentSegmentStart() const {
+  return SherpaOnnxVoiceActivityDetectorCurrentSegmentStart(p_);
+}
+
+int32_t VoiceActivityDetector::BufferHead() const {
+  return SherpaOnnxVoiceActivityDetectorBufferHead(p_);
+}
+
+int32_t VoiceActivityDetector::BufferTail() const {
+  return SherpaOnnxVoiceActivityDetectorBufferTail(p_);
+}
+
+bool VoiceActivityDetector::CopyBufferRange(int32_t start, int32_t end,
+                                            float *out, int32_t n) const {
+  return SherpaOnnxVoiceActivityDetectorCopyBufferRange(p_, start, end, out,
+                                                        n);
+}
+
 void VoiceActivityDetector::Pop() const {
   SherpaOnnxVoiceActivityDetectorPop(p_);
 }

@@ -667,6 +667,15 @@ class SHERPA_ONNX_API VoiceActivityDetector
 
   bool IsDetected() const;
 
+  int32_t CurrentSegmentStart() const;
+
+  int32_t BufferHead() const;
+
+  int32_t BufferTail() const;
+
+  bool CopyBufferRange(int32_t start, int32_t end, float *out,
+                       int32_t n) const;
+
   void Pop() const;
 
   void Clear() const;
