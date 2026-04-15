@@ -45,6 +45,15 @@ class VoiceActivityDetector {
   // It is empty if IsSpeechDetected() returns false
   SpeechSegment CurrentSpeechSegment() const;
 
+  int32_t CurrentSegmentStart() const;
+
+  int32_t BufferHead() const;
+
+  int32_t BufferTail() const;
+
+  bool CopyBufferRange(int32_t start, int32_t end, float *out,
+                       int32_t n) const;
+
   void Reset() const;
 
   // At the end of the utterance, you can invoke this method so that

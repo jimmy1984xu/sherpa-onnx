@@ -2146,6 +2146,23 @@ SHERPA_ONNX_API int32_t SherpaOnnxVoiceActivityDetectorDetected(
 SHERPA_ONNX_API void SherpaOnnxVoiceActivityDetectorPop(
     const SherpaOnnxVoiceActivityDetector *p);
 
+// Return the start index (in samples) of the current speech segment.
+// Return -1 if no speech is being detected.
+SHERPA_ONNX_API int32_t SherpaOnnxVoiceActivityDetectorCurrentSegmentStart(
+    const SherpaOnnxVoiceActivityDetector *p);
+
+SHERPA_ONNX_API int32_t SherpaOnnxVoiceActivityDetectorBufferHead(
+    const SherpaOnnxVoiceActivityDetector *p);
+
+SHERPA_ONNX_API int32_t SherpaOnnxVoiceActivityDetectorBufferTail(
+    const SherpaOnnxVoiceActivityDetector *p);
+
+// Copy samples in [start, end) to out.
+// Return 1 on success; return 0 on failure.
+SHERPA_ONNX_API int32_t SherpaOnnxVoiceActivityDetectorCopyBufferRange(
+    const SherpaOnnxVoiceActivityDetector *p, int32_t start, int32_t end,
+    float *out, int32_t n);
+        
 /**
  * @brief Remove all queued speech segments.
  *

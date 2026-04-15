@@ -197,6 +197,31 @@ class VoiceActivityDetector::Impl {
 
   SpeechSegment CurrentSpeechSegment() const { return cur_segment_; }
 
+  int32_t CurrentSegmentStart() const { return start_; }
+
+  int32_t BufferHead() const { return buffer_.Head(); }
+
+  int32_t BufferTail() const { return buffer_.Tail(); }
+
+  bool CopyBufferRange(int32_t start, int32_t end, float *out, int32_t n) const {
+    if (start < buffer_.Head() || end > buffer_.Tail() || start > end) {
+      return false;
+    }
+
+    int32_t num_samples = end - start;
+    if (n < num_samples) {
+      return false;
+    }
+
+    auto samples = buffer_.Get(start, num_samples);
+    if (static_cast<int32_t>(samples.size()) != num_samples) {
+      return false;
+    }
+
+    std::copy(samples.begin(), samples.end(), out);
+    return true;
+  }
+
   const VadModelConfig &GetConfig() const { return config_; }
 
  private:
@@ -267,6 +292,19 @@ bool VoiceActivityDetector::IsSpeechDetected() const {
 
 SpeechSegment VoiceActivityDetector::CurrentSpeechSegment() const {
   return impl_->CurrentSpeechSegment();
+}
+
+int32_t VoiceActivityDetector::CurrentSegmentStart() const {
+  return impl_->CurrentSegmentStart();
+}
+
+int32_t VoiceActivityDetector::BufferHead() const { return impl_->BufferHead(); }
+
+int32_t VoiceActivityDetector::BufferTail() const { return impl_->BufferTail(); }
+
+bool VoiceActivityDetector::CopyBufferRange(int32_t start, int32_t end,
+                                            float *out, int32_t n) const {
+  return impl_->CopyBufferRange(start, end, out, n);
 }
 
 const VadModelConfig &VoiceActivityDetector::GetConfig() const {
