@@ -1008,6 +1008,13 @@ SHERPA_ONNX_API int32_t SherpaOnnxVoiceActivityDetectorCopyBufferRange(
     const SherpaOnnxVoiceActivityDetector *p, int32_t start, int32_t end,
     float *out, int32_t n);
 
+// Dynamically increase the max utterance length used by VAD force-cut logic.
+// Return 1 on success. Return 0 on failure.
+// It fails if max_duration_seconds is invalid, smaller than the current value,
+// or larger than the buffer capacity given at construction time.
+SHERPA_ONNX_API int32_t SherpaOnnxVoiceActivityDetectorSetMaxUtteranceLength(
+    const SherpaOnnxVoiceActivityDetector *p, float max_duration_seconds);
+
 // Return the first speech segment.
 // It throws if SherpaOnnxVoiceActivityDetectorEmpty() returns 1.
 SHERPA_ONNX_API void SherpaOnnxVoiceActivityDetectorPop(

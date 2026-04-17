@@ -54,6 +54,13 @@ class VoiceActivityDetector {
   bool CopyBufferRange(int32_t start, int32_t end, float *out,
                        int32_t n) const;
 
+  // Dynamically increase the max utterance length used by VAD force-cut logic.
+  //
+  // Return true on success. Return false if max_duration_seconds is invalid,
+  // smaller than the current value, or larger than the buffer capacity given
+  // at construction time.
+  bool SetMaxUtteranceLength(float max_duration_seconds) const;
+
   void Reset() const;
 
   // At the end of the utterance, you can invoke this method so that

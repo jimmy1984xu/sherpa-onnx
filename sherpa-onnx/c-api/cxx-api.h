@@ -676,6 +676,8 @@ class SHERPA_ONNX_API VoiceActivityDetector
   bool CopyBufferRange(int32_t start, int32_t end, float *out,
                        int32_t n) const;
 
+  bool SetMaxUtteranceLength(float max_duration_seconds) const;
+
   void Pop() const;
 
   void Clear() const;

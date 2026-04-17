@@ -942,6 +942,12 @@ bool VoiceActivityDetector::CopyBufferRange(int32_t start, int32_t end,
                                                         n);
 }
 
+bool VoiceActivityDetector::SetMaxUtteranceLength(
+    float max_duration_seconds) const {
+  return SherpaOnnxVoiceActivityDetectorSetMaxUtteranceLength(
+      p_, max_duration_seconds);
+}
+
 void VoiceActivityDetector::Pop() const {
   SherpaOnnxVoiceActivityDetectorPop(p_);
 }

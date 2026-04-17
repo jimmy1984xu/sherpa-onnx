@@ -1222,6 +1222,11 @@ int32_t SherpaOnnxVoiceActivityDetectorCopyBufferRange(
   return p->impl->CopyBufferRange(start, end, out, n);
 }
 
+int32_t SherpaOnnxVoiceActivityDetectorSetMaxUtteranceLength(
+    const SherpaOnnxVoiceActivityDetector *p, float max_duration_seconds) {
+  return p->impl->SetMaxUtteranceLength(max_duration_seconds);
+}
+
 void SherpaOnnxVoiceActivityDetectorPop(
     const SherpaOnnxVoiceActivityDetector *p) {
   p->impl->Pop();
