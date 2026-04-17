@@ -30,7 +30,8 @@ class VoiceActivityDetector::Impl {
   explicit Impl(const VadModelConfig &config, float buffer_size_in_seconds = 60)
       : model_(VadModel::Create(config)),
         config_(config),
-        buffer_(buffer_size_in_seconds * config.sample_rate) {
+        buffer_(buffer_size_in_seconds * config.sample_rate),
+        max_allowed_utterance_length_(buffer_size_in_seconds * config.sample_rate) {
     Init();
   }
 
@@ -39,7 +40,8 @@ class VoiceActivityDetector::Impl {
        float buffer_size_in_seconds = 60)
       : model_(VadModel::Create(mgr, config)),
         config_(config),
-        buffer_(buffer_size_in_seconds * config.sample_rate) {
+        buffer_(buffer_size_in_seconds * config.sample_rate),
+        max_allowed_utterance_length_(buffer_size_in_seconds * config.sample_rate) {
     Init();
   }
 
@@ -222,6 +224,50 @@ class VoiceActivityDetector::Impl {
     return true;
   }
 
+  bool SetMaxUtteranceLength(float max_duration_seconds) {
+    if (max_duration_seconds <= 0) {
+      SHERPA_ONNX_LOGE(
+          "Failed to set max utterance length: max_duration_seconds must be "
+          "> 0. Given: %f",
+          max_duration_seconds);
+      return false;
+    }
+
+    int32_t new_max_utterance_length =
+        static_cast<int32_t>(max_duration_seconds * config_.sample_rate);
+
+    if (new_max_utterance_length < max_utterance_length_) {
+      SHERPA_ONNX_LOGE(
+          "Failed to set max utterance length: new value (%d samples, %f "
+          "seconds) is smaller than current value (%d samples, %f seconds)",
+          new_max_utterance_length, max_duration_seconds, max_utterance_length_,
+          static_cast<float>(max_utterance_length_) / config_.sample_rate);
+      return false;
+    }
+
+    if (new_max_utterance_length >= max_allowed_utterance_length_) {
+      SHERPA_ONNX_LOGE(
+          "Failed to set max utterance length: new value (%d samples, %f "
+          "seconds) exceeds buffer limit (%d samples, %f seconds)",
+          new_max_utterance_length, max_duration_seconds,
+          max_allowed_utterance_length_,
+          static_cast<float>(max_allowed_utterance_length_) /
+              config_.sample_rate);
+      return false;
+    }
+
+    max_utterance_length_ = new_max_utterance_length;
+    SHERPA_ONNX_LOGE(
+        "Updated max utterance length to %d samples (%f seconds). Buffer "
+        "limit: %d samples (%f seconds)",
+        max_utterance_length_,
+        static_cast<float>(max_utterance_length_) / config_.sample_rate,
+        max_allowed_utterance_length_,
+        static_cast<float>(max_allowed_utterance_length_) /
+            config_.sample_rate);
+    return true;
+  }
+
   const VadModelConfig &GetConfig() const { return config_; }
 
  private:
@@ -250,6 +296,7 @@ class VoiceActivityDetector::Impl {
   std::vector<float> last_;
 
   int max_utterance_length_ = -1;  // in samples
+  int max_allowed_utterance_length_ = -1;  // in samples
   float new_min_silence_duration_s_ = 0.1;
   float new_threshold_ = 0.90;
 
@@ -305,6 +352,11 @@ int32_t VoiceActivityDetector::BufferTail() const { return impl_->BufferTail(); 
 bool VoiceActivityDetector::CopyBufferRange(int32_t start, int32_t end,
                                             float *out, int32_t n) const {
   return impl_->CopyBufferRange(start, end, out, n);
+}
+
+bool VoiceActivityDetector::SetMaxUtteranceLength(
+    float max_duration_seconds) const {
+  return impl_->SetMaxUtteranceLength(max_duration_seconds);
 }
 
 const VadModelConfig &VoiceActivityDetector::GetConfig() const {
