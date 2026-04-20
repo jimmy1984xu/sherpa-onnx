@@ -12,7 +12,7 @@ segment_id 格式: <audio_base_name>_<offset_ms>_<duration_ms>
 可选说话人标注文件: <segment_id> <speaker_label>
 
 输出格式: 每行包含:
-  <segment_id> <speaker_id>
+  <segment_id> <speaker_label> <speaker_id>
 
 使用示例:
 
@@ -258,12 +258,12 @@ def perform_fast_clustering(
     num_clusters: int,
     threshold: float,
     verbose: bool = False,
-) -> List[Tuple[str, int]]:
+) -> List[Tuple[str, Optional[str], int]]:
     """
     使用K2 Fast Clustering算法进行说话人聚类。
     
     返回:
-        (segment_id, speaker_id) 元组列表
+        (segment_id, speaker, speaker_id) 元组列表
     """
     print(f"使用Fast Clustering算法进行聚类...")
     
@@ -294,8 +294,9 @@ def perform_fast_clustering(
     final_results = []
     for valid_idx, cluster_label in zip(valid_indices, cluster_labels_list):
         segment_id = segments[valid_idx].get("id", "")
+        speaker = segments[valid_idx].get("speaker")
         speaker_id = label_to_speaker[cluster_label]
-        final_results.append((segment_id, speaker_id))
+        final_results.append((segment_id, speaker, speaker_id))
     
     # 打印统计信息
     print(f"\n  === 聚类统计 ===")
@@ -305,7 +306,7 @@ def perform_fast_clustering(
     if verbose:
         print(f"\n  === 说话人分布 ===")
         speaker_counts: Dict[int, int] = {}
-        for _, speaker_id in final_results:
+        for _, _, speaker_id in final_results:
             speaker_counts[speaker_id] = speaker_counts.get(speaker_id, 0) + 1
         
         for speaker_id in sorted(speaker_counts.keys()):
@@ -316,9 +317,8 @@ def perform_fast_clustering(
         # 每个聚类ID中，原始segment_id自带的说话人标识统计
         print(f"\n  === 聚类ID内标注说话人标识统计 ===")
         cluster_speaker_labels: Dict[int, Dict[str, int]] = {}
-        for idx, (_, speaker_id) in enumerate(final_results):
-            seg = segments[valid_indices[idx]]
-            spk_label = seg.get("speaker")
+        for _, speaker_label, speaker_id in final_results:
+            spk_label = speaker_label
             if spk_label is None:
                 continue
             if speaker_id not in cluster_speaker_labels:
@@ -368,17 +368,18 @@ def filter_segments_by_speaker(
     return filtered
 
 
-def export_results(results: List[Tuple[str, int]], output_path: Path) -> None:
+def export_results(results: List[Tuple[str, Optional[str], int]], output_path: Path) -> None:
     """
     导出结果到文本文件。
     
-    格式: <segment_id> <speaker_id>
+    格式: <segment_id> <speaker> <speaker_id>
     """
     print(f"导出结果到 {output_path}...")
     
     with open(output_path, 'w', encoding='utf-8') as f:
-        for segment_id, speaker_id in results:
-            f.write(f"{segment_id} {speaker_id}\n")
+        for segment_id, speaker, speaker_id in results:
+            speaker = speaker if speaker is not None else ""
+            f.write(f"{segment_id} {speaker} {speaker_id}\n")
     
     print(f"  成功导出 {len(results)} 条结果")
 
