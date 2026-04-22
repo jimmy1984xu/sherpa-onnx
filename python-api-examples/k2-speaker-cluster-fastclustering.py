@@ -551,6 +551,7 @@ def main():
     
     # 4) 导出结果
     export_results(results, output_path)
+    analyze_clustering_accuracy(results)
     
     print(f"\n完成！结果已保存到 {output_path}")
 
