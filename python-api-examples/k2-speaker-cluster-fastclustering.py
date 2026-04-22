@@ -386,6 +386,41 @@ def export_results(results: List[Tuple[str, Optional[str], int]], output_path: P
 
 
 
+def analyze_clustering_accuracy(results: List[Tuple[str, Optional[str], int]]) -> None:
+    """输出基于标注说话人的聚类准确性统计。"""
+    labeled_results = [(segment_id, speaker, cluster_id) for segment_id, speaker, cluster_id in results if speaker]
+
+    if not labeled_results:
+        print("\n未提供标注说话人或结果中无有效标注，跳过聚类准确性分析")
+        return
+
+    labeled_speakers = {speaker for _, speaker, _ in labeled_results}
+    clustered_speakers = {cluster_id for _, _, cluster_id in labeled_results}
+
+    print("\n聚类准确性分析:")
+    print(f"  标注说话人数量: {len(labeled_speakers)}")
+    print(f"  聚类说话人数量: {len(clustered_speakers)}")
+
+    cluster_to_speakers: Dict[int, Dict[str, int]] = {}
+    for _, speaker, cluster_id in labeled_results:
+        speaker_counts = cluster_to_speakers.setdefault(cluster_id, {})
+        speaker_counts[speaker] = speaker_counts.get(speaker, 0) + 1
+
+    print("  聚类内主说话人占比:")
+    for cluster_id in sorted(cluster_to_speakers):
+        speaker_counts = cluster_to_speakers[cluster_id]
+        total = sum(speaker_counts.values())
+        dominant_speaker, dominant_count = max(
+            speaker_counts.items(),
+            key=lambda item: (item[1], item[0]),
+        )
+        ratio = dominant_count / total if total > 0 else 0.0
+        print(
+            f"    speaker_{cluster_id}: {dominant_speaker} 占比 {ratio:.2%} "
+            f"({dominant_count}/{total})"
+        )
+
+
 def parse_args():
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(
