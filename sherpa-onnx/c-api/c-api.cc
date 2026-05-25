@@ -5,6 +5,7 @@
 #include "sherpa-onnx/c-api/c-api.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <sstream>
@@ -53,6 +54,21 @@
 const char *SherpaOnnxGetVersionStr() { return sherpa_onnx::GetVersionStr(); }
 const char *SherpaOnnxGetGitSha1() { return sherpa_onnx::GetGitSha1(); }
 const char *SherpaOnnxGetGitDate() { return sherpa_onnx::GetGitDate(); }
+
+static float ComputeOfflineRecognitionConfidence(
+    const sherpa_onnx::OfflineRecognitionResult &result) {
+  if (result.ys_log_probs.empty() ||
+      result.ys_log_probs.size() != result.tokens.size()) {
+    return 0.0f;
+  }
+
+  float sum = 0.0f;
+  for (float p : result.ys_log_probs) {
+    sum += p;
+  }
+
+  return std::exp(sum / result.ys_log_probs.size());
+}
 
 struct SherpaOnnxOnlineRecognizer {
   std::unique_ptr<sherpa_onnx::OnlineRecognizer> impl;
@@ -853,6 +869,7 @@ const SherpaOnnxOfflineRecognizerResult *SherpaOnnxGetOfflineStreamResult(
 
   auto r = new SherpaOnnxOfflineRecognizerResult;
   memset(r, 0, sizeof(SherpaOnnxOfflineRecognizerResult));
+  r->confidence = ComputeOfflineRecognitionConfidence(result);
 
   char *pText = new char[text.size() + 1];
   std::copy(text.begin(), text.end(), pText);

@@ -1499,6 +1499,14 @@ typedef struct SherpaOnnxOfflineRecognizerResult {
 
   /** Number of segment entries in the segment-level arrays. */
   int32_t segment_count;
+
+  /**
+   * Sentence-level confidence score in the range [0, 1].
+   *
+   * It is computed from token log probabilities when available. It is 0 when
+   * token log probabilities are unavailable.
+   */
+  float confidence;
 } SherpaOnnxOfflineRecognizerResult;
 
 /**
