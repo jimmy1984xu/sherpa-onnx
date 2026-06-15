@@ -236,15 +236,6 @@ class VoiceActivityDetector::Impl {
     int32_t new_max_utterance_length =
         static_cast<int32_t>(max_duration_seconds * config_.sample_rate);
 
-    if (new_max_utterance_length < max_utterance_length_) {
-      SHERPA_ONNX_LOGE(
-          "Failed to set max utterance length: new value (%d samples, %f "
-          "seconds) is smaller than current value (%d samples, %f seconds)",
-          new_max_utterance_length, max_duration_seconds, max_utterance_length_,
-          static_cast<float>(max_utterance_length_) / config_.sample_rate);
-      return false;
-    }
-
     if (new_max_utterance_length >= max_allowed_utterance_length_) {
       SHERPA_ONNX_LOGE(
           "Failed to set max utterance length: new value (%d samples, %f "
@@ -257,14 +248,6 @@ class VoiceActivityDetector::Impl {
     }
 
     max_utterance_length_ = new_max_utterance_length;
-    SHERPA_ONNX_LOGE(
-        "Updated max utterance length to %d samples (%f seconds). Buffer "
-        "limit: %d samples (%f seconds)",
-        max_utterance_length_,
-        static_cast<float>(max_utterance_length_) / config_.sample_rate,
-        max_allowed_utterance_length_,
-        static_cast<float>(max_allowed_utterance_length_) /
-            config_.sample_rate);
     return true;
   }
 
