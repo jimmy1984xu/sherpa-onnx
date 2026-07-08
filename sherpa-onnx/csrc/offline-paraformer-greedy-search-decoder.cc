@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "sherpa-onnx/csrc/macros.h"
+#include "sherpa-onnx/csrc/math.h"
 
 namespace sherpa_onnx {
 
@@ -35,6 +36,8 @@ OfflineParaformerGreedySearchDecoder::Decode(
       }
 
       results[i].tokens.push_back(max_idx);
+      results[i].ys_log_probs.push_back(
+          ComputeLogSoftmaxScore(p, vocab_size, static_cast<int32_t>(max_idx)));
 
       p += vocab_size;
     }

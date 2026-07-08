@@ -15,6 +15,9 @@ struct OfflineParaformerDecoderResult {
   /// The decoded token IDs
   std::vector<int64_t> tokens;
 
+  /// ys_log_probs[i] contains the log probability (confidence) for tokens[i].
+  std::vector<float> ys_log_probs;
+
   // it contains the start time of each token in seconds
   //
   // len(timestamps) == len(tokens)

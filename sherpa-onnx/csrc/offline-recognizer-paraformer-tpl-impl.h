@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "sherpa-onnx/csrc/macros.h"
+#include "sherpa-onnx/csrc/math.h"
 #include "sherpa-onnx/csrc/offline-model-config.h"
 #include "sherpa-onnx/csrc/offline-recognizer-impl.h"
 #include "sherpa-onnx/csrc/offline-recognizer.h"
@@ -99,6 +100,8 @@ class OfflineRecognizerParaformerTplImpl : public OfflineRecognizerImpl {
         break;
       }
       r.tokens.push_back(max_idx);
+      r.ys_log_probs.push_back(
+          ComputeLogSoftmaxScore(p, vocab_size, static_cast<int32_t>(max_idx)));
       p += vocab_size;
     }
 

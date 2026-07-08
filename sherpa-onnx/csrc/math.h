@@ -91,6 +91,22 @@ void LogSoftmax(T *input, int32_t input_len) {
   }
 }
 
+template <class T>
+T ComputeLogSoftmaxScore(const T *input, int32_t input_len, int32_t index) {
+  assert(input);
+  assert(index >= 0 && index < input_len);
+
+  T m = *std::max_element(input, input + input_len);
+
+  T sum = 0.0;
+  for (int32_t i = 0; i < input_len; ++i) {
+    sum += exp(input[i] - m);
+  }
+
+  T offset = m + log(sum);
+  return input[index] - offset;
+}
+
 template <typename T>
 void LogSoftmax(T *in, int32_t w, int32_t h) {
   for (int32_t i = 0; i != h; ++i) {
