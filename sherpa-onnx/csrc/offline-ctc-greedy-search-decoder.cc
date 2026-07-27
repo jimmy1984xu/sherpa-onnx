@@ -42,6 +42,7 @@ std::vector<OfflineCtcDecoderResult> OfflineCtcGreedySearchDecoder::Decode(
       if (y != blank_id_ && y != prev_id) {
         r.tokens.push_back(y);
         r.timestamps.push_back(t);
+        r.ys_log_probs.push_back(p_log_probs[y]);
       }
       prev_id = y;
     }  // for (int32_t t = 0; ...)

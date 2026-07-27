@@ -30,6 +30,11 @@ OfflineRecognitionResult Convert(const OfflineCtcDecoderResult &src,
   OfflineRecognitionResult r;
   r.tokens.reserve(src.tokens.size());
   r.timestamps.reserve(src.timestamps.size());
+  const bool has_token_log_probs =
+      src.ys_log_probs.size() == src.tokens.size();
+  if (has_token_log_probs) {
+    r.ys_log_probs.reserve(src.ys_log_probs.size());
+  }
 
   std::string text;
 
@@ -57,6 +62,9 @@ OfflineRecognitionResult Convert(const OfflineCtcDecoderResult &src,
     }
 
     r.tokens.push_back(std::move(sym));
+    if (has_token_log_probs) {
+      r.ys_log_probs.push_back(src.ys_log_probs[i]);
+    }
   }
 
   if (sym_table.IsByteBpe()) {
