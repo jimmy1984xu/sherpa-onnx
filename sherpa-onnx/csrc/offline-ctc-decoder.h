@@ -26,6 +26,10 @@ struct OfflineCtcDecoderResult {
   ///
   /// tokens.size() == timestamps.size()
   std::vector<int32_t> timestamps;
+
+  /// ys_log_probs[i] contains the log probability for tokens[i].
+  /// It is empty when the decoder cannot provide token probabilities.
+  std::vector<float> ys_log_probs;
 };
 
 class OfflineCtcDecoder {
