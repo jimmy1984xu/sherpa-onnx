@@ -12,6 +12,7 @@
 #include "sherpa-onnx/csrc/context-graph.h"
 #include "sherpa-onnx/csrc/hypothesis.h"
 #include "sherpa-onnx/csrc/log.h"
+#include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
 #include "sherpa-onnx/csrc/packed-sequence.h"
 #include "sherpa-onnx/csrc/slice.h"
@@ -353,6 +354,14 @@ OfflineTransducerModifiedBeamSearchNeMoDecoder::Decode(
                   new_hyp.context_state, token, false);
               context_score = std::get<0>(context_res);
               new_hyp.context_state = std::get<1>(context_res);
+              const auto *matched_node = std::get<2>(context_res);
+              if (matched_node != nullptr) {
+                SHERPA_ONNX_LOGE(
+                    "[debug] Parakeet hotword candidate matched: level=%d, "
+                    "bonus=%.2f, phrase='%s'",
+                    matched_node->level, context_score,
+                    matched_node->phrase.c_str());
+              }
             }
             new_hyp.log_prob += context_score;
           }

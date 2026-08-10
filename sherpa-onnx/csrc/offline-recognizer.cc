@@ -70,15 +70,17 @@ void OfflineRecognizerConfig::Register(ParseOptions *po) {
 }
 
 bool OfflineRecognizerConfig::Validate() const {
-  if (decoding_method == "modified_beam_search" && !lm_config.model.empty()) {
+  if (decoding_method == "modified_beam_search") {
     if (max_active_paths <= 0) {
-      SHERPA_ONNX_LOGE("max_active_paths is less than 0! Given: %d",
+      SHERPA_ONNX_LOGE("max_active_paths must be positive! Given: %d",
                        max_active_paths);
       return false;
     }
-    if (!lm_config.Validate()) {
-      return false;
-    }
+  }
+
+  if (decoding_method == "modified_beam_search" && !lm_config.model.empty() &&
+      !lm_config.Validate()) {
+    return false;
   }
 
   if (!hotwords_file.empty() && decoding_method != "modified_beam_search") {
@@ -98,6 +100,17 @@ bool OfflineRecognizerConfig::Validate() const {
   if (!hotwords_file.empty() && !FileExists(hotwords_file)) {
     SHERPA_ONNX_LOGE("--hotwords-file: '%s' does not exist",
                      hotwords_file.c_str());
+    return false;
+  }
+
+  if (!hotwords_file.empty() && model_config.bpe_vocab.empty() &&
+      (model_config.modeling_unit == "bpe" ||
+       model_config.modeling_unit == "bbpe" ||
+       model_config.modeling_unit == "cjkchar+bpe")) {
+    SHERPA_ONNX_LOGE(
+        "--bpe-vocab is required when --hotwords-file is used with "
+        "--modeling-unit=%s",
+        model_config.modeling_unit.c_str());
     return false;
   }
 
