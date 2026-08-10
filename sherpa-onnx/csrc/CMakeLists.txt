@@ -58,6 +58,8 @@ set(sources
   offline-omnilingual-asr-ctc-model-config.cc
   offline-omnilingual-asr-ctc-model.cc
   offline-paraformer-greedy-search-decoder.cc
+  offline-paraformer-hotwords.cc
+  offline-paraformer-modified-beam-search-decoder.cc
   offline-paraformer-model-config.cc
   offline-paraformer-model.cc
   offline-recognizer-impl.cc

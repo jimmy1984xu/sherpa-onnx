@@ -6,7 +6,9 @@
 #define SHERPA_ONNX_CSRC_OFFLINE_RECOGNIZER_PARAFORMER_IMPL_H_
 
 #include <algorithm>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -16,11 +18,16 @@
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/offline-paraformer-decoder.h"
 #include "sherpa-onnx/csrc/offline-paraformer-greedy-search-decoder.h"
+#include "sherpa-onnx/csrc/offline-paraformer-hotwords.h"
+#include "sherpa-onnx/csrc/offline-paraformer-modified-beam-search-decoder.h"
 #include "sherpa-onnx/csrc/offline-paraformer-model.h"
 #include "sherpa-onnx/csrc/offline-recognizer-impl.h"
 #include "sherpa-onnx/csrc/offline-recognizer.h"
+#include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/pad-sequence.h"
 #include "sherpa-onnx/csrc/symbol-table.h"
+#include "sherpa-onnx/csrc/utils.h"
+#include "ssentencepiece/csrc/ssentencepiece.h"
 
 namespace sherpa_onnx {
 
@@ -91,12 +98,20 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
         config_(config),
         symbol_table_(config_.model_config.tokens),
         model_(std::make_unique<OfflineParaformerModel>(config.model_config)) {
-    if (config.decoding_method == "greedy_search") {
+    if (config_.decoding_method == "greedy_search") {
       int32_t eos_id = symbol_table_["</s>"];
       decoder_ = std::make_unique<OfflineParaformerGreedySearchDecoder>(eos_id);
+    } else if (config_.decoding_method == "modified_beam_search") {
+      InitBpeEncoder();
+      if (!config_.hotwords_file.empty()) {
+        InitHotwords();
+      }
+      decoder_ = std::make_unique<OfflineParaformerModifiedBeamSearchDecoder>(
+          symbol_table_["</s>"], config_.max_active_paths, hotwords_graph_);
     } else {
-      SHERPA_ONNX_LOGE("Only greedy_search is supported at present. Given %s",
-                       config.decoding_method.c_str());
+      SHERPA_ONNX_LOGE(
+          "Only greedy_search and modified_beam_search are supported. Given %s",
+          config.decoding_method.c_str());
       SHERPA_ONNX_EXIT(-1);
     }
 
@@ -111,12 +126,20 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
         symbol_table_(mgr, config_.model_config.tokens),
         model_(std::make_unique<OfflineParaformerModel>(mgr,
                                                         config.model_config)) {
-    if (config.decoding_method == "greedy_search") {
+    if (config_.decoding_method == "greedy_search") {
       int32_t eos_id = symbol_table_["</s>"];
       decoder_ = std::make_unique<OfflineParaformerGreedySearchDecoder>(eos_id);
+    } else if (config_.decoding_method == "modified_beam_search") {
+      InitBpeEncoder(mgr);
+      if (!config_.hotwords_file.empty()) {
+        InitHotwords(mgr);
+      }
+      decoder_ = std::make_unique<OfflineParaformerModifiedBeamSearchDecoder>(
+          symbol_table_["</s>"], config_.max_active_paths, hotwords_graph_);
     } else {
-      SHERPA_ONNX_LOGE("Only greedy_search is supported at present. Given %s",
-                       config.decoding_method.c_str());
+      SHERPA_ONNX_LOGE(
+          "Only greedy_search and modified_beam_search are supported. Given %s",
+          config.decoding_method.c_str());
       SHERPA_ONNX_EXIT(-1);
     }
 
@@ -208,6 +231,60 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
   OfflineRecognizerConfig GetConfig() const override { return config_; }
 
  private:
+  void InitBpeEncoder() {
+    if (!config_.model_config.bpe_vocab.empty()) {
+      bpe_encoder_ = std::make_unique<ssentencepiece::Ssentencepiece>(
+          config_.model_config.bpe_vocab);
+    }
+  }
+
+  template <typename Manager>
+  void InitBpeEncoder(Manager *mgr) {
+    if (!config_.model_config.bpe_vocab.empty()) {
+      auto buf = ReadFile(mgr, config_.model_config.bpe_vocab);
+      std::istringstream is(std::string(buf.begin(), buf.end()));
+      bpe_encoder_ = std::make_unique<ssentencepiece::Ssentencepiece>(is);
+    }
+  }
+
+  void InitHotwords() {
+    std::ifstream is(config_.hotwords_file);
+    if (!is) {
+      SHERPA_ONNX_LOGE("Open hotwords file failed: '%s'",
+                       config_.hotwords_file.c_str());
+      SHERPA_ONNX_EXIT(-1);
+    }
+
+    if (!EncodeParaformerHotwords(is, config_.model_config.tokens,
+                                  symbol_table_, &hotwords_,
+                                  &boost_scores_)) {
+      SHERPA_ONNX_LOGE(
+          "Some hotwords failed to encode and were skipped. See above for "
+          "details.");
+    }
+    hotwords_graph_ = std::make_shared<ContextGraph>(
+        hotwords_, config_.hotwords_score, boost_scores_);
+  }
+
+  template <typename Manager>
+  void InitHotwords(Manager *mgr) {
+    auto buf = ReadFile(mgr, config_.hotwords_file);
+    std::istringstream is(std::string(buf.begin(), buf.end()));
+    auto seg_dict_buf =
+        ReadFile(mgr, GetParaformerSegDictPath(config_.model_config.tokens));
+    std::istringstream seg_dict_stream(
+        std::string(seg_dict_buf.begin(), seg_dict_buf.end()));
+
+    if (!EncodeParaformerHotwords(is, seg_dict_stream, symbol_table_, &hotwords_,
+                                  &boost_scores_)) {
+      SHERPA_ONNX_LOGE(
+          "Some hotwords failed to encode and were skipped. See above for "
+          "details.");
+    }
+    hotwords_graph_ = std::make_shared<ContextGraph>(
+        hotwords_, config_.hotwords_score, boost_scores_);
+  }
+
   void InitFeatConfig() {
     // Paraformer models assume input samples are in the range
     // [-32768, 32767], so we set normalize_samples to false
@@ -261,6 +338,10 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
 
   OfflineRecognizerConfig config_;
   SymbolTable symbol_table_;
+  std::vector<std::vector<int32_t>> hotwords_;
+  std::vector<float> boost_scores_;
+  ContextGraphPtr hotwords_graph_;
+  std::unique_ptr<ssentencepiece::Ssentencepiece> bpe_encoder_;
   std::unique_ptr<OfflineParaformerModel> model_;
   std::unique_ptr<OfflineParaformerDecoder> decoder_;
 };
