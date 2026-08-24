@@ -1396,6 +1396,8 @@ static sherpa_onnx::VadModelConfig GetVadModelConfig(
       SHERPA_ONNX_OR(config->ten_vad.max_speech_duration, 20);
 
   vad_config.sample_rate = SHERPA_ONNX_OR(config->sample_rate, 16000);
+  vad_config.pre_speech_pad_duration =
+      SHERPA_ONNX_OR(config->pre_speech_pad_duration, 0.0f);
   vad_config.num_threads = SHERPA_ONNX_OR(config->num_threads, 1);
   vad_config.provider = SHERPA_ONNX_OR(config->provider, "cpu");
   if (vad_config.provider.empty()) {

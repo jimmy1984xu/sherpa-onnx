@@ -69,6 +69,7 @@ std::string VadModelConfig::ToString() const {
   os << "silero_vad=" << silero_vad.ToString() << ", ";
   os << "ten_vad=" << ten_vad.ToString() << ", ";
   os << "sample_rate=" << sample_rate << ", ";
+  os << "pre_speech_pad_duration=" << pre_speech_pad_duration << ", ";
   os << "num_threads=" << num_threads << ", ";
   os << "provider=\"" << provider << "\", ";
   os << "debug=" << (debug ? "True" : "False") << ")";

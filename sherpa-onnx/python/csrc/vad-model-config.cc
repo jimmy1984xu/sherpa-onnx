@@ -20,14 +20,17 @@ void PybindVadModelConfig(py::module *m) {
   py::class_<PyClass>(*m, "VadModelConfig")
       .def(py::init<>())
       .def(py::init<const SileroVadModelConfig &, const TenVadModelConfig &,
-                    int32_t, int32_t, const std::string &, bool>(),
+                    int32_t, int32_t, const std::string &, bool, float>(),
            py::arg("silero_vad") = SileroVadModelConfig{},
            py::arg("ten_vad") = TenVadModelConfig{},
            py::arg("sample_rate") = 16000, py::arg("num_threads") = 1,
-           py::arg("provider") = "cpu", py::arg("debug") = false)
+           py::arg("provider") = "cpu", py::arg("debug") = false,
+           py::arg("pre_speech_pad_duration") = 0.0f)
       .def_readwrite("silero_vad", &PyClass::silero_vad)
       .def_readwrite("ten_vad", &PyClass::ten_vad)
       .def_readwrite("sample_rate", &PyClass::sample_rate)
+      .def_readwrite("pre_speech_pad_duration",
+                     &PyClass::pre_speech_pad_duration)
       .def_readwrite("num_threads", &PyClass::num_threads)
       .def_readwrite("provider", &PyClass::provider)
       .def_readwrite("debug", &PyClass::debug)

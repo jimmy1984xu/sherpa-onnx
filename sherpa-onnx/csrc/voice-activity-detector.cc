@@ -5,6 +5,7 @@
 #include "sherpa-onnx/csrc/voice-activity-detector.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <queue>
 #include <utility>
@@ -96,9 +97,7 @@ class VoiceActivityDetector::Impl {
     if (is_speech) {
       if (start_ == -1) {
         // beginning of speech
-        start_ = std::max(buffer_.Tail() - 2 * model_->WindowSize() -
-                              model_->MinSpeechDurationSamples(),
-                          buffer_.Head());
+        start_ = ComputeSpeechStart();
         cur_segment_.start = start_;
       }
       int32_t num_samples = buffer_.Tail() - start_ - 1;
@@ -121,12 +120,13 @@ class VoiceActivityDetector::Impl {
 
         segments_.push(std::move(segment));
 
+        last_segment_end_ = end;
+
         buffer_.Pop(end - buffer_.Head());
       }
 
       if (start_ == -1) {
-        int32_t end = buffer_.Tail() - 2 * model_->WindowSize() -
-                      model_->MinSpeechDurationSamples();
+        int32_t end = ComputeSpeechStart();
         int32_t n = std::max(0, end - buffer_.Head());
         if (n > 0) {
           buffer_.Pop(n);
@@ -167,6 +167,7 @@ class VoiceActivityDetector::Impl {
 
     cur_segment_.start = -1;
     cur_segment_.samples.clear();
+    last_segment_end_ = 0;
   }
 
   void Flush() {
@@ -193,6 +194,7 @@ class VoiceActivityDetector::Impl {
 
     cur_segment_.start = -1;
     cur_segment_.samples.clear();
+    last_segment_end_ = end;
   }
 
   bool IsSpeechDetected() const { return start_ != -1; }
@@ -254,6 +256,22 @@ class VoiceActivityDetector::Impl {
   const VadModelConfig &GetConfig() const { return config_; }
 
  private:
+  int32_t ComputeSpeechStart() const {
+    int64_t pad_samples = 2LL * model_->WindowSize();
+    if (config_.pre_speech_pad_duration > 0 && config_.sample_rate > 0) {
+      pad_samples = static_cast<int64_t>(
+          config_.pre_speech_pad_duration *
+          static_cast<float>(config_.sample_rate));
+    }
+
+    int64_t candidate = static_cast<int64_t>(buffer_.Tail()) - pad_samples -
+                        model_->MinSpeechDurationSamples();
+    int64_t lower_bound =
+        std::max(static_cast<int64_t>(buffer_.Head()),
+                 static_cast<int64_t>(last_segment_end_));
+    return static_cast<int32_t>(std::max(lower_bound, candidate));
+  }
+
   void Init() {
     if (!config_.silero_vad.model.empty()) {
       max_utterance_length_ =
@@ -284,6 +302,7 @@ class VoiceActivityDetector::Impl {
   float new_threshold_ = 0.90;
 
   int32_t start_ = -1;
+  int32_t last_segment_end_ = 0;
 };
 
 VoiceActivityDetector::VoiceActivityDetector(
