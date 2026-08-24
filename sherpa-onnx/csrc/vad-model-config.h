@@ -17,6 +17,11 @@ struct VadModelConfig {
   TenVadModelConfig ten_vad;
 
   int32_t sample_rate = 16000;
+
+  // Extra look-back before a detected speech segment, in seconds. A value
+  // <= 0 keeps the legacy 2 * model window padding.
+  float pre_speech_pad_duration = 0;
+
   int32_t num_threads = 1;
   std::string provider = "cpu";
 
@@ -27,10 +32,12 @@ struct VadModelConfig {
 
   VadModelConfig(const SileroVadModelConfig &silero_vad,
                  const TenVadModelConfig &ten_vad, int32_t sample_rate,
-                 int32_t num_threads, const std::string &provider, bool debug)
+                 int32_t num_threads, const std::string &provider, bool debug,
+                 float pre_speech_pad_duration = 0)
       : silero_vad(silero_vad),
         ten_vad(ten_vad),
         sample_rate(sample_rate),
+        pre_speech_pad_duration(pre_speech_pad_duration),
         num_threads(num_threads),
         provider(provider),
         debug(debug) {}

@@ -1920,6 +1920,7 @@ typedef struct SherpaOnnxTenVadModelConfig {
  * config.silero_vad.window_size = 512;
  *
  * config.sample_rate = 16000;
+ * config.pre_speech_pad_duration = 0.3f;
  * config.num_threads = 1;
  * config.provider = "cpu";
  * config.debug = 0;
@@ -1938,6 +1939,8 @@ typedef struct SherpaOnnxVadModelConfig {
   int32_t debug;
   /** Ten VAD configuration. */
   SherpaOnnxTenVadModelConfig ten_vad;
+  /** Extra audio to retain before speech, in seconds. <= 0 keeps the default. */
+  float pre_speech_pad_duration;
 } SherpaOnnxVadModelConfig;
 
 /** @brief Opaque circular-buffer handle used by helper APIs. */
