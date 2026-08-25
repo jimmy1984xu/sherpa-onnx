@@ -255,6 +255,10 @@ static SherpaOnnxOfflineRecognizerConfig Convert(
 
   c.model_config.paraformer.model =
       config.model_config.paraformer.model.c_str();
+  c.model_config.paraformer.hw_compiler =
+      config.model_config.paraformer.hw_compiler.c_str();
+  c.model_config.paraformer.seg_dict =
+      config.model_config.paraformer.seg_dict.c_str();
 
   c.model_config.nemo_ctc.model = config.model_config.nemo_ctc.model.c_str();
 

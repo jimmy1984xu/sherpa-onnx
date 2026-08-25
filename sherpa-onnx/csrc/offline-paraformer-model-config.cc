@@ -22,9 +22,13 @@ void OfflineParaformerModelConfig::Register(ParseOptions *po) {
       "If you use RK NPU, it is "
       "/path/to/encoder.rknn,/path/to/predictor.rknn,/path/to/decoder.rknn");
 
-  std::string prefix = "paraformer";
-  ParseOptions p(prefix, po);
+  // Keep these two Paraformer extensions at the top level for compatibility
+  // with the existing offline command line: --segdict and --hwcompiler.
+  po->Register("segdict", &seg_dict, "");
+  po->Register("hwcompiler", &hw_compiler, "");
 
+  // QNN options retain the paraformer.qnn-* prefix used by the public API.
+  ParseOptions p("paraformer", po);
   qnn_config.Register(&p);
 }
 

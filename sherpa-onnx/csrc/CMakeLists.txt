@@ -58,6 +58,7 @@ set(sources
   offline-omnilingual-asr-ctc-model-config.cc
   offline-omnilingual-asr-ctc-model.cc
   offline-paraformer-greedy-search-decoder.cc
+  offline-paraformer-beam-search-decoder.cc
   offline-paraformer-model-config.cc
   offline-paraformer-model.cc
   offline-recognizer-impl.cc
@@ -250,7 +251,9 @@ if(SHERPA_ONNX_ENABLE_QNN)
   list(APPEND sources
     ./qnn/offline-sense-voice-model-qnn.cc
     ./qnn/offline-paraformer-model-qnn.cc
+    ./qnn/offline-zipformer-transducer-model-qnn.cc
     ./qnn/offline-zipformer-ctc-model-qnn.cc
+    ./qnn/online-zipformer-transducer-model-qnn.cc
     ./qnn/qnn-backend.cc
     ./qnn/qnn-model.cc
     ./qnn/utils.cc
@@ -811,6 +814,7 @@ if(SHERPA_ONNX_ENABLE_TESTS)
     circular-buffer-test.cc
     context-graph-test.cc
     math-test.cc
+    offline-paraformer-beam-search-decoder-test.cc
     offline-whisper-timestamp-rules-test.cc
     packed-sequence-test.cc
     pad-sequence-test.cc
