@@ -514,6 +514,11 @@ class OfflineRecognizer(object):
         hr_dict_dir: str = "",
         hr_rule_fsts: str = "",
         hr_lexicon: str = "",
+        hotwords_file: str = "",
+        hotwords_score: float = 1.5,
+        max_active_paths: int = 4,
+        seg_dict: str = "",
+        hw_compiler: str = "",
     ):
         """
         Please refer to
@@ -536,7 +541,17 @@ class OfflineRecognizer(object):
           feature_dim:
             Dimension of the feature used to train the model.
           decoding_method:
-            Valid values are greedy_search.
+            Valid values are ``greedy_search`` and ``modified_beam_search``.
+          hotwords_file:
+            Optional hotword file, one phrase per line.
+          hotwords_score:
+            Default bonus score used by modified beam search.
+          max_active_paths:
+            Beam width used by modified beam search.
+          seg_dict:
+            Optional Paraformer hotword segmentation dictionary.
+          hw_compiler:
+            Optional SeACo/Paraformer hotword compiler ONNX model.
           debug:
             True to show debug messages.
           provider:
@@ -549,8 +564,11 @@ class OfflineRecognizer(object):
             If there are multiple archives, they are separated by a comma.
         """
         self = cls.__new__(cls)
+        paraformer_config = OfflineParaformerModelConfig(model=paraformer)
+        paraformer_config.seg_dict = seg_dict
+        paraformer_config.hw_compiler = hw_compiler
         model_config = OfflineModelConfig(
-            paraformer=OfflineParaformerModelConfig(model=paraformer),
+            paraformer=paraformer_config,
             tokens=tokens,
             num_threads=num_threads,
             debug=debug,
@@ -567,6 +585,9 @@ class OfflineRecognizer(object):
             feat_config=feat_config,
             model_config=model_config,
             decoding_method=decoding_method,
+            max_active_paths=max_active_paths,
+            hotwords_file=hotwords_file,
+            hotwords_score=hotwords_score,
             rule_fsts=rule_fsts,
             rule_fars=rule_fars,
             hr=HomophoneReplacerConfig(

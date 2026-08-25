@@ -23,6 +23,8 @@ struct OfflineParaformerModelConfig {
   // model is
   // "/path/to/libencoder.so,/path/to/libpredictor.so,/path/to/libdecoder.so"
   std::string model;
+  std::string hw_compiler;
+  std::string seg_dict;
 
   QnnConfig qnn_config;
 

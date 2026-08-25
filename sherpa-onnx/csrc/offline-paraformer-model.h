@@ -39,6 +39,13 @@ class OfflineParaformerModel {
    */
   std::vector<Ort::Value> Forward(Ort::Value features,
                                   Ort::Value features_length);
+  std::vector<Ort::Value> Forward(std::vector<Ort::Value> inputs);
+
+  /** Return true if the model requires a bias embedding input. */
+  bool HasBiasEmbedInput() const;
+
+  /** Return the embedding dimension of the bias embedding input. */
+  int32_t BiasEmbedDim() const;
 
   /** Return the vocabulary size of the model
    */
