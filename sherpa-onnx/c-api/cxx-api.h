@@ -435,6 +435,10 @@ struct OfflineTransducerModelConfig {
 struct OfflineParaformerModelConfig {
   /** Model ONNX file. */
   std::string model;
+  /** Optional SeACo/Paraformer hotword compiler model. */
+  std::string hw_compiler;
+  /** Optional Paraformer segmentation dictionary for hotwords. */
+  std::string seg_dict;
 };
 
 /** @brief Offline NeMo EncDec CTC model file. */

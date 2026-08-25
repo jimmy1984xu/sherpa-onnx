@@ -537,6 +537,10 @@ static sherpa_onnx::OfflineRecognizerConfig GetOfflineRecognizerConfig(
 
   recognizer_config.model_config.paraformer.model =
       SHERPA_ONNX_OR(config->model_config.paraformer.model, "");
+  recognizer_config.model_config.paraformer.hw_compiler =
+      SHERPA_ONNX_OR(config->model_config.paraformer.hw_compiler, "");
+  recognizer_config.model_config.paraformer.seg_dict =
+      SHERPA_ONNX_OR(config->model_config.paraformer.seg_dict, "");
 
   recognizer_config.model_config.nemo_ctc.model =
       SHERPA_ONNX_OR(config->model_config.nemo_ctc.model, "");

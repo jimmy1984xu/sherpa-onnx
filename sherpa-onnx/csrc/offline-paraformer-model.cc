@@ -58,12 +58,49 @@ class OfflineParaformerModel::Impl {
     return sess_->Run({}, input_names_ptr_.data(), inputs.data(), inputs.size(),
                       output_names_ptr_.data(), output_names_ptr_.size());
   }
+std::vector<Ort::Value> Forward(
+    std::vector<Ort::Value> inputs) const {
+  if (inputs.size() == 2) {
+    // 原两输入：feats, feats_len
+    const char* input_names[] = {input_names_[0].c_str(), input_names_[1].c_str()};
+    const char* output_names[] = {output_names_[0].c_str(), output_names_[1].c_str()};
+    return sess_->Run(Ort::RunOptions{nullptr},
+                      input_names, inputs.data(), inputs.size(),
+                      output_names, 2);
+  } else if (inputs.size() == 3) {
+    // 三输入：feats, feats_len, hw_emb
+    if (input_names_.size() < 3) {
+      SHERPA_ONNX_LOGE("Model only has %zu inputs, cannot accept 3.", input_names_.size());
+      return {};
+    }
+    const char* input_names[] = {
+        input_names_[0].c_str(),
+        input_names_[1].c_str(),
+        input_names_[2].c_str()
+    };
+    // 输出只取前两个（logits, logits_len），忽略 timestamp 等
+    const char* output_names[] = {
+        output_names_[0].c_str(),
+        output_names_[1].c_str()
+    };
+    return sess_->Run(Ort::RunOptions{nullptr},
+                      input_names, inputs.data(), inputs.size(),
+                      output_names, 2);
+  } else {
+    SHERPA_ONNX_LOGE("Unsupported inputs count: %zu", inputs.size());
+    return {};
+  }
+}
 
   int32_t VocabSize() const { return vocab_size_; }
 
   int32_t LfrWindowSize() const { return lfr_window_size_; }
 
   int32_t LfrWindowShift() const { return lfr_window_shift_; }
+
+  bool HasBiasEmbedInput() const { return has_bias_embed_input_; }
+
+  int32_t BiasEmbedDim() const { return bias_embed_dim_; }
 
   const std::vector<float> &NegativeMean() const { return neg_mean_; }
 
@@ -84,6 +121,25 @@ class OfflineParaformerModel::Impl {
     }
 
     GetInputNames(sess_.get(), &input_names_, &input_names_ptr_);
+
+    for (size_t i = 0; i < input_names_.size(); ++i) {
+      if (input_names_[i] != "bias_embed") {
+        continue;
+      }
+
+      has_bias_embed_input_ = true;
+
+      auto type_info = sess_->GetInputTypeInfo(i).GetTensorTypeAndShapeInfo();
+      auto shape = type_info.GetShape();
+      if (shape.size() == 3 && shape[2] > 0) {
+        bias_embed_dim_ = static_cast<int32_t>(shape[2]);
+      } else {
+        SHERPA_ONNX_LOGE(
+            "bias_embed shape is dynamic; its embedding dimension will be "
+            "resolved by the recognizer.");
+      }
+      break;
+    }
 
     GetOutputNames(sess_.get(), &output_names_, &output_names_ptr_);
 
@@ -128,6 +184,8 @@ class OfflineParaformerModel::Impl {
   int32_t vocab_size_ = 0;  // initialized in Init
   int32_t lfr_window_size_ = 0;
   int32_t lfr_window_shift_ = 0;
+  int32_t bias_embed_dim_ = 0;
+  bool has_bias_embed_input_ = false;
 };
 
 OfflineParaformerModel::OfflineParaformerModel(const OfflineModelConfig &config)
@@ -143,6 +201,17 @@ OfflineParaformerModel::~OfflineParaformerModel() = default;
 std::vector<Ort::Value> OfflineParaformerModel::Forward(
     Ort::Value features, Ort::Value features_length) {
   return impl_->Forward(std::move(features), std::move(features_length));
+}
+std::vector<Ort::Value> OfflineParaformerModel::Forward(std::vector<Ort::Value> inputs) {
+  return impl_->Forward(std::move(inputs));
+}
+
+bool OfflineParaformerModel::HasBiasEmbedInput() const {
+  return impl_->HasBiasEmbedInput();
+}
+
+int32_t OfflineParaformerModel::BiasEmbedDim() const {
+  return impl_->BiasEmbedDim();
 }
 
 int32_t OfflineParaformerModel::VocabSize() const { return impl_->VocabSize(); }

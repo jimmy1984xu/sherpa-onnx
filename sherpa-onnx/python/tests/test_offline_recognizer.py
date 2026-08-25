@@ -48,6 +48,14 @@ def read_wave(wave_filename: str) -> Tuple[np.ndarray, int]:
 
 
 class TestOfflineRecognizer(unittest.TestCase):
+    def test_paraformer_hotword_config(self):
+        config = sherpa_onnx.OfflineParaformerModelConfig(model="model.onnx")
+        config.seg_dict = "seg_dict.txt"
+        config.hw_compiler = "hotword_compiler.onnx"
+        self.assertEqual(config.model, "model.onnx")
+        self.assertEqual(config.seg_dict, "seg_dict.txt")
+        self.assertEqual(config.hw_compiler, "hotword_compiler.onnx")
+
     def test_transducer_single_file(self):
         for use_int8 in [True, False]:
             if use_int8:
