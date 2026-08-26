@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <queue>
 #include <tuple>
 #include <utility>
@@ -17,43 +16,28 @@ namespace sherpa_onnx {
 
 namespace {
 
-// 对 logits 做 log_softmax，返回 (T, vocab) 的 log 概率矩阵
-std::vector<std::vector<float>> LogSoftmax(const Ort::Value& logits) {
-  auto info = logits.GetTensorTypeAndShapeInfo();
-  auto shape = info.GetShape();
-  int64_t T = shape[0];
-  int64_t vocab = shape[1];
+// A beam entry stores only the token emitted at this frame and its parent.
+// Keeping parent indices avoids copying the complete prefix for every vocab
+// candidate. The selected path is reconstructed after the final frame.
+struct BeamEntry {
+  float score = 0.0f;
+  float acoustic_log_prob = 0.0f;
+  const ContextState* graph_state = nullptr;
+  int32_t parent_index = -1;
+  int64_t token = -1;
+  uint64_t order = 0;
+};
 
-  const float* data = logits.GetTensorData<float>();
-  std::vector<std::vector<float>> log_probs(T, std::vector<float>(vocab));
-
-  for (int64_t t = 0; t < T; ++t) {
-    const float* row = data + t * vocab;
-    float max_val = *std::max_element(row, row + vocab);
-    float sum = 0.0f;
-    for (int64_t v = 0; v < vocab; ++v) {
-      sum += std::exp(row[v] - max_val);
-    }
-    float log_sum = std::log(sum) + max_val;
-    for (int64_t v = 0; v < vocab; ++v) {
-      log_probs[t][v] = row[v] - log_sum;
-    }
-  }
-  return log_probs;
+bool IsBetter(const BeamEntry& lhs, const BeamEntry& rhs) {
+  if (lhs.score != rhs.score) return lhs.score > rhs.score;
+  return lhs.order < rhs.order;
 }
 
-// Beam 条目，使用 const ContextState* 存储当前热词图状态
-struct BeamEntry {
-  std::vector<int64_t> tokens;          // 已输出的 token ID 序列
-  float score;                          // 累积 log 概率 + 热词偏置
-  const ContextState* graph_state;      // 当前热词图状态（nullptr 表示无图）
-
-  BeamEntry(const std::vector<int64_t>& tok, float s, const ContextState* gs)
-      : tokens(tok), score(s), graph_state(gs) {}
-
-  // 按分数降序（用于优先队列）
-  bool operator<(const BeamEntry& other) const {
-    return score < other.score;
+// priority_queue::top() is the worst retained candidate, so replacement is
+// O(log K) and the queue never grows to K * vocab_size entries.
+struct WorseFirst {
+  bool operator()(const BeamEntry& lhs, const BeamEntry& rhs) const {
+    return IsBetter(lhs, rhs);
   }
 };
 
@@ -143,36 +127,39 @@ OfflineParaformerBeamSearchDecoder::Decode(
 
     const float* utt_logits = logits.GetTensorData<float>() + b * T_max * vocab_size;
 
-    // 计算 log softmax per frame (只计算有效长度)
-    std::vector<std::vector<float>> frame_log_probs(T, std::vector<float>(vocab_size));
-    for (int64_t t = 0; t < T; ++t) {
-      const float* row = utt_logits + t * vocab_size;
-      float max_val = *std::max_element(row, row + vocab_size);
-      float sum = 0.0f;
-      for (int64_t v = 0; v < vocab_size; ++v) {
-        sum += std::exp(row[v] - max_val);
-      }
-      float log_sum = std::log(sum) + max_val;
-      for (int64_t v = 0; v < vocab_size; ++v) {
-        frame_log_probs[t][v] = row[v] - log_sum;
-      }
-    }
-
     // 获取热词图
     ContextGraphPtr graph = nullptr;
     if (ss && ss[b]) graph = ss[b]->GetContextGraph();
+    // CreateStream() may provide an empty graph when no hotwords are active.
+    // Treat it as no graph so the hotword transition lookup is removed from
+    // the innermost vocab loop.
+    if (graph && graph->Root()->next.empty()) graph.reset();
 
     // 初始化 beam
     const ContextState* start_state = graph ? graph->Root() : nullptr;
     std::vector<BeamEntry> beam;
-    beam.emplace_back(std::vector<int64_t>(), 0.0f, start_state);
+    beam.push_back(BeamEntry{0.0f, 0.0f, start_state, -1, -1, 0});
+    std::vector<std::vector<BeamEntry>> history;
+    history.reserve(T);
+    const int32_t beam_size = std::max<int32_t>(1, max_active_paths_);
+    uint64_t order = 1;
 
     for (int64_t t = 0; t < T; ++t) {
-      std::priority_queue<BeamEntry> new_beam_queue;
-      const auto& frame_probs = frame_log_probs[t];
-      for (const auto& entry : beam) {
+      const float* row = utt_logits + t * vocab_size;
+      const float max_val = *std::max_element(row, row + vocab_size);
+      float sum = 0.0f;
+      for (int64_t v = 0; v < vocab_size; ++v) {
+        sum += std::exp(row[v] - max_val);
+      }
+      const float log_sum = std::log(sum) + max_val;
+      std::priority_queue<BeamEntry, std::vector<BeamEntry>, WorseFirst>
+          new_beam_queue;
+      for (int32_t parent = 0; parent < static_cast<int32_t>(beam.size());
+           ++parent) {
+        const auto& entry = beam[parent];
         for (int64_t v = 0; v < vocab_size; ++v) {
-          float score = entry.score + frame_probs[v];
+          const float acoustic_log_prob = row[v] - log_sum;
+          float score = entry.score + acoustic_log_prob;
           const ContextState* next_state = entry.graph_state;
           if (graph && entry.graph_state) {
             float fw_score = 0.0f;
@@ -183,35 +170,47 @@ OfflineParaformerBeamSearchDecoder::Decode(
           } else {
             next_state = entry.graph_state;
           }
-          std::vector<int64_t> new_tokens = entry.tokens;
-          new_tokens.push_back(v);
-          new_beam_queue.emplace(new_tokens, score, next_state);
+          BeamEntry candidate{score, acoustic_log_prob, next_state, parent, v,
+                              order++};
+          if (new_beam_queue.size() < static_cast<size_t>(beam_size)) {
+            new_beam_queue.push(std::move(candidate));
+          } else if (IsBetter(candidate, new_beam_queue.top())) {
+            new_beam_queue.pop();
+            new_beam_queue.push(std::move(candidate));
+          }
         }
       }
-      // 裁剪 beam
-      beam.clear();
-      int kept = 0;
-      while (!new_beam_queue.empty() && kept < max_active_paths_) {
-        beam.push_back(new_beam_queue.top());
+      std::vector<BeamEntry> next_beam;
+      next_beam.reserve(new_beam_queue.size());
+      while (!new_beam_queue.empty()) {
+        next_beam.push_back(std::move(new_beam_queue.top()));
         new_beam_queue.pop();
-        ++kept;
       }
+      std::sort(next_beam.begin(), next_beam.end(), IsBetter);
+      history.push_back(next_beam);
+      beam = std::move(next_beam);
     }
 
     // 选择最佳路径
     if (!beam.empty()) {
-      auto best = std::max_element(beam.begin(), beam.end(),
-          [](const BeamEntry& a, const BeamEntry& b) { return a.score < b.score; });
+      std::vector<std::pair<int64_t, float>> reversed_path;
+      reversed_path.reserve(T);
+      int32_t path_index = 0;  // next_beam is sorted from best to worst
+      for (int64_t t = T - 1; t >= 0; --t) {
+        const auto& entry = history[t][path_index];
+        reversed_path.emplace_back(entry.token, entry.acoustic_log_prob);
+        path_index = entry.parent_index;
+      }
+      std::reverse(reversed_path.begin(), reversed_path.end());
       // The beam score includes ContextGraph hotword bonuses, so confidence
       // must come from the acoustic log probability for each selected token.
       // EOS is a termination marker and is not returned as a user token.
-      for (size_t t = 0; t < best->tokens.size(); ++t) {
-        const int64_t token = best->tokens[t];
+      for (const auto& [token, acoustic_log_prob] : reversed_path) {
         if (token == eos_id_) {
           break;
         }
         results[b].tokens.push_back(token);
-        results[b].ys_log_probs.push_back(frame_log_probs[t][token]);
+        results[b].ys_log_probs.push_back(acoustic_log_prob);
       }
       results[b].timestamps.clear();
     }
