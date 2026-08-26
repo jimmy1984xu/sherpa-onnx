@@ -23,6 +23,7 @@
 #include "sherpa-onnx/csrc/offline-paraformer-decoder.h"
 #include "sherpa-onnx/csrc/offline-paraformer-greedy-search-decoder.h"
 #include "sherpa-onnx/csrc/offline-paraformer-beam-search-decoder.h"
+#include "sherpa-onnx/csrc/offline-paraformer-hotword-embedding.h"
 #include "sherpa-onnx/csrc/offline-paraformer-model.h"
 #include "sherpa-onnx/csrc/offline-recognizer-impl.h"
 #include "sherpa-onnx/csrc/offline-recognizer.h"
@@ -67,7 +68,8 @@ class OfflineParaformerHotwordCompiler {
   // 输出：每个输入序列对应的 embedding 向量，最后一个始终是 dummy/default
   // embedding。seaco-paraformer 的导出模型依赖这个额外的 embedding，即使
   // 当前没有任何热词。
-  std::vector<std::vector<float>> Compile(const std::vector<std::vector<int32_t>>& token_ids_list) {
+  OfflineParaformerHotwordEmbedding Compile(
+      const std::vector<std::vector<int32_t>>& token_ids_list) {
     const int max_len = 10;
     // FunASR 的参考实现总是追加一个 dummy 序列：首 token 为 1，长度为 1，
     // 其余位置为 padding。不要使用全零长度 10 的序列，它会从错误的时间
@@ -141,14 +143,17 @@ class OfflineParaformerHotwordCompiler {
     int64_t emb_dim = out_shape[2];
     const float* data = output.GetTensorData<float>();
 
-    std::vector<std::vector<float>> result;
+    std::vector<float> flattened(static_cast<size_t>(num_hotwords) * emb_dim);
     for (int i = 0; i < num_hotwords; ++i) {
       int t = lengths[i] - 1;  // 有效长度-1即为最后一帧索引
       int64_t offset = (t * num_hotwords + i) * emb_dim;
-      std::vector<float> emb(data + offset, data + offset + emb_dim);
-      result.push_back(emb);
+      std::copy(data + offset, data + offset + emb_dim,
+                flattened.begin() + static_cast<size_t>(i) * emb_dim);
     }
-    return result;
+    auto storage = std::make_shared<const std::vector<float>>(
+        std::move(flattened));
+    return OfflineParaformerHotwordEmbedding(std::move(storage), num_hotwords,
+                                             static_cast<int32_t>(emb_dim));
   }
 
  private:
@@ -166,16 +171,16 @@ class OfflineParaformerStream : public OfflineStream {
                           ContextGraphPtr graph = nullptr)
       : OfflineStream(feat_config, graph) {}
 
-  void SetHotwordEmbedding(std::vector<std::vector<float>>&& emb) {
+  void SetHotwordEmbedding(OfflineParaformerHotwordEmbedding emb) {
     hw_emb_ = std::move(emb);
   }
-  const std::vector<std::vector<float>>& GetHotwordEmbedding() const {
+  const OfflineParaformerHotwordEmbedding& GetHotwordEmbedding() const {
     return hw_emb_;
   }
   bool HasHotwordEmbedding() const { return !hw_emb_.empty(); }
 
  private:
-  std::vector<std::vector<float>> hw_emb_;
+  OfflineParaformerHotwordEmbedding hw_emb_;
 };
 OfflineRecognitionResult Convert(const OfflineParaformerDecoderResult &src,
                                  const SymbolTable &sym_table) {
@@ -272,6 +277,9 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
           config_.model_config.num_threads);
       use_hw_compiler_ = true;
       SHERPA_ONNX_LOGE("seaco-paraformer hotword compiler enabled.");
+      if (!hotwords_.empty()) {
+        hotword_embedding_ = hw_compiler_->Compile(hotwords_);
+      }
     }
   }
 
@@ -309,6 +317,9 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
           config_.model_config.num_threads);
       use_hw_compiler_ = true;
       SHERPA_ONNX_LOGE("seaco-paraformer hotword compiler enabled.");
+      if (!hotwords_.empty()) {
+        hotword_embedding_ = hw_compiler_->Compile(hotwords_);
+      }
     }
   }
 
@@ -370,19 +381,8 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
 
   std::unique_ptr<OfflineStream> CreateStream() const override {
     auto stream = std::make_unique<OfflineParaformerStream>(config_.feat_config, hotwords_graph_);
-    if (use_hw_compiler_ && hw_compiler_) {
-      std::vector<std::vector<int32_t>> token_ids_list;
-      for (const auto& ids : hotwords_) {
-        if (!ids.empty()) {
-          token_ids_list.push_back(ids);
-	}
-      }
-      if (!token_ids_list.empty()) {
-        auto emb = hw_compiler_->Compile(token_ids_list);
-	if (!emb.empty()) {
-          stream->SetHotwordEmbedding(std::move(emb));
-	}
-      }
+    if (!hotword_embedding_.empty()) {
+      stream->SetHotwordEmbedding(hotword_embedding_);
     }
     return stream;
   }
@@ -476,8 +476,8 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
       if (pstream && pstream->HasHotwordEmbedding()) {
         const auto& emb = pstream->GetHotwordEmbedding();
         if (!emb.empty()) {
-          int hw_count = emb.size();
-          int emb_dim = emb[0].size();
+          int hw_count = emb.num_embeddings();
+          int emb_dim = emb.embedding_dim();
           int expected_emb_dim = model_->BiasEmbedDim();
           if (expected_emb_dim > 0 && emb_dim != expected_emb_dim) {
             SHERPA_ONNX_LOGE(
@@ -486,19 +486,13 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
                 emb_dim, expected_emb_dim);
             return;
           }
-          for (const auto& vec : emb) {
-            if (vec.size() != static_cast<size_t>(emb_dim)) {
-              SHERPA_ONNX_LOGE("Inconsistent hotword embedding dimensions.");
-              return;
-            }
-          }
-          bias_embed_data.reserve(hw_count * emb_dim);
-          for (const auto& vec : emb) {
-            bias_embed_data.insert(bias_embed_data.end(), vec.begin(), vec.end());
+          if (emb.size() != static_cast<size_t>(hw_count) * emb_dim) {
+            SHERPA_ONNX_LOGE("Inconsistent hotword embedding dimensions.");
+            return;
           }
           std::array<int64_t, 3> hw_shape{1, hw_count, emb_dim};
           Ort::Value hw_emb_tensor = Ort::Value::CreateTensor<float>(
-              memory_info, bias_embed_data.data(), bias_embed_data.size(),
+              memory_info, const_cast<float *>(emb.data()), emb.size(),
               hw_shape.data(), hw_shape.size());
           model_inputs.push_back(std::move(hw_emb_tensor));
           has_hw_emb = true;
@@ -1053,6 +1047,7 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
   std::unique_ptr<OfflineParaformerModel> model_;
   std::unique_ptr<OfflineParaformerDecoder> decoder_;
   std::unique_ptr<OfflineParaformerHotwordCompiler> hw_compiler_;
+  OfflineParaformerHotwordEmbedding hotword_embedding_;
   bool use_hw_compiler_ = false;
 };
 

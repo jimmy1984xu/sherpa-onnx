@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "sherpa-onnx/csrc/offline-paraformer-hotword-embedding.h"
 
 namespace sherpa_onnx {
 
@@ -45,6 +46,21 @@ TEST(OfflineParaformerBeamSearchDecoder,
   const float expected_token_1 = expected_token_0;
   EXPECT_NEAR(results[0].ys_log_probs[0], expected_token_0, 1e-5f);
   EXPECT_NEAR(results[0].ys_log_probs[1], expected_token_1, 1e-5f);
+}
+
+TEST(OfflineParaformerHotwordEmbedding,
+     SharesImmutableContiguousStorageAcrossHandles) {
+  auto storage = std::make_shared<const std::vector<float>>(
+      std::vector<float>{1.0f, 2.0f, 3.0f, 4.0f});
+  OfflineParaformerHotwordEmbedding embedding(storage, 2, 2);
+  OfflineParaformerHotwordEmbedding copy = embedding;
+
+  EXPECT_FALSE(embedding.empty());
+  EXPECT_EQ(embedding.num_embeddings(), 2);
+  EXPECT_EQ(embedding.embedding_dim(), 2);
+  EXPECT_EQ(embedding.data(), storage->data());
+  EXPECT_EQ(copy.data(), embedding.data());
+  EXPECT_FLOAT_EQ(copy.data()[3], 4.0f);
 }
 
 }  // namespace sherpa_onnx
