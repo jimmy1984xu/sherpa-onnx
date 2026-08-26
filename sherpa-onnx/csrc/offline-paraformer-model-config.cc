@@ -23,9 +23,9 @@ void OfflineParaformerModelConfig::Register(ParseOptions *po) {
       "/path/to/encoder.rknn,/path/to/predictor.rknn,/path/to/decoder.rknn");
 
   std::string prefix = "paraformer";
-  po->Register("segdict", &seg_dict, "");
-  po->Register("hwcompiler", &hw_compiler, "");
   ParseOptions p(prefix, po);
+  p.Register("segdict", &seg_dict, "");
+  p.Register("hwcompiler", &hw_compiler, "");
 
   qnn_config.Register(&p);
 }

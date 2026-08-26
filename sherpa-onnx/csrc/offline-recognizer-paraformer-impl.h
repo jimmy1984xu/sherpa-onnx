@@ -681,13 +681,14 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
     std::vector<std::pair<std::string, int32_t>> token_entries;
     std::string token_str;
     while (iss >> token_str) {
-      int32_t id = symbol_table_[token_str];
-      if (id == -1) {
+      if (!symbol_table_.Contains(token_str)) {
         SHERPA_ONNX_LOGE(
-            "Token '%s' not found in symbol table, skip word '%s'",
+            "Token '%s' from seg_dict is not present in tokens.txt; "
+            "skip word '%s'",
             token_str.c_str(), word.c_str());
         return;
       }
+      int32_t id = symbol_table_[token_str];
       token_ids.push_back(id);
       token_entries.emplace_back(token_str, id);
     }

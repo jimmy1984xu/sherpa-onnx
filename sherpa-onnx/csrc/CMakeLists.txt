@@ -814,6 +814,7 @@ if(SHERPA_ONNX_ENABLE_TESTS)
     circular-buffer-test.cc
     context-graph-test.cc
     math-test.cc
+    offline-paraformer-beam-search-decoder-test.cc
     offline-whisper-timestamp-rules-test.cc
     packed-sequence-test.cc
     pad-sequence-test.cc

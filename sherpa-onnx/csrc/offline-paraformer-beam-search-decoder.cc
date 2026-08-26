@@ -202,15 +202,16 @@ OfflineParaformerBeamSearchDecoder::Decode(
     if (!beam.empty()) {
       auto best = std::max_element(beam.begin(), beam.end(),
           [](const BeamEntry& a, const BeamEntry& b) { return a.score < b.score; });
-      results[b].tokens = best->tokens;
-      // EOS is a termination marker, not a user-visible token. The beam
-      // search keeps fixed-width paths and may continue expanding after EOS,
-      // so truncate at its first occurrence before converting token IDs.
-      auto eos_it = std::find(results[b].tokens.begin(),
-                              results[b].tokens.end(),
-                              static_cast<int64_t>(eos_id_));
-      if (eos_it != results[b].tokens.end()) {
-        results[b].tokens.erase(eos_it, results[b].tokens.end());
+      // The beam score includes ContextGraph hotword bonuses, so confidence
+      // must come from the acoustic log probability for each selected token.
+      // EOS is a termination marker and is not returned as a user token.
+      for (size_t t = 0; t < best->tokens.size(); ++t) {
+        const int64_t token = best->tokens[t];
+        if (token == eos_id_) {
+          break;
+        }
+        results[b].tokens.push_back(token);
+        results[b].ys_log_probs.push_back(frame_log_probs[t][token]);
       }
       results[b].timestamps.clear();
     }
