@@ -6,6 +6,7 @@
 #define SHERPA_ONNX_CSRC_OFFLINE_RECOGNIZER_PARAFORMER_IMPL_H_
 
 #include <algorithm>
+#include <cinttypes>
 #include <cstdlib>
 #include <fstream>
 #include <memory>
@@ -150,6 +151,10 @@ class OfflineParaformerHotwordCompiler {
       std::copy(data + offset, data + offset + emb_dim,
                 flattened.begin() + static_cast<size_t>(i) * emb_dim);
     }
+    SHERPA_ONNX_LOGE(
+        "Compiled Paraformer hotword embedding: %d hotwords + 1 dummy, "
+        "embedding_dim=%" PRId64,
+        num_hotwords - 1, emb_dim);
     auto storage = std::make_shared<const std::vector<float>>(
         std::move(flattened));
     return OfflineParaformerHotwordEmbedding(std::move(storage), num_hotwords,
@@ -527,14 +532,6 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
     // ---------- 模型前向 ----------
     std::vector<Ort::Value> t;
     try {
-      // 需要 OfflineParaformerModel::Forward(std::vector<Ort::Value>) 重载
-      for (size_t i = 0; i < model_inputs.size(); ++i) {
-	        auto info = model_inputs[i].GetTensorTypeAndShapeInfo();
-		  auto shape = info.GetShape();
-		    std::string shape_str;
-		      for (size_t j = 0; j < shape.size(); ++j) shape_str += std::to_string(shape[j]) + " ";
-		        SHERPA_ONNX_LOGE("Input[%zu] shape: %s", i, shape_str.c_str());
-      }
       t = model_->Forward(std::move(model_inputs));
     } catch (const Ort::Exception &ex) {
       SHERPA_ONNX_LOGE("\n\nCaught exception:\n\n%s\n\nReturn an empty result",
