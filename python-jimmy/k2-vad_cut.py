@@ -67,6 +67,11 @@ def build_segment_id(sequence: int, offset_ms: int, duration_ms: int) -> str:
     return f"{sequence:06d}_{offset_ms}_{duration_ms}"
 
 
+def samples_to_ms(sample_count: int, sample_rate: int) -> int:
+    """按 Android 相同的整数运算将采样数转换为毫秒。"""
+    return sample_count * 1000 // sample_rate
+
+
 def build_vad(
     vad_model_path: str,
     vad_type: str,
@@ -224,8 +229,8 @@ def main():
             
             # No minimum duration limit - process all VAD segments
             offset_samples = seg.start
-            offset_ms = int(offset_samples / vad_sr * 1000)
-            duration_ms = int(len(samples) / vad_sr * 1000)
+            offset_ms = samples_to_ms(offset_samples, vad_sr)
+            duration_ms = samples_to_ms(len(samples), vad_sr)
             duration_seconds = duration_ms / 1000.0
 
             sequence = len(segments_info) + 1
@@ -255,8 +260,8 @@ def main():
         
         # No minimum duration limit - process all VAD segments
         offset_samples = seg.start
-        offset_ms = int(offset_samples / vad_sr * 1000)
-        duration_ms = int(len(samples) / vad_sr * 1000)
+        offset_ms = samples_to_ms(offset_samples, vad_sr)
+        duration_ms = samples_to_ms(len(samples), vad_sr)
         duration_seconds = duration_ms / 1000.0
 
         sequence = len(segments_info) + 1
