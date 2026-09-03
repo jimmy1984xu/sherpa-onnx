@@ -68,20 +68,22 @@ fi
 
 echo "ANDROID_NDK: $ANDROID_NDK"
 sleep 1
-onnxruntime_version=1.24.3
+onnxruntime_version=${SHERPA_ONNXRUNTIME_VERSION:-1.24.3}
 
 if [ $BUILD_SHARED_LIBS == ON ]; then
-  if [ ! -f $onnxruntime_version/jni/arm64-v8a/libonnxruntime.so ]; then
-    mkdir -p $onnxruntime_version
-    pushd $onnxruntime_version
-    wget -c -q https://github.com/csukuangfj/onnxruntime-libs/releases/download/v${onnxruntime_version}/onnxruntime-android-${onnxruntime_version}.zip
-    unzip onnxruntime-android-${onnxruntime_version}.zip
-    rm onnxruntime-android-${onnxruntime_version}.zip
-    popd
-  fi
+  if [ -z "${SHERPA_ONNXRUNTIME_LIB_DIR:-}" ] || [ -z "${SHERPA_ONNXRUNTIME_INCLUDE_DIR:-}" ]; then
+    if [ ! -f $onnxruntime_version/jni/arm64-v8a/libonnxruntime.so ]; then
+      mkdir -p $onnxruntime_version
+      pushd $onnxruntime_version
+      wget -c -q https://github.com/csukuangfj/onnxruntime-libs/releases/download/v${onnxruntime_version}/onnxruntime-android-${onnxruntime_version}.zip
+      unzip onnxruntime-android-${onnxruntime_version}.zip
+      rm onnxruntime-android-${onnxruntime_version}.zip
+      popd
+    fi
 
-  export SHERPA_ONNXRUNTIME_LIB_DIR=$dir/$onnxruntime_version/jni/arm64-v8a/
-  export SHERPA_ONNXRUNTIME_INCLUDE_DIR=$dir/$onnxruntime_version/headers/
+    export SHERPA_ONNXRUNTIME_LIB_DIR=$dir/$onnxruntime_version/jni/arm64-v8a/
+    export SHERPA_ONNXRUNTIME_INCLUDE_DIR=$dir/$onnxruntime_version/headers/
+  fi
 else
   if [ ! -f ${onnxruntime_version}-static/lib/libonnxruntime.a ]; then
     wget -c -q https://github.com/csukuangfj/onnxruntime-libs/releases/download/v${onnxruntime_version}/onnxruntime-android-arm64-v8a-static_lib-${onnxruntime_version}.zip
@@ -173,7 +175,7 @@ cmake -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" 
 # make VERBOSE=1 -j4
 make -j4
 make install/strip
-cp -fv $onnxruntime_version/jni/arm64-v8a/libonnxruntime.so install/lib 2>/dev/null || true
+cp -fv $SHERPA_ONNXRUNTIME_LIB_DIR/libonnxruntime.so install/lib 2>/dev/null || true
 
 if [ $SHERPA_ONNX_ENABLE_RKNN == ON ]; then
   cp -fv $SHERPA_ONNX_RKNN_TOOLKIT2_LIB_DIR/librknnrt.so install/lib
