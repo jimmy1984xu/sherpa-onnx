@@ -21,7 +21,7 @@ from pipeline import (
     PipelineConfig,
     run_pipeline,
 )
-from whisper_asr import parse_whisper_languages
+from whisper_asr import BILINGUAL_MIN_TEXT_CONFIDENCE, parse_whisper_languages
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,6 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Empty=auto, one code=forced language, two codes=bilingual en,hi-style selection",
     )
     parser.add_argument("--whisper-timeout-ms", type=int, default=30000)
+    parser.add_argument(
+        "--min-text-confidence",
+        type=float,
+        default=BILINGUAL_MIN_TEXT_CONFIDENCE,
+        help="Bilingual ASR validity threshold; a segment is invalid if all candidate textConfidence values are below this",
+    )
     parser.add_argument("--min-cluster-duration", type=float, default=1.0)
     parser.add_argument("--centroid-assignment-similarity-threshold", type=float, default=0.5)
     parser.add_argument("--diarization-min-duration-on", type=float, default=0.5)
@@ -117,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
                 whisper_url=args.whisper_url,
                 whisper_languages=parse_whisper_languages(args.whisper_languages),
                 whisper_timeout_ms=args.whisper_timeout_ms,
+                min_text_confidence=args.min_text_confidence,
                 min_cluster_duration=args.min_cluster_duration,
                 centroid_assignment_similarity_threshold=args.centroid_assignment_similarity_threshold,
                 diarization_min_duration_on=args.diarization_min_duration_on,

@@ -18,6 +18,7 @@ class SegmentView:
     language: str
     asr_text: str
     zh_text: str = ""
+    text_confidence: float | None = None
 
 
 def _format_clock(milliseconds: int) -> str:
@@ -40,9 +41,26 @@ def load_k2_segments(path: Path) -> list[SegmentView]:
                 speaker=str(item.get("speakerId") or ""),
                 language=str(item.get("asrLanguage") or ""),
                 asr_text=str(item.get("asrText") or "").strip(),
+                text_confidence=_parse_confidence(item.get("textConfidence")),
             )
         )
     return segments
+
+
+def _parse_confidence(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return None
+    return confidence if confidence == confidence else None
+
+
+def _format_confidence(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f"{value:.3f}"
 
 
 def _parse_pipeline_bounds(item: dict[str, Any]) -> tuple[int, int]:
@@ -66,6 +84,7 @@ def load_pipeline_segments(path: Path) -> list[SegmentView]:
                 speaker=str(item.get("speaker_id") or ""),
                 language=str(item.get("asr_language") or ""),
                 asr_text=str(item.get("asr_text") or "").strip(),
+                text_confidence=_parse_confidence(item.get("text_confidence")),
             )
         )
     return segments
@@ -107,11 +126,16 @@ def align_segments(
     return rows
 
 
-def _side_cells(segment: SegmentView | None, previous: SegmentView | None) -> tuple[str, str, str]:
+def _side_cells(segment: SegmentView | None, previous: SegmentView | None) -> tuple[str, str, str, str]:
     """Keep the first row of a 1-to-many group; later rows on that side stay blank."""
     if segment is None or segment is previous:
-        return ("", "", "")
-    return (segment.segment_id, segment.speaker, segment.zh_text)
+        return ("", "", "", "")
+    return (
+        segment.segment_id,
+        segment.speaker,
+        segment.zh_text,
+        _format_confidence(segment.text_confidence),
+    )
 
 
 def write_xlsx(
@@ -125,11 +149,22 @@ def write_xlsx(
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "片段对照"
-    sheet.merge_cells("A1:C1")
-    sheet.merge_cells("D1:F1")
+    sheet.merge_cells("A1:D1")
+    sheet.merge_cells("E1:H1")
     sheet["A1"] = "对比前（老脚本 k2）"
-    sheet["D1"] = "对比后（新脚本 pipeline）"
-    sheet.append(["片段ID", "说话人ID", "中文翻译", "片段ID", "说话人ID", "中文翻译"])
+    sheet["E1"] = "对比后（新脚本 pipeline）"
+    sheet.append(
+        [
+            "片段ID",
+            "说话人ID",
+            "中文翻译",
+            "文本置信度",
+            "片段ID",
+            "说话人ID",
+            "中文翻译",
+            "文本置信度",
+        ]
+    )
 
     header_fill = PatternFill("solid", fgColor="17324D")
     header_font = Font(color="FFFFFF", bold=True)
@@ -162,15 +197,15 @@ def write_xlsx(
         for column, cell in enumerate(sheet[excel_row], start=1):
             cell.border = thin
             cell.alignment = wrap
-            cell.fill = before_fill if column <= 3 else after_fill
+            cell.fill = before_fill if column <= 4 else after_fill
         previous_left = left
         previous_right = right
 
-    widths = [26, 14, 56, 26, 14, 56]
+    widths = [26, 14, 56, 12, 26, 14, 56, 12]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.freeze_panes = "A3"
-    sheet.auto_filter.ref = f"A2:F{sheet.max_row}"
+    sheet.auto_filter.ref = f"A2:H{sheet.max_row}"
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(path)
 

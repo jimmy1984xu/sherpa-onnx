@@ -100,6 +100,29 @@ class WhisperAsrTest(unittest.TestCase):
         self.assertEqual(segment.asr_valid, 0)
         self.assertFalse(segment.is_cluster_eligible)
 
+    def test_bilingual_validity_uses_configured_min_text_confidence(self):
+        segment = SpeechSegment(1, 0, 1000, np.zeros(16000, dtype=np.float32))
+
+        def poster(url, params=None, files=None, timeout=None):
+            language = (params or {}).get("language", "auto")
+            return _FakeResponse(
+                {"language": language, "text": "x", "lang_prob": 0.2, "confidence": 0.35}
+            )
+
+        transcribe_segment_with_whisper(
+            segment,
+            WhisperClientConfig(
+                url="http://example/whisper",
+                languages=("en", "hi"),
+                min_text_confidence=0.50,
+            ),
+            poster=poster,
+            sleeper=lambda _seconds: None,
+        )
+
+        self.assertEqual(segment.asr_valid, 0)
+        self.assertEqual(segment.asr_error, "bilingual text confidence below 0.50")
+
 
 if __name__ == "__main__":
     unittest.main()

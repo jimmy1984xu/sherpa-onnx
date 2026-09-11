@@ -111,3 +111,13 @@ class DiarizationEntryPointTest(unittest.TestCase):
         self.assertEqual(args.asr_engine, "whisper")
         self.assertEqual(args.whisper_languages, "en,hi")
         self.assertEqual(args.num_clusters, 2)
+        self.assertEqual(args.min_text_confidence, 0.30)
+
+    def test_allows_min_text_confidence_override(self):
+        args = MODULE.build_parser().parse_args([
+            "--audio", "input.wav",
+            "--asr-engine", "whisper",
+            "--min-text-confidence", "0.5",
+        ])
+
+        self.assertEqual(args.min_text_confidence, 0.5)

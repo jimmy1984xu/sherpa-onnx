@@ -15,7 +15,11 @@ from models import PipelineRuntimes, build_runtimes
 from output import create_run_directory, write_metadata, write_results
 from speaker import assign_speaker_ids_with_centroids
 from vad import collect_vad_segments
-from whisper_asr import WhisperClientConfig, transcribe_segments_with_whisper
+from whisper_asr import (
+    BILINGUAL_MIN_TEXT_CONFIDENCE,
+    WhisperClientConfig,
+    transcribe_segments_with_whisper,
+)
 
 SEGMENTATION_MODE_VAD = "vad"
 SEGMENTATION_MODE_VAD_PYANNOTE = "vad-pyannote"
@@ -56,6 +60,7 @@ class PipelineConfig:
     whisper_url: str = DEFAULT_WHISPER_URL
     whisper_languages: tuple[str, ...] = ()
     whisper_timeout_ms: int = 30000
+    min_text_confidence: float = BILINGUAL_MIN_TEXT_CONFIDENCE
     diarization_min_duration_on: float = 0.5
     diarization_min_duration_off: float = 0.5
     min_cluster_duration: float = 1.0
@@ -111,6 +116,8 @@ def _validate_config(config: PipelineConfig) -> None:
         raise ValueError("num_clusters must be -1 or a positive integer")
     if config.whisper_timeout_ms <= 0:
         raise ValueError("whisper_timeout_ms must be positive")
+    if not 0.0 <= config.min_text_confidence <= 1.0:
+        raise ValueError("min_text_confidence must be in [0.0, 1.0]")
 
 
 def _composition_counts(segments: list[Any]) -> dict[str, int]:
@@ -245,6 +252,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
                         url=config.whisper_url,
                         timeout_ms=config.whisper_timeout_ms,
                         languages=config.whisper_languages,
+                        min_text_confidence=config.min_text_confidence,
                     ),
                 )
             else:

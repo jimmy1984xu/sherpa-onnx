@@ -17,7 +17,7 @@ from vad import SpeechSegment
 
 SAMPLE_RATE = 16000
 BILINGUAL_LANG_PROB_KEEP = 0.70
-BILINGUAL_MIN_TEXT_CONFIDENCE = 0.50
+BILINGUAL_MIN_TEXT_CONFIDENCE = 0.30
 WHISPER_RETRY_SLEEP_SECONDS = 10
 
 
@@ -34,6 +34,7 @@ class WhisperClientConfig:
     url: str
     timeout_ms: int = 30000
     languages: tuple[str, ...] = ()
+    min_text_confidence: float = BILINGUAL_MIN_TEXT_CONFIDENCE
 
 
 def parse_whisper_languages(raw: str) -> tuple[str, ...]:
@@ -133,19 +134,23 @@ def _apply_result(segment: SpeechSegment, result: WhisperResult | None, asr_lang
     segment.text_confidence = result.text_confidence
 
 
-def _mark_bilingual_validity(segment: SpeechSegment, languages: Sequence[str]) -> None:
+def _mark_bilingual_validity(
+    segment: SpeechSegment,
+    languages: Sequence[str],
+    min_text_confidence: float,
+) -> None:
     confidences = [
         segment.asr_candidates.get(language, {}).get("text_confidence")
         for language in languages
     ]
     segment.asr_valid = int(
         any(
-            confidence is not None and confidence >= BILINGUAL_MIN_TEXT_CONFIDENCE
+            confidence is not None and confidence >= min_text_confidence
             for confidence in confidences
         )
     )
     if segment.asr_valid == 0 and not segment.asr_error:
-        segment.asr_error = "bilingual text confidence below 0.50"
+        segment.asr_error = f"bilingual text confidence below {min_text_confidence:.2f}"
 
 
 def transcribe_segment_with_whisper(
@@ -227,7 +232,7 @@ def transcribe_segment_with_whisper(
         ]
         if not available:
             _apply_result(segment, None, "unk")
-            _mark_bilingual_validity(segment, languages)
+            _mark_bilingual_validity(segment, languages, config.min_text_confidence)
             return
         selected_language, selected = max(
             available,
@@ -236,7 +241,7 @@ def transcribe_segment_with_whisper(
             else float("-inf"),
         )
     _apply_result(segment, selected, selected_language)
-    _mark_bilingual_validity(segment, languages)
+    _mark_bilingual_validity(segment, languages, config.min_text_confidence)
 
 
 def transcribe_segments_with_whisper(

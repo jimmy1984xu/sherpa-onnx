@@ -16,7 +16,7 @@
    asrLanguage 表示最终 asrText 对应的候选语种。
 
 片段无效规则（仅双语模式）：
-1. 两路候选的 textConfidence 都低于 0.50，或两路均失败时，valid=0。
+1. 两路候选的 textConfidence 都低于 --min-text-confidence（默认 0.30），或两路均失败时，valid=0。
 2. 其余情况 valid=1。valid=0 的片段不会提取声纹、不参与聚类，speakerId=-。
 
 主要参数：
@@ -27,6 +27,7 @@
   等待 10 秒并重试一次。
 - --whisper-languages：不设置为自动模式；一个语言为强制该语言；两个语言启用
   上述双语规则。
+- --min-text-confidence：双语模式下文本置信度有效性阈值，默认 0.30。
 - --output：输出文件夹；不设置时，JSON 和 TXT 输出到输入音频同目录，文件名固定
   为“输入音频文件名.json”和“输入音频文件名.txt”。
 - --vad-threshold、--min-silence-duration、--min-speech-duration、
@@ -65,7 +66,7 @@ SPEAKER_MAX_SAMPLES = 10000 * SAMPLE_RATE // 1000
 INVALID_SHORT_DURATION_MS = 600
 INVALID_SHORT_TEXT_CONFIDENCE = 0.60
 INVALID_UNKNOWN_LANGUAGE_TEXT_CONFIDENCE = 0.70
-BILINGUAL_MIN_TEXT_CONFIDENCE = 0.50
+BILINGUAL_MIN_TEXT_CONFIDENCE = 0.30
 SUMMARY_OUTPUT_HEADER = "segmentId speakerId asrLanguage asrText\n"
 
 
@@ -116,6 +117,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional comma-separated language list: one language or two languages",
     )
     parser.add_argument("--whisper-timeout-ms", type=int, default=30000, help="Whisper request timeout in milliseconds")
+    parser.add_argument(
+        "--min-text-confidence",
+        type=float,
+        default=BILINGUAL_MIN_TEXT_CONFIDENCE,
+        help="Bilingual validity threshold; a segment is invalid if all candidate textConfidence values are below this",
+    )
     parser.add_argument("--cluster-threshold", type=float, default=0.5, help="FastClustering threshold")
     parser.add_argument("--num-clusters", type=int, default=-1, help="Fixed cluster count; positive values override --cluster-threshold")
     return parser.parse_args()
@@ -158,6 +165,8 @@ def validate_args(args: argparse.Namespace) -> Tuple[Path, Path, Path, Path]:
         raise ValueError("--num-clusters must be -1 or a positive integer")
     if not 0.0 <= args.cluster_threshold <= 1.0:
         raise ValueError("--cluster-threshold must be in [0, 1]")
+    if not 0.0 <= args.min_text_confidence <= 1.0:
+        raise ValueError("--min-text-confidence must be in [0, 1]")
 
     output_dir = Path(args.output) if args.output else audio_path.parent
     if output_dir.exists() and not output_dir.is_dir():
@@ -532,12 +541,15 @@ def format_lang_prob(segment: Segment) -> str:
     return "-" if segment.lang_prob_invalid else format_confidence(segment.lang_prob)
 
 
-def update_segment_validity(segment: Segment) -> None:
-    """Apply hard-coded invalid rules; all remaining segments are valid."""
+def update_segment_validity(
+    segment: Segment,
+    min_text_confidence: float = BILINGUAL_MIN_TEXT_CONFIDENCE,
+) -> None:
+    """Apply bilingual confidence filter, then remaining hard-coded invalid rules."""
     if segment.bilingual_candidate_confidences is not None:
         segment.valid = int(
             any(
-                confidence is not None and confidence >= BILINGUAL_MIN_TEXT_CONFIDENCE
+                confidence is not None and confidence >= min_text_confidence
                 for confidence in segment.bilingual_candidate_confidences
             )
         )
@@ -632,7 +644,7 @@ def main() -> None:
     print("[3/4] Calling Whisper for each segment")
     for index, segment in enumerate(segments, start=1):
         transcribe_segment(segment, args)
-        update_segment_validity(segment)
+        update_segment_validity(segment, args.min_text_confidence)
         candidate_confidences = ""
         if segment.bilingual_candidate_confidences is not None:
             candidate_confidences = " ".join(

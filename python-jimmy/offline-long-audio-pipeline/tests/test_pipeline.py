@@ -133,6 +133,15 @@ class PipelineTest(unittest.TestCase):
                     run_pipeline(config)
         build_runtimes.assert_not_called()
 
+    def test_rejects_min_text_confidence_outside_unit_interval(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = PipelineConfig(audio=root / "input.pcm", min_text_confidence=1.2)
+            with patch("pipeline.build_runtimes") as build_runtimes:
+                with self.assertRaisesRegex(ValueError, "min_text_confidence must be in"):
+                    run_pipeline(config)
+        build_runtimes.assert_not_called()
+
     def test_vad_only_mode_skips_pyannote_and_keeps_vad_segments(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -226,6 +235,7 @@ class PipelineTest(unittest.TestCase):
         self.assertFalse(build_runtimes.call_args.kwargs["enable_local_asr"])
         paraformer.assert_not_called()
         whisper.assert_called_once()
+        self.assertEqual(whisper.call_args.args[1].min_text_confidence, 0.30)
 
 
 if __name__ == "__main__":
