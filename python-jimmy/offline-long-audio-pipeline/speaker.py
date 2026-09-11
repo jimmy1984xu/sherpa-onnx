@@ -254,11 +254,14 @@ def assign_speaker_ids_with_centroids(
     embedding_errors = 0
     embeddings_by_index: dict[int, np.ndarray] = {}
     for index, segment in enumerate(segments):
-        segment.speaker_id = "unknown"
-        segment.embedding_error = None
-        segment.embedding = None
         segment.previous_segment_similarity = None
         segment.cluster_assignment_similarity = None
+        segment.embedding = None
+        segment.embedding_error = None
+        if segment.asr_valid == 0:
+            segment.speaker_id = "-"
+            continue
+        segment.speaker_id = "unknown"
         try:
             embedding = l2_normalize(
                 _extract_embedding(
@@ -313,6 +316,8 @@ def assign_speaker_ids_with_centroids(
     centroid_assigned_excluded = 0
     unknown_excluded = 0
     for segment in segments:
+        if segment.asr_valid == 0:
+            continue
         if segment.is_cluster_eligible or segment.embedding is None:
             continue
         stable_id, score = max_similarity(segment.embedding, centroids)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline local VAD + Paraformer ASR + Titanet clustering pipeline."""
+"""Offline local VAD + pyannote + ASR (Paraformer or Whisper) + Titanet clustering."""
 
 from __future__ import annotations
 
@@ -17,14 +17,16 @@ from pipeline import (
     DEFAULT_SEGMENTATION_DIR,
     DEFAULT_SPEAKER_DIR,
     DEFAULT_VAD_DIR,
+    DEFAULT_WHISPER_URL,
     PipelineConfig,
     run_pipeline,
 )
+from whisper_asr import parse_whisper_languages
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run local Silero VAD, pyannote diarization, Chinese Paraformer ASR, and Titanet similarity extraction.",
+        description="Run local Silero VAD, pyannote cuts, Paraformer or Whisper ASR, and Titanet clustering.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--audio", required=True, help="Input PCM or WAV file")
@@ -45,7 +47,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-speech-duration", type=float, default=25.0)
     parser.add_argument("--pre-speech-pad-duration", type=float, default=0.0)
     parser.add_argument("--cluster-threshold", type=float, default=0.5)
-    parser.add_argument("--num-clusters", type=int, default=-1)
+    parser.add_argument(
+        "--num-clusters",
+        type=int,
+        default=2,
+        help="Fixed speaker cluster count; -1 falls back to --cluster-threshold",
+    )
+    parser.add_argument(
+        "--asr-engine",
+        choices=("paraformer", "whisper"),
+        default="paraformer",
+        help="paraformer uses the local ONNX model; whisper calls the HTTP bilingual service",
+    )
+    parser.add_argument("--whisper-url", default=DEFAULT_WHISPER_URL)
+    parser.add_argument(
+        "--whisper-languages",
+        default="",
+        help="Empty=auto, one code=forced language, two codes=bilingual en,hi-style selection",
+    )
+    parser.add_argument("--whisper-timeout-ms", type=int, default=30000)
     parser.add_argument("--min-cluster-duration", type=float, default=1.0)
     parser.add_argument("--centroid-assignment-similarity-threshold", type=float, default=0.5)
     parser.add_argument("--diarization-min-duration-on", type=float, default=0.5)
@@ -93,6 +113,10 @@ def main(argv: list[str] | None = None) -> int:
                 pre_speech_pad_duration=args.pre_speech_pad_duration,
                 cluster_threshold=args.cluster_threshold,
                 num_clusters=args.num_clusters,
+                asr_engine=args.asr_engine,
+                whisper_url=args.whisper_url,
+                whisper_languages=parse_whisper_languages(args.whisper_languages),
+                whisper_timeout_ms=args.whisper_timeout_ms,
                 min_cluster_duration=args.min_cluster_duration,
                 centroid_assignment_similarity_threshold=args.centroid_assignment_similarity_threshold,
                 diarization_min_duration_on=args.diarization_min_duration_on,

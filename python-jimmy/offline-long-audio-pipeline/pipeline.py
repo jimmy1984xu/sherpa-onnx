@@ -15,6 +15,7 @@ from models import PipelineRuntimes, build_runtimes
 from output import create_run_directory, write_metadata, write_results
 from speaker import assign_speaker_ids_with_centroids
 from vad import collect_vad_segments
+from whisper_asr import WhisperClientConfig, transcribe_segments_with_whisper
 
 SEGMENTATION_MODE_VAD = "vad"
 SEGMENTATION_MODE_VAD_PYANNOTE = "vad-pyannote"
@@ -27,6 +28,10 @@ DEFAULT_SEGMENTATION_DIR = Path(
     r"D:\TransAI\audio_model\full\audio_models\speaker_segmentation\sherpa-onnx-pyannote-segmentation-3-0"
 )
 DEFAULT_OUTPUT_ROOT = Path(r"C:\Users\admin\Downloads\python语音Pipeline优化")
+DEFAULT_WHISPER_URL = "http://159.135.196.85:31401/api/v1/unify-asr/whisper"
+ASR_ENGINE_PARAFORMER = "paraformer"
+ASR_ENGINE_WHISPER = "whisper"
+ASR_ENGINES = (ASR_ENGINE_PARAFORMER, ASR_ENGINE_WHISPER)
 
 
 @dataclass(frozen=True)
@@ -46,7 +51,11 @@ class PipelineConfig:
     max_speech_duration: float = 25.0
     pre_speech_pad_duration: float = 0.0
     cluster_threshold: float = 0.5
-    num_clusters: int = -1
+    num_clusters: int = 2
+    asr_engine: str = ASR_ENGINE_PARAFORMER
+    whisper_url: str = DEFAULT_WHISPER_URL
+    whisper_languages: tuple[str, ...] = ()
+    whisper_timeout_ms: int = 30000
     diarization_min_duration_on: float = 0.5
     diarization_min_duration_off: float = 0.5
     min_cluster_duration: float = 1.0
@@ -94,6 +103,14 @@ def _validate_config(config: PipelineConfig) -> None:
         raise ValueError(
             f"segmentation_mode must be one of {', '.join(SEGMENTATION_MODES)}"
         )
+    if config.asr_engine not in ASR_ENGINES:
+        raise ValueError(f"asr_engine must be one of {', '.join(ASR_ENGINES)}")
+    if config.asr_engine == ASR_ENGINE_WHISPER and not config.whisper_url.strip():
+        raise ValueError("whisper_url is required when asr_engine is whisper")
+    if config.num_clusters == 0 or config.num_clusters < -1:
+        raise ValueError("num_clusters must be -1 or a positive integer")
+    if config.whisper_timeout_ms <= 0:
+        raise ValueError("whisper_timeout_ms must be positive")
 
 
 def _composition_counts(segments: list[Any]) -> dict[str, int]:
@@ -146,6 +163,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             num_clusters=config.num_clusters,
             debug=config.debug,
             enable_segmentation=config.segmentation_mode == SEGMENTATION_MODE_VAD_PYANNOTE,
+            enable_local_asr=config.asr_engine == ASR_ENGINE_PARAFORMER,
         )
         timings["model_load_seconds"] = time.perf_counter() - started
         logger.info("stage=model_load event=complete seconds=%.6f", timings["model_load_seconds"])
@@ -200,27 +218,53 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             for segment in segments:
                 write_segment_wav(run_dir / "segments" / f"{segment.segment_id}.wav", segment.samples)
 
-        logger.info("stage=speaker event=start segments=%s", len(segments))
-        started = time.perf_counter()
-        embedding_error_count, centroid_assigned, unknown_excluded = assign_speaker_ids_with_centroids(
-            runtimes.extractor,
-            segments,
-            cluster_threshold=config.cluster_threshold,
-            num_clusters=config.num_clusters,
-            assignment_similarity_threshold=config.centroid_assignment_similarity_threshold,
-        )
-        timings["speaker_seconds"] = time.perf_counter() - started
-        logger.info(
-            "stage=speaker event=complete seconds=%.6f segments=%s errors=%s centroid_assigned=%s unknown_excluded=%s",
-            timings["speaker_seconds"], len(segments), embedding_error_count, centroid_assigned, unknown_excluded,
-        )
+        def run_speaker() -> tuple[int, int, int]:
+            logger.info("stage=speaker event=start segments=%s", len(segments))
+            started_local = time.perf_counter()
+            counts = assign_speaker_ids_with_centroids(
+                runtimes.extractor,
+                segments,
+                cluster_threshold=config.cluster_threshold,
+                num_clusters=config.num_clusters,
+                assignment_similarity_threshold=config.centroid_assignment_similarity_threshold,
+            )
+            timings["speaker_seconds"] = time.perf_counter() - started_local
+            logger.info(
+                "stage=speaker event=complete seconds=%.6f segments=%s errors=%s centroid_assigned=%s unknown_excluded=%s",
+                timings["speaker_seconds"], len(segments), counts[0], counts[1], counts[2],
+            )
+            return counts
 
-        logger.info("stage=asr event=start segments=%s", len(segments))
-        started = time.perf_counter()
-        transcribe_segments(runtimes.recognizer, segments, loaded.sample_rate)
-        timings["asr_seconds"] = time.perf_counter() - started
-        asr_error_count = sum(segment.asr_error is not None for segment in segments)
-        logger.info("stage=asr event=complete seconds=%.6f segments=%s errors=%s", timings["asr_seconds"], len(segments), asr_error_count)
+        def run_asr() -> int:
+            logger.info("stage=asr event=start engine=%s segments=%s", config.asr_engine, len(segments))
+            started_local = time.perf_counter()
+            if config.asr_engine == ASR_ENGINE_WHISPER:
+                transcribe_segments_with_whisper(
+                    segments,
+                    WhisperClientConfig(
+                        url=config.whisper_url,
+                        timeout_ms=config.whisper_timeout_ms,
+                        languages=config.whisper_languages,
+                    ),
+                )
+            else:
+                if runtimes.recognizer is None:
+                    raise RuntimeError("local Paraformer recognizer is required")
+                transcribe_segments(runtimes.recognizer, segments, loaded.sample_rate)
+            timings["asr_seconds"] = time.perf_counter() - started_local
+            error_count = sum(segment.asr_error is not None for segment in segments)
+            logger.info(
+                "stage=asr event=complete seconds=%.6f segments=%s errors=%s",
+                timings["asr_seconds"], len(segments), error_count,
+            )
+            return error_count
+
+        if config.asr_engine == ASR_ENGINE_WHISPER:
+            asr_error_count = run_asr()
+            embedding_error_count, centroid_assigned, unknown_excluded = run_speaker()
+        else:
+            embedding_error_count, centroid_assigned, unknown_excluded = run_speaker()
+            asr_error_count = run_asr()
 
         timings["total_seconds"] = time.perf_counter() - total_started
         audio_seconds = max(loaded.duration_ms / 1000.0, 0.001)
@@ -234,7 +278,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         clustered_speaker_ids = {
             segment.speaker_id
             for segment in segments
-            if segment.is_cluster_eligible and segment.speaker_id != "unknown"
+            if segment.is_cluster_eligible and segment.speaker_id not in {"unknown", "-"}
         }
         write_metadata(
             run_dir,

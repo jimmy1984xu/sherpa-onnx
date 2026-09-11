@@ -80,23 +80,26 @@ def build_runtimes(
     num_clusters: int,
     debug: bool,
     enable_segmentation: bool = True,
+    enable_local_asr: bool = True,
 ) -> PipelineRuntimes:
     """Validate local assets then build the three local runtime objects."""
-    asr_files = resolve_model_files(asr_dir, "asr")
+    asr_files = resolve_model_files(asr_dir, "asr") if enable_local_asr else None
     vad_files = resolve_model_files(vad_dir, "vad")
     speaker_files = resolve_model_files(speaker_dir, "speaker")
     segmentation_files = (
         resolve_model_files(segmentation_dir, "segmentation") if enable_segmentation else None
     )
 
-    recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
-        paraformer=str(asr_files.model),
-        tokens=str(asr_files.tokens),
-        num_threads=asr_num_threads,
-        sample_rate=16000,
-        provider="cpu",
-        debug=debug,
-    )
+    recognizer = None
+    if asr_files is not None:
+        recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
+            paraformer=str(asr_files.model),
+            tokens=str(asr_files.tokens),
+            num_threads=asr_num_threads,
+            sample_rate=16000,
+            provider="cpu",
+            debug=debug,
+        )
 
     vad_config = sherpa_onnx.VadModelConfig()
     vad_config.sample_rate = 16000
@@ -126,10 +129,11 @@ def build_runtimes(
         else None
     )
     resolved_files = {
-        "asr": asr_files,
         "vad": vad_files,
         "speaker": speaker_files,
     }
+    if asr_files is not None:
+        resolved_files["asr"] = asr_files
     if segmentation_files is not None:
         resolved_files["segmentation"] = segmentation_files
 

@@ -18,6 +18,12 @@ class SpeechSegment:
     samples: np.ndarray = field(repr=False)
     asr_text: str = ""
     asr_error: str | None = None
+    asr_language: str = ""
+    whisper_language: str = ""
+    whisper_lang_prob: float | None = None
+    text_confidence: float | None = None
+    asr_candidates: dict[str, dict[str, Any]] = field(default_factory=dict)
+    asr_valid: int = 1
     embedding_error: str | None = None
     speaker_id: str = "unknown"
     previous_segment_similarity: float | None = None
@@ -59,7 +65,8 @@ class SpeechSegment:
     @property
     def is_cluster_eligible(self) -> bool:
         return (
-            self.speaker_composition == "single_speaker"
+            self.asr_valid == 1
+            and self.speaker_composition == "single_speaker"
             and self.exclusive_speech_duration_ms >= 1000
         )
 

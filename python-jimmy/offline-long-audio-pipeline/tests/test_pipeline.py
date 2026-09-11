@@ -84,7 +84,7 @@ class PipelineTest(unittest.TestCase):
             runtimes.extractor,
             final_segments,
             cluster_threshold=0.5,
-            num_clusters=-1,
+            num_clusters=2,
             assignment_similarity_threshold=0.5,
         )
         transcribe.assert_called_once_with(runtimes.recognizer, final_segments, 16000)
@@ -183,6 +183,49 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("stage=segmentation event=skipped mode=vad", log_content)
         self.assertEqual(captured_metadata["raw_vad_segment_count"], 2)
         self.assertEqual(captured_metadata["final_asr_segment_count"], 2)
+
+    def test_whisper_engine_transcribes_before_clustering(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_dir = root / "runs" / "test"
+            run_dir.mkdir(parents=True)
+            config = PipelineConfig(
+                audio=root / "input.wav",
+                output_root=root,
+                audio_format=AudioFormat("wav", 16000, 1, 2),
+                asr_engine="whisper",
+                whisper_languages=("en", "hi"),
+                num_clusters=2,
+            )
+            waveform = np.zeros(16000, dtype=np.float32)
+            final_segments = [
+                SpeechSegment(1, 0, 1000, waveform[:8000], speaker_composition="single_speaker"),
+            ]
+            order = []
+            runtimes = SimpleNamespace(
+                vad=object(),
+                vad_window_size=512,
+                recognizer=None,
+                extractor=object(),
+                segmentation=SimpleNamespace(infer_speaker_count_spans=Mock(return_value=[])),
+                resolved_files={},
+            )
+            with patch("pipeline.load_audio", return_value=LoadedAudio(waveform, 16000)), \
+                 patch("pipeline.build_runtimes", return_value=runtimes) as build_runtimes, \
+                 patch("pipeline.collect_vad_segments", return_value=final_segments), \
+                 patch("pipeline.resolve_final_segments", return_value=(final_segments, SimpleNamespace(true_overlap_count=0))), \
+                 patch("pipeline.transcribe_segments_with_whisper", side_effect=lambda *_args, **_kwargs: order.append("asr")) as whisper, \
+                 patch("pipeline.assign_speaker_ids_with_centroids", side_effect=lambda *_args, **_kwargs: order.append("speaker") or (0, 0, 0)), \
+                 patch("pipeline.transcribe_segments") as paraformer, \
+                 patch("pipeline.create_run_directory", return_value=run_dir), \
+                 patch("pipeline.write_results"), \
+                 patch("pipeline.write_metadata"):
+                run_pipeline(config)
+
+        self.assertEqual(order, ["asr", "speaker"])
+        self.assertFalse(build_runtimes.call_args.kwargs["enable_local_asr"])
+        paraformer.assert_not_called()
+        whisper.assert_called_once()
 
 
 if __name__ == "__main__":

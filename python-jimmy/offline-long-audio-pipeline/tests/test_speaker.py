@@ -242,6 +242,28 @@ class ControlledSpeakerAssignmentTest(unittest.TestCase):
             )
 
 
+    def test_invalid_asr_segments_skip_embedding_and_keep_dash_speaker(self):
+        invalid = self._segment(1, 0, 1500, "single_speaker")
+        invalid.asr_valid = 0
+        good = self._segment(2, 1500, 3000, "single_speaker")
+        clusterer = RecordingClusterer([1])
+
+        errors, assigned_excluded, unknown_excluded = assign_speaker_ids_with_centroids(
+            SequenceExtractor([[1.0, 0.0]]),
+            [invalid, good],
+            cluster_threshold=0.5,
+            num_clusters=-1,
+            assignment_similarity_threshold=0.5,
+            clusterer_factory=self._factory(clusterer),
+        )
+
+        self.assertEqual((errors, assigned_excluded, unknown_excluded), (0, 0, 0))
+        self.assertEqual(invalid.speaker_id, "-")
+        self.assertIsNone(invalid.embedding)
+        self.assertEqual(good.speaker_id, "speaker_00")
+        self.assertEqual(clusterer.received.shape, (1, 2))
+
+
 class EmbeddingOverlapCropTest(unittest.TestCase):
     def test_embedding_skips_overlap_and_a_short_tail_after_it(self):
         samples = np.arange(32000, dtype=np.float32)

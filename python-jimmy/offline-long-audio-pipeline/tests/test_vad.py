@@ -84,6 +84,11 @@ class VadCollectionTest(unittest.TestCase):
         self.assertTrue(host.is_cluster_eligible)
         self.assertEqual(host.exclusive_speech_duration_ms, 10034)
 
+    def test_invalid_asr_segments_are_not_cluster_eligible(self):
+        segment = SpeechSegment(1, 0, 2000, np.zeros(32000), speaker_composition="single_speaker")
+        segment.asr_valid = 0
+        self.assertFalse(segment.is_cluster_eligible)
+
 
 if __name__ == "__main__":
     unittest.main()

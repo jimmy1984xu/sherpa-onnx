@@ -31,6 +31,8 @@ class EntryPointTest(unittest.TestCase):
 
         self.assertTrue(args.save_segments)
         self.assertEqual(args.cluster_threshold, 0.4)
+        self.assertEqual(args.num_clusters, 2)
+        self.assertEqual(args.asr_engine, "paraformer")
         self.assertFalse(hasattr(args, "min_embedding_duration_ms"))
         self.assertEqual(args.min_cluster_duration, 1.0)
         self.assertEqual(args.centroid_assignment_similarity_threshold, 0.5)
@@ -98,3 +100,14 @@ class DiarizationEntryPointTest(unittest.TestCase):
         self.assertIsNone(default_args.run_label)
         self.assertEqual(vad_args.segmentation_mode, "vad")
         self.assertEqual(vad_args.run_label, "vad_only")
+
+    def test_exposes_whisper_bilingual_options_and_fixed_two_speaker_clusters(self):
+        args = MODULE.build_parser().parse_args([
+            "--audio", "input.wav",
+            "--asr-engine", "whisper",
+            "--whisper-languages", "en,hi",
+        ])
+
+        self.assertEqual(args.asr_engine, "whisper")
+        self.assertEqual(args.whisper_languages, "en,hi")
+        self.assertEqual(args.num_clusters, 2)
