@@ -62,6 +62,59 @@ class SpeakerSegmentationPipelineTimelineTest(unittest.TestCase):
         self.assertEqual(segments[2].cut_left, "speaker_count")
 
 
+class SpeakerSegmentationPipelineCompatibilityTest(unittest.TestCase):
+    def test_parser_preserves_baseline_pipeline_options_and_defaults(self):
+        runner = _load_runner()
+        baseline_path = REPO_ROOT / "python-jimmy" / "offline-long-audio-pipeline-asr-speaker.py"
+        spec = importlib.util.spec_from_file_location("offline_long_audio_pipeline_asr_speaker", baseline_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load {baseline_path}")
+        baseline = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(baseline)
+
+        baseline_args = baseline.build_parser().parse_args(["--audio", "input.pcm"])
+        candidate_args = runner.build_parser().parse_args(["--audio", "input.pcm"])
+
+        for name in (
+            "output_root", "audio_format", "sample_rate", "channels", "sample_width",
+            "asr_dir", "vad_dir", "speaker_dir", "asr_num_threads",
+            "speaker_num_threads", "vad_threshold", "min_silence_duration",
+            "min_speech_duration", "max_speech_duration", "pre_speech_pad_duration",
+            "cluster_threshold", "num_clusters", "asr_engine", "whisper_url",
+            "whisper_languages", "whisper_timeout_ms", "min_text_confidence",
+            "min_cluster_duration", "centroid_assignment_similarity_threshold",
+            "save_segments", "debug", "run_label",
+        ):
+            self.assertEqual(getattr(candidate_args, name), getattr(baseline_args, name), name)
+
+    def test_builds_baseline_pipeline_config_with_original_diarization_disabled(self):
+        runner = _load_runner()
+        args = runner.build_parser().parse_args([
+            "--audio", "input.pcm",
+            "--segmentation-model", "model.onnx",
+            "--min-duration-on", "0.3",
+            "--min-duration-off", "0.5",
+            "--change-vote-threshold", "0.5",
+        ])
+
+        config = runner.build_baseline_pipeline_config(args)
+
+        self.assertEqual(config.audio, Path("input.pcm"))
+        self.assertEqual(config.segmentation_dir, Path("model.onnx").parent)
+        self.assertEqual(config.segmentation_mode, "vad-pyannote")
+        self.assertEqual(config.diarization_min_duration_on, 0.5)
+        self.assertEqual(config.diarization_min_duration_off, 0.5)
+
+    def test_rejects_baseline_vad_only_mode(self):
+        runner = _load_runner()
+        args = runner.build_parser().parse_args([
+            "--audio", "input.pcm", "--segmentation-mode", "vad"
+        ])
+
+        with self.assertRaisesRegex(ValueError, "requires --segmentation-mode=vad-pyannote"):
+            runner.build_baseline_pipeline_config(args)
+
+
 if __name__ == "__main__":
     unittest.main()
 

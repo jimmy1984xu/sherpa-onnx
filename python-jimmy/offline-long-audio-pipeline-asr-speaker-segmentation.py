@@ -1,45 +1,37 @@
 #!/usr/bin/env python3
-"""VAD + streaming pyannote speaker-count cuts + ASR + global speaker clustering.
+"""Baseline-compatible VAD + SpeakerSegmentation + ASR pipeline.
 
-Unlike ``offline-long-audio-pipeline-asr-speaker.py``, this entry point uses the
-object-level ``SpeakerSegmentation`` API.  The returned local activity does not
-identify global speakers: it is used only for VAD-internal cut boundaries and
-for marking overlap regions before the existing embedding/clustering stage.
+This is intentionally a companion to ``offline-long-audio-pipeline-asr-speaker.py``.
+It delegates the complete VAD, ASR, clustering, output, metadata and timing flow to
+that existing pipeline.  Its only functional substitution is the pyannote activity
+provider: it uses the object-level streaming ``SpeakerSegmentation`` API and resolves
+its ``[start, end, speaker_count, flag]`` spans into the baseline pipeline timeline.
 """
 
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+from dataclasses import replace
+import importlib.util
 import json
 import math
 from pathlib import Path
 import re
 import sys
-import time
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 import numpy as np
 
 PIPELINE_DIR = Path(__file__).with_name("offline-long-audio-pipeline")
 sys.path.insert(0, str(PIPELINE_DIR))
 
-from asr import transcribe_segments
-from audio_io import AudioFormat, load_audio, write_segment_wav
-from models import build_runtimes
-from output import create_run_directory, write_metadata, write_results
-from pipeline import (
-    ASR_ENGINE_PARAFORMER,
-    ASR_ENGINE_WHISPER,
-    DEFAULT_ASR_DIR,
-    DEFAULT_OUTPUT_ROOT,
-    DEFAULT_SEGMENTATION_DIR,
-    DEFAULT_SPEAKER_DIR,
-    DEFAULT_VAD_DIR,
-    DEFAULT_WHISPER_URL,
-)
-from speaker import assign_speaker_ids_with_centroids
-from vad import SpeechSegment, collect_vad_segments
-from whisper_asr import BILINGUAL_MIN_TEXT_CONFIDENCE, WhisperClientConfig, parse_whisper_languages, transcribe_segments_with_whisper
+import pipeline as baseline_pipeline
+from diarization import TimelineResolutionStats
+from models import ResolvedModelFiles
+from output import write_metadata
+from vad import SpeechSegment
+from streaming_segmentation import write_comparison_report, write_span_artifacts
 
 SAMPLE_RATE = 16000
 CONTINUE = 0
@@ -49,12 +41,23 @@ INPUT_FINISHED = 4
 SINGLE_SPEAKER = "single_speaker"
 OVERLAPPED_SPEAKERS = "overlapped_speakers"
 
+_BASELINE_ENTRYPOINT_PATH = Path(__file__).with_name("offline-long-audio-pipeline-asr-speaker.py")
+_BASELINE_ENTRYPOINT: object | None = None
 
-def _resolve_audio_format(
-    audio: Path, requested: str, sample_rate: int, channels: int, sample_width: int
-) -> AudioFormat:
-    kind = requested if requested != "auto" else ("pcm" if audio.suffix.lower() == ".pcm" else "wav")
-    return AudioFormat(kind=kind, sample_rate=sample_rate, channels=channels, sample_width=sample_width)
+
+def _load_baseline_entrypoint() -> object:
+    """Load the unchanged baseline CLI module once for parser compatibility."""
+    global _BASELINE_ENTRYPOINT
+    if _BASELINE_ENTRYPOINT is None:
+        spec = importlib.util.spec_from_file_location(
+            "offline_long_audio_pipeline_asr_speaker_baseline", _BASELINE_ENTRYPOINT_PATH
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load {_BASELINE_ENTRYPOINT_PATH}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _BASELINE_ENTRYPOINT = module
+    return _BASELINE_ENTRYPOINT
 
 
 def _span_value(span: Mapping[str, Any] | object, name: str) -> Any:
@@ -271,14 +274,6 @@ def resolve_vad_segments_with_speaker_segmentation(
         raise AssertionError("Resolved speaker-segmentation output overlaps")
     return output
 
-
-def _composition_counts(segments: Sequence[SpeechSegment]) -> dict[str, int]:
-    return {
-        SINGLE_SPEAKER: sum(segment.speaker_composition == SINGLE_SPEAKER for segment in segments),
-        OVERLAPPED_SPEAKERS: sum(segment.speaker_composition == OVERLAPPED_SPEAKERS for segment in segments),
-    }
-
-
 def _normalise_reference_text(text: str) -> str:
     text = re.sub(r"\([^)]*\)", "", text)
     return "".join(character for character in text if not character.isspace())
@@ -319,145 +314,239 @@ def _result_summary(run_dir: Path, reference: Path | None) -> dict[str, Any]:
         "wer_note": None if reference is not None else "N/A: no --reference supplied",
     }
 
-
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Run VAD, streaming pyannote speaker-count cuts, ASR, and global speaker clustering.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    """Reuse every baseline CLI option, then add only streaming API options."""
+    parser = _load_baseline_entrypoint().build_parser()
+    parser.description = (
+        "Run the unchanged VAD/ASR/clustering pipeline with the streaming "
+        "SpeakerSegmentation activity provider."
     )
-    parser.add_argument("--audio", required=True, help="Input PCM or WAV file")
-    parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
-    parser.add_argument("--audio-format", choices=("auto", "pcm", "wav"), default="auto")
-    parser.add_argument("--sample-rate", type=int, default=SAMPLE_RATE)
-    parser.add_argument("--channels", type=int, default=1)
-    parser.add_argument("--sample-width", type=int, default=2)
-    parser.add_argument("--asr-dir", default=str(DEFAULT_ASR_DIR))
-    parser.add_argument("--vad-dir", default=str(DEFAULT_VAD_DIR))
-    parser.add_argument("--speaker-dir", default=str(DEFAULT_SPEAKER_DIR))
-    parser.add_argument("--segmentation-model", default=str(DEFAULT_SEGMENTATION_DIR / "model.onnx"))
-    parser.add_argument("--asr-num-threads", type=int, default=1)
-    parser.add_argument("--speaker-num-threads", type=int, default=2)
-    parser.add_argument("--segmentation-num-threads", type=int, default=4)
-    parser.add_argument("--segmentation-chunk-ms", type=int, default=32)
-    parser.add_argument("--min-duration-on", type=float, default=0.30)
-    parser.add_argument("--min-duration-off", type=float, default=0.50)
-    parser.add_argument("--change-vote-threshold", type=float, default=0.50)
-    parser.add_argument("--vad-threshold", type=float, default=0.5)
-    parser.add_argument("--min-silence-duration", type=float, default=0.8)
-    parser.add_argument("--min-speech-duration", type=float, default=0.25)
-    parser.add_argument("--max-speech-duration", type=float, default=25.0)
-    parser.add_argument("--pre-speech-pad-duration", type=float, default=0.0)
-    parser.add_argument("--cluster-threshold", type=float, default=0.5)
-    parser.add_argument("--num-clusters", type=int, default=2)
-    parser.add_argument("--centroid-assignment-similarity-threshold", type=float, default=0.5)
-    parser.add_argument("--asr-engine", choices=(ASR_ENGINE_PARAFORMER, ASR_ENGINE_WHISPER), default=ASR_ENGINE_PARAFORMER)
-    parser.add_argument("--whisper-url", default=DEFAULT_WHISPER_URL)
-    parser.add_argument("--whisper-languages", default="")
-    parser.add_argument("--whisper-timeout-ms", type=int, default=30000)
-    parser.add_argument("--min-text-confidence", type=float, default=BILINGUAL_MIN_TEXT_CONFIDENCE)
-    parser.add_argument("--save-segments", action="store_true")
-    parser.add_argument("--baseline-run-dir", type=Path, help="Baseline run directory containing result.json")
-    parser.add_argument("--reference", type=Path, help="Optional plain-text reference for character WER")
-    parser.add_argument("--run-label", default="streaming-speaker-segmentation")
-    parser.add_argument("--debug", action="store_true")
+    group = parser.add_argument_group("streaming pyannote segmentation")
+    group.add_argument(
+        "--segmentation-model",
+        type=Path,
+        default=None,
+        help="Explicit model.onnx. Default: --segmentation-dir/model.onnx.",
+    )
+    group.add_argument("--segmentation-num-threads", type=int, default=4)
+    group.add_argument("--segmentation-chunk-ms", type=int, default=32)
+    group.add_argument("--min-duration-on", type=float, default=0.30)
+    group.add_argument("--min-duration-off", type=float, default=0.50)
+    group.add_argument("--change-vote-threshold", type=float, default=0.50)
+    group.add_argument(
+        "--baseline-run-dir",
+        type=Path,
+        help="Optional baseline run directory containing result.json for comparison.",
+    )
+    group.add_argument(
+        "--reference", type=Path, help="Optional plain-text reference for character WER."
+    )
     return parser
 
 
-def run(args: argparse.Namespace) -> Path:
+def resolve_segmentation_model(args: argparse.Namespace) -> Path:
+    return args.segmentation_model or (Path(args.segmentation_dir) / "model.onnx")
+
+
+def build_baseline_pipeline_config(args: argparse.Namespace) -> baseline_pipeline.PipelineConfig:
+    """Translate the baseline CLI namespace without changing its semantics."""
+    if args.segmentation_mode != baseline_pipeline.SEGMENTATION_MODE_VAD_PYANNOTE:
+        raise ValueError(
+            "This script requires --segmentation-mode=vad-pyannote; "
+            "use offline-long-audio-pipeline-asr-speaker.py for --segmentation-mode=vad"
+        )
+    audio = Path(args.audio)
+    model = resolve_segmentation_model(args)
+    requested = args.audio_format
+    audio_format = _load_baseline_entrypoint()._resolve_audio_format(
+        audio, requested, args.sample_rate, args.channels, args.sample_width
+    )
+    return baseline_pipeline.PipelineConfig(
+        audio=audio,
+        output_root=Path(args.output_root),
+        audio_format=audio_format,
+        asr_dir=Path(args.asr_dir),
+        vad_dir=Path(args.vad_dir),
+        speaker_dir=Path(args.speaker_dir),
+        segmentation_dir=model.parent,
+        asr_num_threads=args.asr_num_threads,
+        speaker_num_threads=args.speaker_num_threads,
+        vad_threshold=args.vad_threshold,
+        min_silence_duration=args.min_silence_duration,
+        min_speech_duration=args.min_speech_duration,
+        max_speech_duration=args.max_speech_duration,
+        pre_speech_pad_duration=args.pre_speech_pad_duration,
+        cluster_threshold=args.cluster_threshold,
+        num_clusters=args.num_clusters,
+        asr_engine=args.asr_engine,
+        whisper_url=args.whisper_url,
+        whisper_languages=tuple(
+            _load_baseline_entrypoint().parse_whisper_languages(args.whisper_languages)
+        ),
+        whisper_timeout_ms=args.whisper_timeout_ms,
+        min_text_confidence=args.min_text_confidence,
+        # Retained at their baseline values for PipelineConfig/CLI compatibility.
+        # The replacement resolver below consumes the streaming API's own
+        # min-duration settings, not the legacy diarization smoothing options.
+        diarization_min_duration_on=args.diarization_min_duration_on,
+        diarization_min_duration_off=args.diarization_min_duration_off,
+        min_cluster_duration=args.min_cluster_duration,
+        centroid_assignment_similarity_threshold=args.centroid_assignment_similarity_threshold,
+        save_segments=args.save_segments,
+        debug=args.debug,
+        segmentation_mode=baseline_pipeline.SEGMENTATION_MODE_VAD_PYANNOTE,
+        run_label=args.run_label,
+    )
+
+
+class _StreamingSpeakerSegmentationRuntime:
+    """Adapter with the method consumed by the unchanged baseline pipeline."""
+
+    def __init__(
+        self,
+        model: Path,
+        *,
+        chunk_ms: int,
+        num_threads: int,
+        min_duration_on: float,
+        min_duration_off: float,
+        change_vote_threshold: float,
+    ) -> None:
+        self.model = model
+        self.chunk_ms = chunk_ms
+        self.num_threads = num_threads
+        self.min_duration_on = min_duration_on
+        self.min_duration_off = min_duration_off
+        self.change_vote_threshold = change_vote_threshold
+        self.spans: list[dict[str, float | int]] = []
+
+    def infer_speaker_count_spans(self, samples: np.ndarray) -> list[dict[str, float | int]]:
+        self.spans = stream_speaker_segmentation_samples(
+            samples,
+            model=self.model,
+            chunk_ms=self.chunk_ms,
+            num_threads=self.num_threads,
+            min_duration_on=self.min_duration_on,
+            min_duration_off=self.min_duration_off,
+            change_vote_threshold=self.change_vote_threshold,
+        )
+        return self.spans
+
+
+@contextmanager
+def _use_streaming_segmentation_runtime(
+    runtime: _StreamingSpeakerSegmentationRuntime,
+) -> Iterator[None]:
+    """Temporarily inject the new provider into the unchanged baseline runner."""
+    original_build_runtimes = baseline_pipeline.build_runtimes
+    original_resolve_final_segments = baseline_pipeline.resolve_final_segments
+
+    def build_runtimes_with_streaming_provider(**kwargs: Any) -> object:
+        # Do not instantiate the legacy SegmentationRuntime; the returned proxy
+        # supplies exactly the method run_pipeline needs at this extension point.
+        kwargs["enable_segmentation"] = False
+        runtimes = original_build_runtimes(**kwargs)
+        resolved_files = dict(runtimes.resolved_files)
+        resolved_files["segmentation"] = ResolvedModelFiles(model=runtime.model)
+        return replace(runtimes, segmentation=runtime, resolved_files=resolved_files)
+
+    def resolve_with_streaming_spans(
+        vad_segments: Sequence[SpeechSegment],
+        activity: Sequence[Mapping[str, Any] | object],
+        waveform: np.ndarray,
+        sample_rate: int,
+        **_: Any,
+    ) -> tuple[list[SpeechSegment], TimelineResolutionStats]:
+        segments = resolve_vad_segments_with_speaker_segmentation(
+            vad_segments, activity, waveform, sample_rate
+        )
+        return segments, TimelineResolutionStats(
+            true_overlap_count=sum(
+                segment.speaker_composition == OVERLAPPED_SPEAKERS for segment in segments
+            )
+        )
+
+    baseline_pipeline.build_runtimes = build_runtimes_with_streaming_provider
+    baseline_pipeline.resolve_final_segments = resolve_with_streaming_spans
+    try:
+        yield
+    finally:
+        baseline_pipeline.build_runtimes = original_build_runtimes
+        baseline_pipeline.resolve_final_segments = original_resolve_final_segments
+
+
+def _update_streaming_metadata(
+    run_dir: Path, args: argparse.Namespace, model: Path, spans: Sequence[Mapping[str, Any] | object]
+) -> None:
+    path = run_dir / "run_metadata.json"
+    metadata = json.loads(path.read_text(encoding="utf-8"))
+    metadata["streaming_speaker_segmentation"] = {
+        "model": str(model),
+        "chunk_ms": args.segmentation_chunk_ms,
+        "num_threads": args.segmentation_num_threads,
+        "min_duration_on": args.min_duration_on,
+        "min_duration_off": args.min_duration_off,
+        "change_vote_threshold": args.change_vote_threshold,
+        "span_count": len(spans),
+    }
+    write_metadata(run_dir, metadata)
+
+
+def run(args: argparse.Namespace) -> baseline_pipeline.PipelineResult:
     if args.sample_rate != SAMPLE_RATE:
         raise ValueError("The pyannote segmentation model requires --sample-rate=16000")
     if args.segmentation_chunk_ms <= 0:
         raise ValueError("--segmentation-chunk-ms must be positive")
-    if not Path(args.segmentation_model).is_file():
-        raise FileNotFoundError(f"Segmentation model not found: {args.segmentation_model}")
+    model = resolve_segmentation_model(args)
+    if not model.is_file():
+        raise FileNotFoundError(f"Segmentation model not found: {model}")
     if args.reference is not None and not args.reference.is_file():
         raise FileNotFoundError(f"Reference file not found: {args.reference}")
     if args.baseline_run_dir is not None and not (args.baseline_run_dir / "result.json").is_file():
         raise FileNotFoundError(f"Baseline result.json not found: {args.baseline_run_dir}")
 
-    from streaming_segmentation import write_comparison_report, write_span_artifacts
+    runtime = _StreamingSpeakerSegmentationRuntime(
+        model,
+        chunk_ms=args.segmentation_chunk_ms,
+        num_threads=args.segmentation_num_threads,
+        min_duration_on=args.min_duration_on,
+        min_duration_off=args.min_duration_off,
+        change_vote_threshold=args.change_vote_threshold,
+    )
+    config = build_baseline_pipeline_config(args)
+    with _use_streaming_segmentation_runtime(runtime):
+        result = baseline_pipeline.run_pipeline(config)
 
-    audio = Path(args.audio)
-    run_dir = create_run_directory(Path(args.output_root), audio.name, run_label=args.run_label)
-    started_total = time.perf_counter()
-    loaded = load_audio(audio, _resolve_audio_format(audio, args.audio_format, args.sample_rate, args.channels, args.sample_width))
-    runtimes = build_runtimes(
-        asr_dir=Path(args.asr_dir), vad_dir=Path(args.vad_dir), speaker_dir=Path(args.speaker_dir),
-        segmentation_dir=Path(args.segmentation_model).parent, asr_num_threads=args.asr_num_threads,
-        speaker_num_threads=args.speaker_num_threads, vad_threshold=args.vad_threshold,
-        min_silence_duration=args.min_silence_duration, min_speech_duration=args.min_speech_duration,
-        max_speech_duration=args.max_speech_duration, pre_speech_pad_duration=args.pre_speech_pad_duration,
-        cluster_threshold=args.cluster_threshold, num_clusters=args.num_clusters, debug=args.debug,
-        enable_segmentation=False, enable_local_asr=args.asr_engine == ASR_ENGINE_PARAFORMER,
+    write_span_artifacts(
+        result.run_dir,
+        config.audio.stem,
+        result.timings["total_seconds"] / result.rtf if result.rtf > 0 else 0.0,
+        runtime.spans,
     )
-    vad_started = time.perf_counter()
-    raw_vad_segments = collect_vad_segments(runtimes.vad, loaded.samples, runtimes.vad_window_size, loaded.sample_rate)
-    vad_seconds = time.perf_counter() - vad_started
-    segmentation_started = time.perf_counter()
-    spans = stream_speaker_segmentation_samples(
-        loaded.samples, model=Path(args.segmentation_model), chunk_ms=args.segmentation_chunk_ms,
-        num_threads=args.segmentation_num_threads, min_duration_on=args.min_duration_on,
-        min_duration_off=args.min_duration_off, change_vote_threshold=args.change_vote_threshold,
-    )
-    segmentation_seconds = time.perf_counter() - segmentation_started
-    write_span_artifacts(run_dir, audio.stem, loaded.duration_ms / 1000.0, spans)
-    resolution_started = time.perf_counter()
-    segments = resolve_vad_segments_with_speaker_segmentation(raw_vad_segments, spans, loaded.samples, loaded.sample_rate)
-    resolution_seconds = time.perf_counter() - resolution_started
-    if args.save_segments:
-        for segment in segments:
-            write_segment_wav(run_dir / "segments" / f"{segment.segment_id}.wav", segment.samples)
-    speaker_started = time.perf_counter()
-    embedding_error_count, centroid_assigned, unknown_excluded = assign_speaker_ids_with_centroids(
-        runtimes.extractor, segments, cluster_threshold=args.cluster_threshold, num_clusters=args.num_clusters,
-        assignment_similarity_threshold=args.centroid_assignment_similarity_threshold,
-    )
-    speaker_seconds = time.perf_counter() - speaker_started
-    asr_started = time.perf_counter()
-    if args.asr_engine == ASR_ENGINE_WHISPER:
-        transcribe_segments_with_whisper(segments, WhisperClientConfig(
-            url=args.whisper_url, timeout_ms=args.whisper_timeout_ms,
-            languages=parse_whisper_languages(args.whisper_languages), min_text_confidence=args.min_text_confidence,
-        ))
-    else:
-        if runtimes.recognizer is None:
-            raise RuntimeError("Local Paraformer recognizer is required")
-        transcribe_segments(runtimes.recognizer, segments, loaded.sample_rate)
-    asr_seconds = time.perf_counter() - asr_started
-    total_seconds = time.perf_counter() - started_total
-    timings = {
-        "vad_seconds": vad_seconds, "segmentation_seconds": segmentation_seconds,
-        "timeline_resolution_seconds": resolution_seconds, "speaker_seconds": speaker_seconds,
-        "asr_seconds": asr_seconds, "total_seconds": total_seconds,
-        "rtf": total_seconds / max(loaded.duration_ms / 1000.0, 0.001),
-    }
-    write_results(run_dir, audio.name, loaded.duration_ms, segments, timings)
-    write_metadata(run_dir, {
-        "audio": str(audio), "audio_duration_ms": loaded.duration_ms,
-        "config": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
-        "resolved_models": {role: {"model": str(files.model), "tokens": str(files.tokens) if files.tokens else None} for role, files in runtimes.resolved_files.items()},
-        "segmentation_model": str(args.segmentation_model), "raw_vad_segment_count": len(raw_vad_segments),
-        "final_asr_segment_count": len(segments), "speaker_composition_counts": _composition_counts(segments),
-        "true_overlap_count": sum(segment.speaker_composition == OVERLAPPED_SPEAKERS for segment in segments),
-        "asr_error_count": sum(segment.asr_error is not None for segment in segments),
-        "embedding_error_count": embedding_error_count, "centroid_assigned_excluded_segment_count": centroid_assigned,
-        "unknown_excluded_segment_count": unknown_excluded, "timings": timings,
-    })
+    _update_streaming_metadata(result.run_dir, args, model, runtime.spans)
     if args.baseline_run_dir is not None:
-        baseline = _result_summary(args.baseline_run_dir, args.reference)
-        candidate = _result_summary(run_dir, args.reference)
-        write_comparison_report(run_dir, baseline, candidate)
-    return run_dir
+        write_comparison_report(
+            result.run_dir,
+            _result_summary(args.baseline_run_dir, args.reference),
+            _result_summary(result.run_dir, args.reference),
+        )
+    elif args.reference is not None:
+        (result.run_dir / "wer.json").write_text(
+            json.dumps(_result_summary(result.run_dir, args.reference), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        run_dir = run(args)
+        result = run(args)
     except (FileNotFoundError, RuntimeError, ValueError) as error:
         print(f"Pipeline failed: {error}", file=sys.stderr)
         return 2
-    print(f"Pipeline finished: {run_dir}")
+    print(f"Pipeline finished: {result.run_dir}")
+    print(f"segments={result.segment_count} rtf={result.rtf:.3f}")
     return 0
 
 
