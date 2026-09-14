@@ -20,12 +20,9 @@ SPEAKER_COUNT_CHANGED = 1
 SINGLE_SPEAKER_CHANGED = 2
 INPUT_FINISHED = 4
 
-_VALID_FLAGS = {
-    CONTINUE,
-    SPEAKER_COUNT_CHANGED,
-    SINGLE_SPEAKER_CHANGED,
-    INPUT_FINISHED,
-}
+_VALID_FLAG_MASK = (
+    SPEAKER_COUNT_CHANGED | SINGLE_SPEAKER_CHANGED | INPUT_FINISHED
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -121,8 +118,8 @@ def normalize_spans(
             raise ValueError(f"span {index} overlaps the previous span")
         if type(speaker_count) is not int or not 0 <= speaker_count <= 2:
             raise ValueError(f"span {index} speaker_count must be an integer in [0, 2]")
-        if type(flag) is not int or flag not in _VALID_FLAGS:
-            raise ValueError(f"span {index} has an unknown flag: {flag!r}")
+        if type(flag) is not int or flag < 0 or flag & ~_VALID_FLAG_MASK:
+            raise ValueError(f"span {index} has an unknown flag bit: {flag!r}")
 
         records.append(
             {
@@ -135,7 +132,7 @@ def normalize_spans(
         previous_end = end
 
     for index, record in enumerate(records[:-1]):
-        if record["flag"] == INPUT_FINISHED:
+        if record["flag"] & INPUT_FINISHED:
             raise ValueError(f"span {index} has INPUT_FINISHED before the final span")
     return records
 
@@ -174,7 +171,7 @@ def write_span_artifacts(
         "count_1_seconds": durations[1],
         "count_2_seconds": durations[2],
         "single_speaker_change_count": sum(
-            record["flag"] == SINGLE_SPEAKER_CHANGED for record in records
+            bool(record["flag"] & SINGLE_SPEAKER_CHANGED) for record in records
         ),
     }
     _write_json(output_dir / f"{stem}.summary.json", summary)
@@ -279,16 +276,14 @@ def _drain(segmenter: Any) -> list[dict[str, Any]]:
 
 
 def _pcm_paths(input_dir: Path) -> list[Path]:
-    paths = sorted(path for path in input_dir.rglob("*.pcm") if path.is_file())
-    seen_stems: set[str] = set()
-    for path in paths:
-        if path.stem in seen_stems:
-            raise ValueError(
-                "recursive input contains duplicate PCM stems, which would overwrite "
-                f"artifacts: {path.stem}"
-            )
-        seen_stems.add(path.stem)
-    return paths
+    """Return every recursively discovered PCM input in stable path order."""
+    return sorted(path for path in input_dir.rglob("*.pcm") if path.is_file())
+
+
+def _artifact_output_dir(output_dir: Path, input_dir: Path, pcm_path: Path) -> Path:
+    """Mirror the PCM's relative parent so duplicate stems cannot collide."""
+    relative = pcm_path.relative_to(input_dir)
+    return output_dir / relative.parent
 
 
 def run_streaming_segmentation(args: argparse.Namespace) -> dict[str, Any]:
@@ -339,8 +334,9 @@ def run_streaming_segmentation(args: argparse.Namespace) -> dict[str, Any]:
         spans.extend(_drain(segmenter))
         spans = normalize_spans(spans)
 
+        artifact_dir = _artifact_output_dir(args.output_dir, args.input_dir, pcm_path)
         summary = write_span_artifacts(
-            args.output_dir,
+            artifact_dir,
             pcm_path.stem,
             frames / args.sample_rate,
             spans,
@@ -348,6 +344,7 @@ def run_streaming_segmentation(args: argparse.Namespace) -> dict[str, Any]:
         file_summaries.append(
             {
                 "input": str(pcm_path.relative_to(args.input_dir)),
+                "artifacts": str(artifact_dir.relative_to(args.output_dir) / pcm_path.stem),
                 "stem": pcm_path.stem,
                 **summary,
             }

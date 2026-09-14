@@ -107,6 +107,39 @@ class StreamingSegmentationReportTest(unittest.TestCase):
             self.assertIn("WER", report)
             self.assertIn("multi/overlap", report)
 
+    def test_allows_terminal_input_finished_combined_with_a_boundary(self):
+        helper = _load_streaming_segmentation_helper()
+        spans = [
+            {"start": 0.0, "end": 1.0, "speaker_count": 1, "flag": 0},
+            {"start": 1.0, "end": 2.0, "speaker_count": 2, "flag": 5},
+        ]
+        self.assertEqual(helper.normalize_spans(spans), spans)
+
+    def test_counts_terminal_combined_single_speaker_change(self):
+        helper = _load_streaming_segmentation_helper()
+        spans = [
+            {"start": 0.0, "end": 1.0, "speaker_count": 1, "flag": 6},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            summary = helper.write_span_artifacts(Path(directory), "sample", 1.0, spans)
+        self.assertEqual(summary["single_speaker_change_count"], 1)
+
+    def test_recursive_same_stem_files_keep_distinct_output_directories(self):
+        helper = _load_streaming_segmentation_helper()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "input"
+            output = Path(directory) / "output"
+            first = root / "a" / "session.pcm"
+            second = root / "b" / "session.pcm"
+            first.parent.mkdir(parents=True)
+            second.parent.mkdir(parents=True)
+            first.write_bytes(b"\x00\x00")
+            second.write_bytes(b"\x00\x00")
+            paths = helper._pcm_paths(root)
+            self.assertEqual(paths, [first, second])
+            self.assertEqual(helper._artifact_output_dir(output, root, first), output / "a")
+            self.assertEqual(helper._artifact_output_dir(output, root, second), output / "b")
+
     def test_rejects_invalid_span_streams(self):
         helper = _load_streaming_segmentation_helper()
         invalid_span_streams = (
