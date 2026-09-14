@@ -49,6 +49,7 @@
 
 #if SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION == 1
 #include "sherpa-onnx/csrc/offline-speaker-diarization.h"
+#include "sherpa-onnx/csrc/speaker-segmentation.h"
 #endif
 
 const char *SherpaOnnxGetVersionStr() { return sherpa_onnx::GetVersionStr(); }
@@ -3232,6 +3233,121 @@ void SherpaOnnxOnlineSpeechDenoiserReset(
 
 #if SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION == 1
 
+struct SherpaOnnxSpeakerSegmentation {
+  std::unique_ptr<sherpa_onnx::SpeakerSegmentation> impl;
+  mutable SherpaOnnxSpeakerSegmentationSpan front;
+};
+
+static sherpa_onnx::SpeakerSegmentationConfig
+GetSpeakerSegmentationConfig(const SherpaOnnxSpeakerSegmentationConfig *config) {
+  sherpa_onnx::SpeakerSegmentationConfig segmenter_config;
+
+  segmenter_config.model.pyannote.model =
+      SHERPA_ONNX_OR(config->model.pyannote.model, "");
+  segmenter_config.model.num_threads =
+      SHERPA_ONNX_OR(config->model.num_threads, 1);
+  segmenter_config.model.debug = config->model.debug;
+  segmenter_config.model.provider =
+      SHERPA_ONNX_OR(config->model.provider, "cpu");
+  if (segmenter_config.model.provider.empty()) {
+    segmenter_config.model.provider = "cpu";
+  }
+
+  segmenter_config.min_duration_on =
+      SHERPA_ONNX_OR(config->min_duration_on, 0.30F);
+  segmenter_config.min_duration_off =
+      SHERPA_ONNX_OR(config->min_duration_off, 0.50F);
+  segmenter_config.change_vote_threshold =
+      SHERPA_ONNX_OR(config->change_vote_threshold, 0.50F);
+
+  if (segmenter_config.model.debug) {
+#if __OHOS__
+    SHERPA_ONNX_LOGE("%{public}s\n", segmenter_config.ToString().c_str());
+#else
+    SHERPA_ONNX_LOGE("%s\n", segmenter_config.ToString().c_str());
+#endif
+  }
+
+  return segmenter_config;
+}
+
+const SherpaOnnxSpeakerSegmentation *SherpaOnnxCreateSpeakerSegmentation(
+    const SherpaOnnxSpeakerSegmentationConfig *config) {
+  if (!config) {
+    return nullptr;
+  }
+
+  auto segmenter_config = GetSpeakerSegmentationConfig(config);
+  if (!segmenter_config.Validate()) {
+    SHERPA_ONNX_LOGE("Errors in config");
+    return nullptr;
+  }
+
+  auto *segmenter = new SherpaOnnxSpeakerSegmentation;
+  segmenter->impl = std::make_unique<sherpa_onnx::SpeakerSegmentation>(
+      segmenter_config);
+  return segmenter;
+}
+
+void SherpaOnnxDestroySpeakerSegmentation(
+    const SherpaOnnxSpeakerSegmentation *segmenter) {
+  delete segmenter;
+}
+
+int32_t SherpaOnnxSpeakerSegmentationGetSampleRate(
+    const SherpaOnnxSpeakerSegmentation *segmenter) {
+  return segmenter ? segmenter->impl->SampleRate() : 0;
+}
+
+void SherpaOnnxSpeakerSegmentationAcceptWaveform(
+    const SherpaOnnxSpeakerSegmentation *segmenter, const float *samples,
+    int32_t n) {
+  if (!segmenter || n < 0 || (!samples && n > 0)) {
+    return;
+  }
+  segmenter->impl->AcceptWaveform(samples, n);
+}
+
+void SherpaOnnxSpeakerSegmentationInputFinished(
+    const SherpaOnnxSpeakerSegmentation *segmenter) {
+  if (segmenter) {
+    segmenter->impl->InputFinished();
+  }
+}
+
+int32_t SherpaOnnxSpeakerSegmentationEmpty(
+    const SherpaOnnxSpeakerSegmentation *segmenter) {
+  return !segmenter || segmenter->impl->Empty();
+}
+
+const SherpaOnnxSpeakerSegmentationSpan *SherpaOnnxSpeakerSegmentationFront(
+    const SherpaOnnxSpeakerSegmentation *segmenter) {
+  if (!segmenter || segmenter->impl->Empty()) {
+    return nullptr;
+  }
+
+  const auto &span = segmenter->impl->Front();
+  segmenter->front.start = span.start;
+  segmenter->front.end = span.end;
+  segmenter->front.speaker_count = span.speaker_count;
+  segmenter->front.flag = span.flag;
+  return &segmenter->front;
+}
+
+void SherpaOnnxSpeakerSegmentationPop(
+    const SherpaOnnxSpeakerSegmentation *segmenter) {
+  if (segmenter && !segmenter->impl->Empty()) {
+    segmenter->impl->Pop();
+  }
+}
+
+void SherpaOnnxSpeakerSegmentationReset(
+    const SherpaOnnxSpeakerSegmentation *segmenter) {
+  if (segmenter) {
+    segmenter->impl->Reset();
+  }
+}
+
 struct SherpaOnnxOfflineSpeakerDiarization {
   std::unique_ptr<sherpa_onnx::OfflineSpeakerDiarization> impl;
 };
@@ -3414,6 +3530,65 @@ SherpaOnnxOfflineSpeakerDiarizationProcessWithCallbackNoArg(
   return ans;
 }
 #else
+
+const SherpaOnnxSpeakerSegmentation *SherpaOnnxCreateSpeakerSegmentation(
+    const SherpaOnnxSpeakerSegmentationConfig *config) {
+  SHERPA_ONNX_LOGE(
+      "Speaker diarization is not enabled. Please rebuild sherpa-onnx");
+  return nullptr;
+}
+
+void SherpaOnnxDestroySpeakerSegmentation(
+    const SherpaOnnxSpeakerSegmentation *segmenter) {
+  SHERPA_ONNX_LOGE(
+      "Speaker diarization is not enabled. Please rebuild sherpa-onnx");
+}
+
+int32_t SherpaOnnxSpeakerSegmentationGetSampleRate(
+    const SherpaOnnxSpeakerSegmentation *segmenter) {
+  SHERPA_ONNX_LOGE(
+      "Speaker diarization is not enabled. Please rebuild sherpa-onnx");
+  return 0;
+}
+
+void SherpaOnnxSpeakerSegmentationAcceptWaveform(
+    const SherpaOnnxSpeakerSegmentation *segmenter, const float *samples,
+    int32_t n) {
+  SHERPA_ONNX_LOGE(
+      "Speaker diarization is not enabled. Please rebuild sherpa-onnx");
+}
+
+void SherpaOnnxSpeakerSegmentationInputFinished(
+    const SherpaOnnxSpeakerSegmentation *segmenter) {
+  SHERPA_ONNX_LOGE(
+      "Speaker diarization is not enabled. Please rebuild sherpa-onnx");
+}
+
+int32_t SherpaOnnxSpeakerSegmentationEmpty(
+    const SherpaOnnxSpeakerSegmentation *segmenter) {
+  SHERPA_ONNX_LOGE(
+      "Speaker diarization is not enabled. Please rebuild sherpa-onnx");
+  return 1;
+}
+
+const SherpaOnnxSpeakerSegmentationSpan *SherpaOnnxSpeakerSegmentationFront(
+    const SherpaOnnxSpeakerSegmentation *segmenter) {
+  SHERPA_ONNX_LOGE(
+      "Speaker diarization is not enabled. Please rebuild sherpa-onnx");
+  return nullptr;
+}
+
+void SherpaOnnxSpeakerSegmentationPop(
+    const SherpaOnnxSpeakerSegmentation *segmenter) {
+  SHERPA_ONNX_LOGE(
+      "Speaker diarization is not enabled. Please rebuild sherpa-onnx");
+}
+
+void SherpaOnnxSpeakerSegmentationReset(
+    const SherpaOnnxSpeakerSegmentation *segmenter) {
+  SHERPA_ONNX_LOGE(
+      "Speaker diarization is not enabled. Please rebuild sherpa-onnx");
+}
 
 const SherpaOnnxOfflineSpeakerDiarization *
 SherpaOnnxCreateOfflineSpeakerDiarization(
