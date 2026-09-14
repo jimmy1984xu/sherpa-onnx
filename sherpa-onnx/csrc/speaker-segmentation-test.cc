@@ -175,6 +175,19 @@ TEST(SpeakerSegmentation, InputFinishedPadsTailButClipsToAudioEnd) {
   }
 }
 
+TEST(SpeakerSegmentation, InputFinishedHandlesTailShorterThanWindowShift) {
+  auto segmenter = CreateTestSegmenter();
+  // The 128-sample tail is shorter than the 1-second (16000-sample) shift.
+  std::vector<float> audio(160128, 0.1F);
+  segmenter->AcceptWaveform(audio.data(), static_cast<int32_t>(audio.size()));
+  segmenter->InputFinished();
+  const auto spans = Drain(segmenter.get());
+
+  ASSERT_FALSE(spans.empty());
+  EXPECT_FLOAT_EQ(spans.back().end, 10.008F);
+  EXPECT_NE(spans.back().flag & kSpeakerSegmentationInputFinished, 0);
+}
+
 TEST(SpeakerSegmentation, ResetAndTwoObjectsDoNotShareState) {
   auto first = CreateTestSegmenter();
   auto second = CreateTestSegmenter();

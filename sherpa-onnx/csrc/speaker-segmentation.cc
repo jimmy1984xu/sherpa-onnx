@@ -180,7 +180,12 @@ class SpeakerSegmentation::Impl {
     while (next_window_start_ < received_samples_) {
       ProcessWindow(next_window_start_, /*pad_right=*/true);
       next_window_start_ += meta_data_.window_shift;
-      TrimAudioBuffer();
+      // The final right-padded window may consume less than one window shift.
+      // No more audio will be accepted after InputFinished(), so retaining that
+      // short tail is safe and avoids dropping samples that are not buffered.
+      if (next_window_start_ <= received_samples_) {
+        TrimAudioBuffer();
+      }
     }
 
     if (!spans_.empty()) {
