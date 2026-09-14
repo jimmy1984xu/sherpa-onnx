@@ -323,6 +323,7 @@ if(SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION)
   list(APPEND sources
     fast-clustering-config.cc
     fast-clustering.cc
+    speaker-segmentation-fusion.cc
     offline-speaker-diarization-impl.cc
     offline-speaker-diarization-result.cc
     offline-speaker-diarization.cc
@@ -838,6 +839,7 @@ if(SHERPA_ONNX_ENABLE_TESTS)
   if(SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION)
     list(APPEND sherpa_onnx_test_srcs
       fast-clustering-test.cc
+      speaker-segmentation-test.cc
     )
   endif()
 
