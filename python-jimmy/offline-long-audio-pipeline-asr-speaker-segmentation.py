@@ -40,6 +40,7 @@ SAMPLE_RATE = 16000
 CONTINUE = 0
 SINGLE_SPEAKER_CHANGED = 2
 INPUT_FINISHED = 4
+OVERLAPPED_SPEAKERS = "overlapped_speakers"
 
 _BASELINE_ENTRYPOINT_PATH = Path(__file__).with_name("offline-long-audio-pipeline-asr-speaker.py")
 _BASELINE_ENTRYPOINT: object | None = None

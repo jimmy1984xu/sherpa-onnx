@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import tempfile
 
 import numpy as np
 
@@ -103,6 +104,28 @@ class SpeakerSegmentationPipelineTimelineTest(unittest.TestCase):
 
         self.assertEqual([(segment.start_ms, segment.end_ms) for segment in weak], [(0, 2000)])
         self.assertEqual([(segment.start_ms, segment.end_ms) for segment in strong], [(0, 1100), (1100, 2200)])
+
+    def test_summarizes_overlapped_segments_for_comparison_report(self):
+        runner = _load_runner()
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "result.json").write_text(
+                '{"segments": [{"asr_text": "测试", '
+                '"speaker_composition": "overlapped_speakers", '
+                '"cut_left": "pyannote", "cut_right": "vad", '
+                '"time_range": "00:00.000-00:01.000"}]}',
+                encoding="utf-8",
+            )
+            reference = run_dir / "reference.txt"
+            reference.write_text("测试", encoding="utf-8")
+
+            summary = runner._result_summary(run_dir, reference)
+
+        self.assertEqual(summary["wer"], 0.0)
+        self.assertEqual(summary["multi_segment_count"], 1)
+        self.assertEqual(summary["multi_break_count"], 1)
+
+
 
 class SpeakerSegmentationPipelineCompatibilityTest(unittest.TestCase):
     def test_parser_preserves_baseline_pipeline_options_and_defaults(self):
