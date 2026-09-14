@@ -111,7 +111,9 @@
   在 `.cc` 中实现以下不可替代规则：
 
   ```cpp
-  const int32_t raw_count =\n    static_cast<int32_t>((raw_mask & 1) + ((raw_mask >> 1) & 1) +\n                         ((raw_mask >> 2) & 1));
+  const int32_t raw_count =
+    static_cast<int32_t>((raw_mask & 1) + ((raw_mask >> 1) & 1) +
+                         ((raw_mask >> 2) & 1));
   count_sum[global_frame] += std::min(raw_count, 2);
   ++count_coverage[global_frame];
   fused_count = std::clamp(
