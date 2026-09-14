@@ -15,7 +15,6 @@ from contextlib import contextmanager
 from dataclasses import replace
 import importlib.util
 import json
-import math
 from pathlib import Path
 import re
 import sys
@@ -27,7 +26,11 @@ PIPELINE_DIR = Path(__file__).with_name("offline-long-audio-pipeline")
 sys.path.insert(0, str(PIPELINE_DIR))
 
 import pipeline as baseline_pipeline
-from diarization import TimelineResolutionStats
+from diarization import (
+    TimelineResolutionStats,
+    resolve_final_segments as resolve_baseline_final_segments,
+)
+from segmentation import SpeakerCountSpan
 from models import ResolvedModelFiles
 from output import write_metadata
 from vad import SpeechSegment
@@ -35,11 +38,8 @@ from streaming_segmentation import write_comparison_report, write_span_artifacts
 
 SAMPLE_RATE = 16000
 CONTINUE = 0
-SPEAKER_COUNT_CHANGED = 1
 SINGLE_SPEAKER_CHANGED = 2
 INPUT_FINISHED = 4
-SINGLE_SPEAKER = "single_speaker"
-OVERLAPPED_SPEAKERS = "overlapped_speakers"
 
 _BASELINE_ENTRYPOINT_PATH = Path(__file__).with_name("offline-long-audio-pipeline-asr-speaker.py")
 _BASELINE_ENTRYPOINT: object | None = None
@@ -86,26 +86,6 @@ def _normalise_spans(spans: Sequence[Mapping[str, Any] | object]) -> list[dict[s
             raise ValueError("Speaker-segmentation spans must not overlap")
         previous_end = max(previous_end, end)
     return result
-
-
-def _count_for_interval(spans: Sequence[dict[str, float | int]], start_ms: int, end_ms: int) -> int:
-    midpoint = (start_ms + end_ms) / 2000.0
-    for span in spans:
-        if float(span["start"]) <= midpoint < float(span["end"]):
-            return int(span["speaker_count"])
-    return 0
-
-
-def _right_boundary_reason(span: Mapping[str, float | int] | None, current_count: int, next_count: int) -> str | None:
-    if span is not None:
-        flag = int(span["flag"])
-        if flag & SINGLE_SPEAKER_CHANGED:
-            return "speaker_change"
-        if flag & SPEAKER_COUNT_CHANGED:
-            return "speaker_count"
-    if current_count != next_count:
-        return "speaker_count"
-    return None
 
 
 def _drain_speaker_segmentation(segmenter: object) -> list[dict[str, float | int]]:
@@ -177,102 +157,115 @@ def stream_speaker_segmentation_samples(
 
     return normalize_spans(spans)
 
+def _adapt_spans_to_baseline_activity(
+    spans: Sequence[Mapping[str, Any] | object],
+) -> list[SpeakerCountSpan]:
+    """Map count/change-only spans to the baseline resolver's local-track form.
+
+    The streaming public API deliberately exposes only speaker count plus a
+    change flag.  This adapter uses temporary local tracks solely to preserve
+    boundary semantics for the established timeline resolver:
+
+    * count ``0`` remains unknown activity, allowing the VAD fallback to
+      absorb it rather than creating an ASR-only fragment;
+    * count ``2`` is represented as an overlap containing the current and next
+      temporary track, preserving exact ``overlap_regions`` metadata;
+    * ``SINGLE_SPEAKER_CHANGED`` advances the temporary track after the span.
+      The baseline weak-cut policy then suppresses short, unstable changes.
+
+    These identities are implementation-local and are never surfaced to users.
+    """
+    one_hot_masks = ((1, 0, 0), (0, 1, 0), (0, 0, 1))
+    activity: list[SpeakerCountSpan] = []
+    single_track_index = 0
+
+    for span in _normalise_spans(spans):
+        start_ms = int(round(float(span["start"]) * 1000.0))
+        end_ms = int(round(float(span["end"]) * 1000.0))
+        speaker_count = int(span["speaker_count"])
+        if end_ms <= start_ms:
+            continue
+
+        if speaker_count == 0:
+            speaker_mask = None
+        elif speaker_count == 1:
+            speaker_mask = one_hot_masks[single_track_index]
+        else:
+            next_track_index = (single_track_index + 1) % len(one_hot_masks)
+            current_mask = one_hot_masks[single_track_index]
+            next_mask = one_hot_masks[next_track_index]
+            speaker_mask = tuple(
+                int(current_mask[index] or next_mask[index])
+                for index in range(len(one_hot_masks[0]))
+            )
+
+        activity.append(
+            SpeakerCountSpan(
+                start_ms=start_ms,
+                end_ms=end_ms,
+                active_speaker_count=speaker_count,
+                speaker_mask=speaker_mask,
+            )
+        )
+        if int(span["flag"]) & SINGLE_SPEAKER_CHANGED:
+            single_track_index = (single_track_index + 1) % len(one_hot_masks)
+    return activity
+
+
+def _overlap_regions_from_count_spans(
+    spans: Sequence[Mapping[str, Any] | object], start_ms: int, end_ms: int
+) -> list[tuple[int, int]]:
+    """Return exact count-two regions after a resolver fold/absorb operation."""
+    regions = []
+    for span in _normalise_spans(spans):
+        if int(span["speaker_count"]) < 2:
+            continue
+        region_start = max(start_ms, int(round(float(span["start"]) * 1000.0)))
+        region_end = min(end_ms, int(round(float(span["end"]) * 1000.0)))
+        if region_end > region_start:
+            regions.append((region_start, region_end))
+    merged: list[tuple[int, int]] = []
+    for region in regions:
+        if merged and region[0] <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], region[1]))
+        else:
+            merged.append(region)
+    return merged
+
+
 def resolve_vad_segments_with_speaker_segmentation(
     vad_segments: Sequence[SpeechSegment],
     spans: Sequence[Mapping[str, Any] | object],
     waveform: np.ndarray,
     sample_rate: int,
+    *,
+    min_duration_on: float = 0.3,
+    min_duration_off: float = 0.5,
 ) -> list[SpeechSegment]:
-    """Split VAD speech only on stable speaker-count/change span boundaries.
+    """Resolve streaming count spans with the baseline ASR-safe timeline policy."""
+    activity = _adapt_spans_to_baseline_activity(spans)
+    segments, _ = resolve_baseline_final_segments(
+        vad_segments,
+        activity,
+        waveform,
+        sample_rate,
+        min_duration_on=min_duration_on,
+        min_duration_off=min_duration_off,
+    )
+    # A short count-two span can be dropped by activity smoothing before the
+    # baseline resolver folds it into a single-speaker ASR sentence.  Recover
+    # its exact raw region here so callers retain overlap information without
+    # exposing temporary local masks or emitting a short ASR request.
+    return [
+        replace(
+            segment,
+            overlap_regions=_overlap_regions_from_count_spans(
+                spans, segment.start_ms, segment.end_ms
+            ),
+        )
+        for segment in segments
+    ]
 
-    A count of zero inside a VAD speech region falls back to one speaker, so an
-    uncertain segmentation frame cannot delete VAD-confirmed speech.  Local
-    track indices are deliberately never read or exposed.
-    """
-    if sample_rate <= 0:
-        raise ValueError("sample_rate must be positive")
-    timeline = _normalise_spans(spans)
-    samples = np.ascontiguousarray(np.asarray(waveform, dtype=np.float32))
-    output: list[SpeechSegment] = []
-
-    for vad_segment in sorted(vad_segments, key=lambda item: (item.start_ms, item.end_ms)):
-        if vad_segment.end_ms <= vad_segment.start_ms:
-            continue
-        relevant = [
-            span for span in timeline
-            if float(span["start"]) * 1000 < vad_segment.end_ms
-            and vad_segment.start_ms < float(span["end"]) * 1000
-        ]
-        points = {vad_segment.start_ms, vad_segment.end_ms}
-        for span in relevant:
-            points.add(max(vad_segment.start_ms, int(round(float(span["start"]) * 1000))))
-            points.add(min(vad_segment.end_ms, int(round(float(span["end"]) * 1000))))
-        ordered = sorted(point for point in points if vad_segment.start_ms <= point <= vad_segment.end_ms)
-        atomic: list[dict[str, Any]] = []
-        for start_ms, end_ms in zip(ordered, ordered[1:]):
-            if end_ms <= start_ms:
-                continue
-            count = _count_for_interval(relevant, start_ms, end_ms)
-            # VAD is a hard speech boundary.  Segmentation silence within it is
-            # intentionally treated as uncertain one-speaker speech.
-            composition = OVERLAPPED_SPEAKERS if count == 2 else SINGLE_SPEAKER
-            ending_span = next(
-                (span for span in relevant if abs(float(span["end"]) * 1000 - end_ms) <= 1),
-                None,
-            )
-            atomic.append(
-                {
-                    "start_ms": start_ms,
-                    "end_ms": end_ms,
-                    "count": count,
-                    "composition": composition,
-                    "ending_span": ending_span,
-                }
-            )
-
-        merged: list[dict[str, Any]] = []
-        for index, item in enumerate(atomic):
-            next_count = int(atomic[index + 1]["count"]) if index + 1 < len(atomic) else int(item["count"])
-            reason = _right_boundary_reason(item["ending_span"], int(item["count"]), next_count)
-            item["right_reason"] = reason
-            if (
-                merged
-                and merged[-1]["end_ms"] == item["start_ms"]
-                and merged[-1]["composition"] == item["composition"]
-                and merged[-1]["right_reason"] is None
-            ):
-                merged[-1]["end_ms"] = item["end_ms"]
-                merged[-1]["count"] = item["count"]
-                merged[-1]["right_reason"] = reason
-            else:
-                merged.append(item)
-
-        for index, item in enumerate(merged):
-            start_ms = int(item["start_ms"])
-            end_ms = int(item["end_ms"])
-            start_sample = max(0, math.floor(start_ms * sample_rate / 1000))
-            end_sample = min(samples.size, math.ceil(end_ms * sample_rate / 1000))
-            if end_sample <= start_sample:
-                continue
-            left_reason = "vad" if index == 0 else str(merged[index - 1]["right_reason"] or "speaker_count")
-            right_reason = "vad" if index == len(merged) - 1 else str(item["right_reason"] or "speaker_count")
-            is_overlap = item["composition"] == OVERLAPPED_SPEAKERS
-            output.append(
-                SpeechSegment(
-                    segment_index=len(output) + 1,
-                    start_ms=start_ms,
-                    end_ms=end_ms,
-                    samples=np.ascontiguousarray(samples[start_sample:end_sample]),
-                    speaker_composition=str(item["composition"]),
-                    overlap_regions=[(start_ms, end_ms)] if is_overlap else [],
-                    cut_left=left_reason,
-                    cut_right=right_reason,
-                    pyannote_mask=f"speaker_count={int(item['count'])}",
-                )
-            )
-    if any(previous.end_ms > current.start_ms for previous, current in zip(output, output[1:])):
-        raise AssertionError("Resolved speaker-segmentation output overlaps")
-    return output
 
 def _normalise_reference_text(text: str) -> str:
     text = re.sub(r"\([^)]*\)", "", text)
@@ -458,12 +451,15 @@ def _use_streaming_segmentation_runtime(
         **_: Any,
     ) -> tuple[list[SpeechSegment], TimelineResolutionStats]:
         segments = resolve_vad_segments_with_speaker_segmentation(
-            vad_segments, activity, waveform, sample_rate
+            vad_segments,
+            activity,
+            waveform,
+            sample_rate,
+            min_duration_on=runtime.min_duration_on,
+            min_duration_off=runtime.min_duration_off,
         )
         return segments, TimelineResolutionStats(
-            true_overlap_count=sum(
-                segment.speaker_composition == OVERLAPPED_SPEAKERS for segment in segments
-            )
+            true_overlap_count=sum(bool(segment.overlap_regions) for segment in segments)
         )
 
     baseline_pipeline.build_runtimes = build_runtimes_with_streaming_provider

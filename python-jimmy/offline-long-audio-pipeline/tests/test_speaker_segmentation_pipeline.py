@@ -25,16 +25,20 @@ def _load_runner():
 
 
 class SpeakerSegmentationPipelineTimelineTest(unittest.TestCase):
-    def test_splits_vad_on_count_and_single_speaker_change_boundaries(self):
+    @staticmethod
+    def _vad_segment(end_ms: int) -> list[object]:
         runner = _load_runner()
-        vad_segments = [
+        return [
             runner.SpeechSegment(
                 segment_index=1,
                 start_ms=0,
-                end_ms=5000,
-                samples=np.zeros(80_000, dtype=np.float32),
+                end_ms=end_ms,
+                samples=np.zeros(end_ms * 16, dtype=np.float32),
             )
         ]
+
+    def test_folds_overlap_into_following_single_speaker_segment(self):
+        runner = _load_runner()
         spans = [
             {"start": 0.0, "end": 2.0, "speaker_count": 1, "flag": 2},
             {"start": 2.0, "end": 3.0, "speaker_count": 2, "flag": 1},
@@ -42,25 +46,63 @@ class SpeakerSegmentationPipelineTimelineTest(unittest.TestCase):
         ]
 
         segments = runner.resolve_vad_segments_with_speaker_segmentation(
-            vad_segments, spans, np.zeros(80_000, dtype=np.float32), 16000
+            self._vad_segment(5000), spans, np.zeros(80_000, dtype=np.float32), 16000
         )
 
         self.assertEqual(
             [(segment.start_ms, segment.end_ms, segment.speaker_composition) for segment in segments],
-            [
-                (0, 2000, "single_speaker"),
-                (2000, 3000, "overlapped_speakers"),
-                (3000, 5000, "single_speaker"),
-            ],
+            [(0, 2000, "single_speaker"), (2000, 5000, "single_speaker")],
         )
-        self.assertEqual(
-            [segment.cut_right for segment in segments],
-            ["speaker_change", "speaker_count", "vad"],
-        )
-        self.assertEqual(segments[1].cut_left, "speaker_change")
         self.assertEqual(segments[1].overlap_regions, [(2000, 3000)])
-        self.assertEqual(segments[2].cut_left, "speaker_count")
 
+    def test_absorbs_count_zero_tail_inside_vad_speech(self):
+        runner = _load_runner()
+        spans = [
+            {"start": 0.0, "end": 0.9, "speaker_count": 1, "flag": 1},
+            {"start": 0.9, "end": 1.0, "speaker_count": 0, "flag": 4},
+        ]
+
+        segments = runner.resolve_vad_segments_with_speaker_segmentation(
+            self._vad_segment(1000), spans, np.zeros(16_000, dtype=np.float32), 16000
+        )
+
+        self.assertEqual([(segment.start_ms, segment.end_ms) for segment in segments], [(0, 1000)])
+
+    def test_folds_short_overlap_island_into_single_asr_segment(self):
+        runner = _load_runner()
+        spans = [
+            {"start": 0.0, "end": 1.2, "speaker_count": 1, "flag": 1},
+            {"start": 1.2, "end": 1.28, "speaker_count": 2, "flag": 1},
+            {"start": 1.28, "end": 3.0, "speaker_count": 1, "flag": 4},
+        ]
+
+        segments = runner.resolve_vad_segments_with_speaker_segmentation(
+            self._vad_segment(3000), spans, np.zeros(48_000, dtype=np.float32), 16000
+        )
+
+        self.assertEqual([(segment.start_ms, segment.end_ms) for segment in segments], [(0, 3000)])
+        self.assertEqual(segments[0].overlap_regions, [(1200, 1280)])
+
+    def test_suppresses_weak_single_speaker_change_but_keeps_strong_change(self):
+        runner = _load_runner()
+        weak_spans = [
+            {"start": 0.0, "end": 0.5, "speaker_count": 1, "flag": 2},
+            {"start": 0.5, "end": 2.0, "speaker_count": 1, "flag": 4},
+        ]
+        strong_spans = [
+            {"start": 0.0, "end": 1.1, "speaker_count": 1, "flag": 2},
+            {"start": 1.1, "end": 2.2, "speaker_count": 1, "flag": 4},
+        ]
+
+        weak = runner.resolve_vad_segments_with_speaker_segmentation(
+            self._vad_segment(2000), weak_spans, np.zeros(32_000, dtype=np.float32), 16000
+        )
+        strong = runner.resolve_vad_segments_with_speaker_segmentation(
+            self._vad_segment(2200), strong_spans, np.zeros(35_200, dtype=np.float32), 16000
+        )
+
+        self.assertEqual([(segment.start_ms, segment.end_ms) for segment in weak], [(0, 2000)])
+        self.assertEqual([(segment.start_ms, segment.end_ms) for segment in strong], [(0, 1100), (1100, 2200)])
 
 class SpeakerSegmentationPipelineCompatibilityTest(unittest.TestCase):
     def test_parser_preserves_baseline_pipeline_options_and_defaults(self):
