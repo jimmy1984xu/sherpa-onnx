@@ -3,8 +3,11 @@
 // Copyright (c) 2026
 
 #include "sherpa-onnx/csrc/speaker-segmentation-fusion.h"
+#include "sherpa-onnx/csrc/speaker-segmentation.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "gtest/gtest.h"
@@ -84,5 +87,167 @@ TEST(SpeakerSegmentationFusion, MinDurationOffDoesNotRewriteCounts) {
   EXPECT_TRUE(frames[5].single_speaker_changed_before);
 }
 
+
+OfflineSpeakerSegmentationPyannoteModelMetaData MakeTestMetaData() {
+  OfflineSpeakerSegmentationPyannoteModelMetaData meta_data;
+  meta_data.sample_rate = 16000;
+  meta_data.window_size = 160000;
+  meta_data.window_shift = 16000;
+  meta_data.receptive_field_size = 1600;
+  meta_data.receptive_field_shift = 1600;
+  meta_data.num_speakers = 3;
+  meta_data.powerset_max_classes = 2;
+  meta_data.num_classes = 7;
+  return meta_data;
+}
+
+std::unique_ptr<SpeakerSegmentation> CreateTestSegmenter() {
+  SpeakerSegmentationConfig config;
+  return SpeakerSegmentation::CreateForTesting(
+      config, MakeTestMetaData(),
+      [](const std::vector<float> &window) {
+        EXPECT_EQ(window.size(), 160000);
+        return std::vector<uint8_t>(100, 0b001);
+      });
+}
+
+std::vector<SpeakerSegmentationSpan> Drain(SpeakerSegmentation *segmenter) {
+  std::vector<SpeakerSegmentationSpan> spans;
+  while (!segmenter->Empty()) {
+    spans.push_back(segmenter->Front());
+    segmenter->Pop();
+  }
+  return spans;
+}
+
+TEST(SpeakerSegmentation, ChunkedAndOneShotHaveSameFinalSpans) {
+  std::vector<float> audio(196800, 0.1F);  // 12.3 seconds at 16 kHz
+
+  auto one_shot = CreateTestSegmenter();
+  one_shot->AcceptWaveform(audio.data(), static_cast<int32_t>(audio.size()));
+  one_shot->InputFinished();
+  const auto one_shot_spans = Drain(one_shot.get());
+
+  auto chunked = CreateTestSegmenter();
+  for (size_t start = 0; start < audio.size(); start += 512) {
+    const int32_t n = static_cast<int32_t>(
+        std::min<size_t>(512, audio.size() - start));
+    chunked->AcceptWaveform(audio.data() + start, n);
+  }
+  chunked->InputFinished();
+  const auto chunked_spans = Drain(chunked.get());
+
+  ASSERT_EQ(one_shot_spans.size(), chunked_spans.size());
+  for (size_t i = 0; i != one_shot_spans.size(); ++i) {
+    EXPECT_FLOAT_EQ(one_shot_spans[i].start, chunked_spans[i].start);
+    EXPECT_FLOAT_EQ(one_shot_spans[i].end, chunked_spans[i].end);
+    EXPECT_EQ(one_shot_spans[i].speaker_count,
+              chunked_spans[i].speaker_count);
+    EXPECT_EQ(one_shot_spans[i].flag, chunked_spans[i].flag);
+  }
+}
+
+TEST(SpeakerSegmentation, TenSecondFirstWindowPublishesFirstOneSecond) {
+  auto segmenter = CreateTestSegmenter();
+  std::vector<float> audio(160000, 0.1F);
+  segmenter->AcceptWaveform(audio.data(), static_cast<int32_t>(audio.size()));
+
+  ASSERT_FALSE(segmenter->Empty());
+  const auto &span = segmenter->Front();
+  EXPECT_FLOAT_EQ(span.start, 0.0F);
+  EXPECT_FLOAT_EQ(span.end, 1.0F);
+  EXPECT_EQ(span.speaker_count, 1);
+  EXPECT_EQ(span.flag, kSpeakerSegmentationContinue);
+}
+
+TEST(SpeakerSegmentation, InputFinishedPadsTailButClipsToAudioEnd) {
+  auto segmenter = CreateTestSegmenter();
+  std::vector<float> audio(196800, 0.1F);  // 12.3 seconds
+  segmenter->AcceptWaveform(audio.data(), static_cast<int32_t>(audio.size()));
+  segmenter->InputFinished();
+  const auto spans = Drain(segmenter.get());
+
+  ASSERT_FALSE(spans.empty());
+  EXPECT_FLOAT_EQ(spans.back().end, 12.3F);
+  EXPECT_NE(spans.back().flag & kSpeakerSegmentationInputFinished, 0);
+  for (const auto &span : spans) {
+    EXPECT_LE(span.end, 12.3F);
+  }
+}
+
+TEST(SpeakerSegmentation, ResetAndTwoObjectsDoNotShareState) {
+  auto first = CreateTestSegmenter();
+  auto second = CreateTestSegmenter();
+  std::vector<float> audio(160000, 0.1F);
+
+  first->AcceptWaveform(audio.data(), static_cast<int32_t>(audio.size()));
+  EXPECT_FALSE(first->Empty());
+  EXPECT_TRUE(second->Empty());
+
+  first->Reset();
+  EXPECT_TRUE(first->Empty());
+  first->AcceptWaveform(audio.data(), static_cast<int32_t>(audio.size()));
+  EXPECT_FALSE(first->Empty());
+  EXPECT_TRUE(second->Empty());
+}
+
+TEST(SpeakerSegmentation, SpanFlagsDescribeRightBoundary) {
+  auto create_with_masks = [](std::vector<uint8_t> masks) {
+    SpeakerSegmentationConfig config;
+    return SpeakerSegmentation::CreateForTesting(
+        config, MakeTestMetaData(),
+        [masks = std::move(masks)](const std::vector<float> &window) {
+          EXPECT_EQ(window.size(), 160000);
+          return masks;
+        });
+  };
+
+  std::vector<float> audio(240000, 0.1F);  // enough to publish through 6 s
+  std::vector<uint8_t> single_speaker_change(100, 0b001);
+  std::fill(single_speaker_change.begin() + 50,
+            single_speaker_change.end(), 0b010);
+  auto single = create_with_masks(std::move(single_speaker_change));
+  single->AcceptWaveform(audio.data(), static_cast<int32_t>(audio.size()));
+  single->InputFinished();
+  const auto single_spans = Drain(single.get());
+
+  ASSERT_FALSE(single_spans.empty());
+  EXPECT_NE(std::find_if(single_spans.begin(), single_spans.end(),
+                         [](const SpeakerSegmentationSpan &span) {
+                           return span.flag &
+                                  kSpeakerSegmentationSingleSpeakerChanged;
+                         }),
+            single_spans.end());
+
+  std::vector<uint8_t> count_change(100, 0b001);
+  std::fill(count_change.begin() + 50, count_change.end(), 0b011);
+  auto count = create_with_masks(std::move(count_change));
+  count->AcceptWaveform(audio.data(), static_cast<int32_t>(audio.size()));
+  count->InputFinished();
+  const auto count_spans = Drain(count.get());
+
+  ASSERT_FALSE(count_spans.empty());
+  EXPECT_NE(std::find_if(count_spans.begin(), count_spans.end(),
+                         [](const SpeakerSegmentationSpan &span) {
+                           return span.flag &
+                                  kSpeakerSegmentationSpeakerCountChanged;
+                         }),
+            count_spans.end());
+  EXPECT_NE(count_spans.back().flag & kSpeakerSegmentationInputFinished, 0);
+}
+TEST(SpeakerSegmentation, RejectsAcceptAfterInputFinishedUntilReset) {
+  auto segmenter = CreateTestSegmenter();
+  std::vector<float> audio(160000, 0.1F);
+  segmenter->AcceptWaveform(audio.data(), static_cast<int32_t>(audio.size()));
+  segmenter->InputFinished();
+  Drain(segmenter.get());
+
+  segmenter->AcceptWaveform(audio.data(), 16000);
+  EXPECT_TRUE(segmenter->Empty());
+
+  segmenter->Reset();
+  segmenter->AcceptWaveform(audio.data(), static_cast<int32_t>(audio.size()));
+  EXPECT_FALSE(segmenter->Empty());
+}
 }  // namespace
 }  // namespace sherpa_onnx

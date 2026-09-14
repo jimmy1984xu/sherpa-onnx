@@ -324,6 +324,7 @@ if(SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION)
     fast-clustering-config.cc
     fast-clustering.cc
     speaker-segmentation-fusion.cc
+    speaker-segmentation.cc
     offline-speaker-diarization-impl.cc
     offline-speaker-diarization-result.cc
     offline-speaker-diarization.cc
