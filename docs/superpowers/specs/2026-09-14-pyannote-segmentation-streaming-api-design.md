@@ -2,7 +2,7 @@
 
 **日期：** 2026-09-14
 **分支：** `codex/pyannote-segmentation-streaming-api`
-**状态：** 待评审
+**状态：** 已确认，待实施
 
 ## 1. 目标
 
@@ -468,6 +468,30 @@ Python `SpeakerSegmentationSpan` 提供只读属性：`start`、`end`、`speaker
 10. `InputFinished()` 的尾窗补零、实际音频长度裁剪和 `Reset()` 复用；
 11. 多对象状态隔离。
 
+### 远程 Linux 编译与集成验证
+
+实现提交后，远程 Linux 是 Python 集成测试的主验证环境。严格按照
+`sherpa-onnx-remote-build-test` 固定环境执行：本地当前分支正常（非 force）推送到
+`jimmy`，远端仓库仅使用 `/speech_store/jimmy/k2_origin/sherpa-onnx/`，确认远端工作树
+干净、分支同名且可 `git pull --ff-only` 后，在其 `build/` 目录配置并编译最新提交。
+
+Windows 的 PCM 测试文件可复制到用户授权的专用目录：
+
+```text
+/speech_store/jimmy/ai_testset/pyannote-segmentation-streaming-api/input/
+```
+
+远端测试结果只写入同一专用目录的 `output/` 子目录，完成后复制回：
+
+```text
+C:\Users\admin\Downloads\pyannote-segmentaion测试
+```
+
+不下载模型、依赖或 Python 包，也不将模型复制到远端。远程执行前必须以只读检查确认
+远端已经存在可读取的 `sherpa-onnx-pyannote-segmentation-3-0/model.onnx`；若不存在，停止
+远程集成测试并向用户报告缺失路径，不自动传输或下载模型。远端固定构建命令中的
+`SHERPA_ONNX_ENABLE_C_API=OFF` 用于 Python 集成验证；C API 的编译/API 兼容性由新增的
+本地 C/C++ 构建测试覆盖，不能把远程 Python 通过误报为 C API 已验证。
 ### Python 测试脚本和报告
 
 新增一个类似 `python-jimmy/offline-long-audio-pipeline-asr-speaker.py` 的脚本：
