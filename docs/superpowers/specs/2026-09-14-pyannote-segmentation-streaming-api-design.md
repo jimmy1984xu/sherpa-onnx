@@ -257,8 +257,9 @@ Case1 第一句实测：四窗新人起点为 3.358 / 3.409 / 3.426 / 3.442 s，
 - `InputFinished()` 的实际音频末尾：最后一个 span 的 `flag |= INPUT_FINISHED`。
 
 count 相同的内部帧可合并直到遇到真实边界或增量发布 checkpoint。checkpoint 只服务于
-低延迟结果消费，不能被解释为断句。所有最终输出 span 都不重叠，且 `end` 恰好等于下一
-span 的 `start`。
+低延迟结果消费，不能被解释为断句。若确认换人恰好落在某个 `window_shift` checkpoint
+（该批 finalized 帧的第一帧），flag 写回**已经发布、右边界等于该时刻**的那条 span，
+避免零长度 span。所有最终输出 span 都不重叠，且 `end` 恰好等于下一 span 的 `start`。
 
 ## 6. 流式缓存、最终性和延迟
 

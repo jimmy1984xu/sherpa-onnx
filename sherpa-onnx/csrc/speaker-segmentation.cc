@@ -317,7 +317,10 @@ class SpeakerSegmentation::Impl {
 
     int64_t run_start = published_until_sample_;
     int32_t speaker_count = frames.front().speaker_count;
-    for (size_t i = 1; i != frames.size(); ++i) {
+    if (!spans_.empty()) {
+      speaker_count = spans_.back().speaker_count;
+    }
+    for (size_t i = 0; i != frames.size(); ++i) {
       const bool count_changed = frames[i].speaker_count != speaker_count;
       const bool single_speaker_changed =
           frames[i].single_speaker_changed_before;
@@ -336,8 +339,14 @@ class SpeakerSegmentation::Impl {
       if (single_speaker_changed) {
         flag |= kSpeakerSegmentationSingleSpeakerChanged;
       }
-      AppendSpan(run_start, boundary, speaker_count, flag);
-      run_start = boundary;
+      if (boundary <= run_start && !spans_.empty()) {
+        // The change sits on an already published checkpoint. Attach the flag
+        // to the span that ends there; do not emit a zero-length span.
+        spans_.back().flag |= flag;
+      } else {
+        AppendSpan(run_start, boundary, speaker_count, flag);
+        run_start = boundary;
+      }
       speaker_count = frames[i].speaker_count;
     }
 
