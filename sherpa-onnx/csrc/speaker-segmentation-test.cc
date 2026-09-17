@@ -87,6 +87,114 @@ TEST(SpeakerSegmentationFusion, MinDurationOffDoesNotRewriteCounts) {
   EXPECT_TRUE(frames[5].single_speaker_changed_before);
 }
 
+std::vector<uint8_t> RepeatMask(uint8_t mask, int32_t n) {
+  return std::vector<uint8_t>(static_cast<size_t>(n), mask);
+}
+
+std::vector<uint8_t> TwoSpeakerRun(int32_t left, uint8_t a, int32_t right,
+                                   uint8_t b) {
+  auto masks = RepeatMask(a, left);
+  auto tail = RepeatMask(b, right);
+  masks.insert(masks.end(), tail.begin(), tail.end());
+  return masks;
+}
+
+int32_t CountSingleSpeakerChanges(
+    const std::vector<FinalizedSpeakerFrame> &frames) {
+  int32_t n = 0;
+  for (const auto &frame : frames) {
+    if (frame.single_speaker_changed_before) {
+      ++n;
+    }
+  }
+  return n;
+}
+
+int64_t FirstChangeFrame(const std::vector<FinalizedSpeakerFrame> &frames) {
+  for (const auto &frame : frames) {
+    if (frame.single_speaker_changed_before) {
+      return frame.frame_index;
+    }
+  }
+  return -1;
+}
+
+TEST(SpeakerSegmentationFusion, TwoOfFourCoveringWindowsConfirmAChange) {
+  SpeakerSegmentationFusion fuser(MakeFusionConfig());
+  const auto changed = TwoSpeakerRun(6, 0b001, 6, 0b010);
+  const auto unchanged = RepeatMask(0b001, 12);
+  fuser.AddWindow(/*start_frame=*/0, changed);
+  fuser.AddWindow(/*start_frame=*/0, changed);
+  fuser.AddWindow(/*start_frame=*/0, unchanged);
+  fuser.AddWindow(/*start_frame=*/0, unchanged);
+
+  auto frames = fuser.FinalizeBefore(/*frame_exclusive=*/12);
+
+  ASSERT_EQ(frames.size(), 12);
+  EXPECT_EQ(CountSingleSpeakerChanges(frames), 1);
+  EXPECT_EQ(FirstChangeFrame(frames), 6);
+}
+
+TEST(SpeakerSegmentationFusion, OneOfFourCoveringWindowsDoesNotConfirm) {
+  SpeakerSegmentationFusion fuser(MakeFusionConfig());
+  const auto changed = TwoSpeakerRun(6, 0b001, 6, 0b010);
+  const auto unchanged = RepeatMask(0b001, 12);
+  fuser.AddWindow(/*start_frame=*/0, changed);
+  fuser.AddWindow(/*start_frame=*/0, unchanged);
+  fuser.AddWindow(/*start_frame=*/0, unchanged);
+  fuser.AddWindow(/*start_frame=*/0, unchanged);
+
+  auto frames = fuser.FinalizeBefore(/*frame_exclusive=*/12);
+
+  ASSERT_EQ(frames.size(), 12);
+  EXPECT_EQ(CountSingleSpeakerChanges(frames), 0);
+}
+
+TEST(SpeakerSegmentationFusion, JitteredVotesClusterToHalfSwitchedFrame) {
+  SpeakerSegmentationFusion fuser(MakeFusionConfig());
+  // 10 ms frames, cluster radius 100 ms. Votes at 16, 20, 21 must merge.
+  fuser.AddWindow(/*start_frame=*/0, RepeatMask(0b001, 40));
+  fuser.AddWindow(/*start_frame=*/0, TwoSpeakerRun(16, 0b001, 24, 0b010));
+  fuser.AddWindow(/*start_frame=*/0, TwoSpeakerRun(20, 0b001, 20, 0b010));
+  fuser.AddWindow(/*start_frame=*/0, TwoSpeakerRun(21, 0b001, 19, 0b010));
+
+  auto frames = fuser.FinalizeBefore(/*frame_exclusive=*/40);
+
+  ASSERT_EQ(frames.size(), 40);
+  EXPECT_EQ(CountSingleSpeakerChanges(frames), 1);
+  EXPECT_EQ(FirstChangeFrame(frames), 20);
+}
+
+TEST(SpeakerSegmentationFusion, ShortDifferentMaskGapIsASpeakerChange) {
+  SpeakerSegmentationFusion fuser(MakeFusionConfig());
+  std::vector<uint8_t> masks = RepeatMask(0b010, 4);
+  masks.insert(masks.end(), {0, 0});
+  auto right = RepeatMask(0b100, 4);
+  masks.insert(masks.end(), right.begin(), right.end());
+  fuser.AddWindow(/*start_frame=*/0, masks);
+
+  auto frames = fuser.FinalizeBefore(/*frame_exclusive=*/10);
+
+  ASSERT_EQ(frames.size(), 10);
+  EXPECT_EQ(frames[4].speaker_count, 0);
+  EXPECT_EQ(CountSingleSpeakerChanges(frames), 1);
+  EXPECT_EQ(FirstChangeFrame(frames), 6);
+}
+
+TEST(SpeakerSegmentationFusion, SameMaskGapIsNotASpeakerChange) {
+  SpeakerSegmentationFusion fuser(MakeFusionConfig());
+  std::vector<uint8_t> masks = RepeatMask(0b010, 4);
+  masks.insert(masks.end(), {0, 0});
+  auto right = RepeatMask(0b010, 4);
+  masks.insert(masks.end(), right.begin(), right.end());
+  fuser.AddWindow(/*start_frame=*/0, masks);
+
+  auto frames = fuser.FinalizeBefore(/*frame_exclusive=*/10);
+
+  ASSERT_EQ(frames.size(), 10);
+  EXPECT_EQ(CountSingleSpeakerChanges(frames), 0);
+}
+
 
 OfflineSpeakerSegmentationPyannoteModelMetaData MakeTestMetaData() {
   OfflineSpeakerSegmentationPyannoteModelMetaData meta_data;
@@ -205,21 +313,29 @@ TEST(SpeakerSegmentation, ResetAndTwoObjectsDoNotShareState) {
 }
 
 TEST(SpeakerSegmentation, SpanFlagsDescribeRightBoundary) {
-  auto create_with_masks = [](std::vector<uint8_t> masks) {
+  auto create_with_global_change = [](uint8_t left_mask, uint8_t right_mask) {
     SpeakerSegmentationConfig config;
+    auto window_index = std::make_shared<int32_t>(0);
     return SpeakerSegmentation::CreateForTesting(
         config, MakeTestMetaData(),
-        [masks = std::move(masks)](const std::vector<float> &window) {
+        [window_index, left_mask, right_mask](const std::vector<float> &window) {
           EXPECT_EQ(window.size(), 160000);
+          // 100 ms frames, 1 s shift = 10 frames. Keep the physical cut at 5 s.
+          const int32_t start_frame = (*window_index)++ * 10;
+          const int32_t change_frame = 50;
+          std::vector<uint8_t> masks(100, left_mask);
+          const int32_t local = change_frame - start_frame;
+          if (local <= 0) {
+            std::fill(masks.begin(), masks.end(), right_mask);
+          } else if (local < 100) {
+            std::fill(masks.begin() + local, masks.end(), right_mask);
+          }
           return masks;
         });
   };
 
   std::vector<float> audio(240000, 0.1F);  // enough to publish through 6 s
-  std::vector<uint8_t> single_speaker_change(100, 0b001);
-  std::fill(single_speaker_change.begin() + 50,
-            single_speaker_change.end(), 0b010);
-  auto single = create_with_masks(std::move(single_speaker_change));
+  auto single = create_with_global_change(0b001, 0b010);
   single->AcceptWaveform(audio.data(), static_cast<int32_t>(audio.size()));
   single->InputFinished();
   const auto single_spans = Drain(single.get());
@@ -232,9 +348,7 @@ TEST(SpeakerSegmentation, SpanFlagsDescribeRightBoundary) {
                          }),
             single_spans.end());
 
-  std::vector<uint8_t> count_change(100, 0b001);
-  std::fill(count_change.begin() + 50, count_change.end(), 0b011);
-  auto count = create_with_masks(std::move(count_change));
+  auto count = create_with_global_change(0b001, 0b011);
   count->AcceptWaveform(audio.data(), static_cast<int32_t>(audio.size()));
   count->InputFinished();
   const auto count_spans = Drain(count.get());

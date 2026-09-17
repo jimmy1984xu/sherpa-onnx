@@ -28,8 +28,9 @@ struct SpeakerSegmentationFusionConfig {
 
 // Fuses independent local segmentation windows without assigning global
 // speaker identities. Raw local-mask population counts are accumulated for the
-// speaker-count result. Local-track transitions only contribute identity-free
-// single-speaker-change evidence.
+// speaker-count result. Local-track transitions contribute identity-free
+// single-speaker-change candidates; overlapping windows confirm a change by
+// majority of covering windows after 100 ms clustering.
 class SpeakerSegmentationFusion {
  public:
   explicit SpeakerSegmentationFusion(

@@ -1,8 +1,8 @@
 # Pyannote Segmentation 流式输入 API 设计
 
-**日期：** 2026-09-14
-**分支：** `codex/pyannote-segmentation-streaming-api`
-**状态：** 已确认，待实施
+**日期：** 2026-09-14（2026-09-17 修订单人换人融合）
+**分支：** `v1.13.2_transai_dev`
+**状态：** 换人融合按 Case1 第一句诊断修订；公开 API 不变
 
 ## 1. 目标
 
@@ -188,57 +188,58 @@ min_duration_off = 0.50 s
    在该窗口内闭合为连续活动；
 3. 该处理只用于提取换人证据，**不直接改写最终 fused speaker_count 时间线**。
 
-随后在每个窗口独立判断边界 `t` 前后是否满足：
+随后在每个窗口的稳定 mask 上抽出无方向、无身份的候选时刻。候选只有两类：
 
-```text
-左侧：稳定后持续单人，唯一活跃 local bit 为 A；
-右侧：稳定后持续单人，唯一活跃 local bit 为 B；
-A != B。
-```
+1. **直接换人**：相邻稳定帧人数均为 1，且 local mask `A != B`。时刻取 **B 的第一帧**。
+2. **短静音过渡**：稳定后出现 `A → 无人 → B`，且 A、B 都是单人 mask、`A != B`、无人段时长
+   ≤ `short_gap_max`（第一版内部常量 **0.10 s**，不暴露为公开配置）。时刻取 **B 的第一帧**，
+   不是空隙中点。空隙属于上一句末尾的无人。
 
-满足时，产生无方向、无身份语义的候选事件：
+左右 mask 相同的掉帧不投票。`1→2→1` overlap 夹心本轮不抽成单人换人。
 
-```text
-single_speaker_change_candidate(t) = 1
-```
-
-例如 W0 报告 `bit0 -> bit1`、W1 报告 `bit1 -> bit0`，二者都是对同一时间点的
-“单人换人”支持票，而不是互相冲突的事件。
+例如 W0 报告 `bit0 -> bit1`、W1 报告 `bit1 -> bit0`，二者都是对同一事件的支持票。
+第 1 次滑窗出现 `mask 2 → 34 ms 无人 → mask 3` 时，也抽一张票，落在 mask 3 的起点。
 
 `min_duration_on` 同时保证边界两侧不是瞬时 local-track 抖动；`min_duration_off` 仅消除
 单窗口、同一 local track 的短暂掉帧。由于本模块没有 global speaker ID，绝不能用
 `min_duration_off` 擅自跨最终 `count 1 -> count 0 -> count 1` 时间线合并，否则可能把
-`A -> 短静音 -> B` 错误视为同一人。
+`A -> 短静音 -> B` 错误视为同一人。短静音过渡只用来**发出换人边界**，不把 A 和 B 收成
+同一个人。
 
-### 5.4 跨窗口 change-boundary voting
+### 5.4 跨窗口事件多数决
 
-每个候选事件投影到全局帧轴。为容纳不同窗口的少量帧级定位差，候选事件对以该帧为
-中心、半径为一个 `receptive_field_shift` 的全局帧邻域投票。
-
-对每个全局帧维护：
+不要按帧撒 ±1 邻域权重。各窗候选时刻投影到全局帧轴后，先收成事件再投票。
 
 ```text
-change_vote[frame]      # 支持该位置附近存在单人换人的窗口数
-change_coverage[frame]  # 覆盖且能够观察该位置左右稳定区的窗口数
+change_cluster_radius = 0.10 s   # 内部常量，盖住约 80 ms 的切点抖动
+short_gap_max         = 0.10 s   # 内部常量，见 5.3
+change_vote_threshold = 0.50     # 已有公开配置，默认值不改
 ```
 
-确认规则：
+相差 ≤ `change_cluster_radius` 的候选视为一次换人（单链接：相邻候选间距不超过该半径）。
+每窗在一簇内最多计 1 票。一簇：
 
 ```text
-change_vote / change_coverage >= change_vote_threshold
+n_vote  = 往该簇投了票的窗数
+n_cover = 簇代表帧上的几何覆盖窗数（该帧被多少个已加入窗口覆盖）
+确认    : n_cover > 0 且 n_vote / n_cover >= change_vote_threshold
 ```
 
-第一版默认：
+`n_cover` 是**当时盖住该帧的窗数**，不是固定的 10。10 s 窗 / 1 s 步长下，音频前 4 s 的
+切点最多 4 窗，0.50 只要 2 票；中段最多 10 窗，0.50 要 5 票。同一条规则，不要把分母改成
+“只算投了票的窗”（否则比值恒为 1，阈值失效）。
 
-```text
-change_vote_threshold = 0.50
-```
+**融合切点**（`single_speaker_changed_before` 所在帧）= 各窗新人起始帧按时间排序后，
+**至少一半的窗已经切到新人** 的第一帧，即第 `ceil(n_vote / 2)` 票的时刻。偶数票取较早的
+那个中位侧，与“半数已切换”一致。该帧起是新说话人；`EmitFinalizedFrames` 用
+`frame_index * receptive_field_shift` 切开上一句。
 
-即在可观察该边界的窗口中，至少半数支持该边界。若只有一个有效窗口覆盖（例如流开头
-或 `InputFinished()` 后的尾部），该窗口的有效候选可确认；这保证短音频仍可产出结果。
+若一簇的最晚一票尚未进入本次 `FinalizeBefore` 的 exclusive 范围，整簇延后确认，避免把
+同一事件拆成两次。两个已确认事件距离小于 `min_duration_on` 时，只留 `n_vote / n_cover`
+更高的一个。
 
-只保留局部最大值；两个确认事件距离小于 `min_duration_on` 时，仅保留支持率更高的一个。
-这能把不同窗口的 `4.98 s`、`5.00 s`、`5.03 s` 聚合为一个边界。
+Case1 第一句实测：四窗新人起点为 3.358 / 3.409 / 3.426 / 3.442 s，收成一簇后
+`n_vote / n_cover = 4/4`，切点落在帧 202 ≈ **3.409 s**（与 baseline 3.426 s 差 1 帧）。
 
 ### 5.5 输出 span 构造和 flag 赋值
 
@@ -466,7 +467,12 @@ Python `SpeakerSegmentationSpan` 提供只读属性：`start`、`end`、`speaker
    flag 语义与组合规则；
 9. 32 ms 分块输入与一次性输入得到相同最终 frames、边界和 flag 序列；
 10. `InputFinished()` 的尾窗补零、实际音频长度裁剪和 `Reset()` 复用；
-11. 多对象状态隔离。
+11. 多对象状态隔离；
+12. 4 个覆盖窗中 2 个在同一事件投票时确认，仅 1 个投票时不确认（分母是覆盖数不是 10）；
+13. 切点抖动约 80 ms 的多窗 `1→1` 收成 **一个** 边界，落在半数已切换的第一帧；
+14. 不同 mask 夹短静音（≤0.10 s）抽成换人候选；左右同 mask 的短空档不抽；
+15. streaming 测试脚本的每窗 mask 必须按全局时间对齐（同一物理切点），不能每窗都在
+    相对偏移 5 s 处再切一次。
 
 ### 远程 Linux 编译与集成验证
 
