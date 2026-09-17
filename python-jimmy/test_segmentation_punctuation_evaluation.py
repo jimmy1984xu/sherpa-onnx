@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -40,19 +41,42 @@ class InvocationTest(unittest.TestCase):
         self.baseline = module.build_invocation("baseline", Path("a.pcm"), self.common)
         self.streaming = module.build_invocation("streaming", Path("a.pcm"), self.common)
 
-    def test_variants_share_all_common_arguments_and_only_streaming_adds_chunk(self):
+    def test_variants_share_common_arguments_and_streaming_sets_active_flags(self):
         self.assertEqual(module.common_option_map(self.baseline), module.common_option_map(self.streaming))
-        self.assertNotIn("--segmentation-chunk-ms", self.baseline)
         self.assertEqual(
-            self.streaming[self.streaming.index("--segmentation-chunk-ms") + 1], "32"
+            module.STREAMING_INVARIANTS,
+            {
+                "--segmentation-chunk-ms": "32",
+                "--segmentation-num-threads": "4",
+                "--min-duration-on": "0.5",
+                "--min-duration-off": "0.5",
+                "--change-vote-threshold": "0.5",
+            },
         )
+        for option, expected_value in module.STREAMING_INVARIANTS.items():
+            self.assertNotIn(option, self.baseline)
+            self.assertEqual(module.option_value(self.streaming, option), expected_value)
         self.assertEqual(module.option_value(self.baseline, "--num-clusters"), "-1")
         self.assertEqual(module.option_value(self.streaming, "--cluster-threshold"), "0.6")
 
     def test_validate_variant_fairness_accepts_standard_variants(self):
         self.assertIsNone(module.validate_variant_fairness(self.baseline, self.streaming))
 
-    def test_validate_variant_fairness_rejects_baseline_chunk_option(self):
+    def test_validate_variant_fairness_rejects_streaming_invariant_absence_or_mismatch(self):
+        for option, expected_value in module.STREAMING_INVARIANTS.items():
+            with self.subTest(option=option, condition="missing"):
+                missing = list(self.streaming)
+                option_index = missing.index(option)
+                del missing[option_index : option_index + 2]
+                with self.assertRaisesRegex(ValueError, option):
+                    module.validate_variant_fairness(self.baseline, missing)
+            with self.subTest(option=option, condition="mismatched"):
+                mismatched = list(self.streaming)
+                mismatched[mismatched.index(option) + 1] = f"{expected_value}-wrong"
+                with self.assertRaisesRegex(ValueError, option):
+                    module.validate_variant_fairness(self.baseline, mismatched)
+
+    def test_validate_variant_fairness_rejects_baseline_streaming_option(self):
         with self.assertRaisesRegex(ValueError, "baseline invocation"):
             module.validate_variant_fairness(
                 [*self.baseline, "--segmentation-chunk-ms", "32"], self.streaming
@@ -74,18 +98,18 @@ class ResultAdapterTest(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_result_json_becomes_metrics_compatible_three_column_asr_file(self):
+    def test_actual_result_json_schema_becomes_metrics_compatible_three_column_asr_file(self):
         payload = {
             "segments": [
                 {
-                    "start_ms": 1000,
-                    "end_ms": 2500,
+                    "segment_id": "speaker_turn_0001_1000_2500",
+                    "duration_ms": 1500,
                     "speaker_id": "(spk_1)",
                     "asr_text": "你好",
                 },
                 {
-                    "start_ms": 2600,
-                    "end_ms": 3000,
+                    "segment_id": "0002_2600_3000",
+                    "duration_ms": 400,
                     "speaker_id": "spk_0",
                     "asr_text": "世界",
                 },
@@ -97,29 +121,63 @@ class ResultAdapterTest(unittest.TestCase):
             ["sample_1000_1500 spk_1 你好", "sample_2600_400 spk_0 世界"],
         )
 
+    def test_result_json_rejects_missing_or_malformed_segment_id(self):
+        invalid_segments = (
+            {},
+            {"segment_id": None},
+            {"segment_id": "speaker_turn_1000_end"},
+            {"segment_id": "only_one_component"},
+        )
+        for segment in invalid_segments:
+            payload = {"segments": [segment]}
+            with self.subTest(segment=segment):
+                with self.assertRaisesRegex(ValueError, "segment_id"):
+                    module.write_metrics_asr_file(Path(self.idir), "sample", payload)
+
+    def test_result_json_rejects_inconsistent_duration_ms(self):
+        payload = {
+            "segments": [
+                {
+                    "segment_id": "0001_1000_2500",
+                    "duration_ms": 1499,
+                }
+            ]
+        }
+        with self.assertRaisesRegex(ValueError, "duration_ms"):
+            module.write_metrics_asr_file(Path(self.idir), "sample", payload)
+
     def test_result_json_rejects_nonpositive_segment_duration(self):
-        payload = {"segments": [{"start_ms": 1200, "end_ms": 1200}]}
+        payload = {"segments": [{"segment_id": "0001_1200_1200"}]}
         with self.assertRaisesRegex(ValueError, "invalid segment interval: 1200-1200"):
             module.write_metrics_asr_file(Path(self.idir), "sample", payload)
 
 
 class CliTest(unittest.TestCase):
-    def test_main_prints_a_command_preview_without_executing_pipeline(self):
+    def test_main_prints_json_argv_that_round_trips_paths_with_spaces_and_unicode(self):
+        audio = Path("测试 音频/sample file.pcm")
+        output_root = Path("输出 目录")
+        paths = module.ModelPaths(
+            asr_dir=Path("模型 目录/asr 模型"),
+            vad_dir=Path("模型 目录/vad"),
+            speaker_dir=Path("模型 目录/speaker"),
+            segmentation_dir=Path("模型 目录/segmentation"),
+        )
+        expected_argv = module.build_invocation(
+            "streaming", audio, module.build_common_arguments(paths, output_root)
+        )
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             exit_code = module.main([
                 "--kind", "streaming",
-                "--audio", "sample.pcm",
-                "--output-root", "out",
-                "--asr-dir", "models/asr",
-                "--vad-dir", "models/vad",
-                "--speaker-dir", "models/speaker",
-                "--segmentation-dir", "models/segmentation",
+                "--audio", str(audio),
+                "--output-root", str(output_root),
+                "--asr-dir", str(paths.asr_dir),
+                "--vad-dir", str(paths.vad_dir),
+                "--speaker-dir", str(paths.speaker_dir),
+                "--segmentation-dir", str(paths.segmentation_dir),
             ])
-        command = stdout.getvalue().strip()
         self.assertEqual(exit_code, 0)
-        self.assertIn("offline-long-audio-pipeline-asr-speaker-segmentation.py", command)
-        self.assertIn("--segmentation-chunk-ms 32", command)
+        self.assertEqual(json.loads(stdout.getvalue()), {"argv": expected_argv})
 
 
 if __name__ == "__main__":

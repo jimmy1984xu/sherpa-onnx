@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,10 +11,17 @@ from typing import Sequence
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+STREAMING_INVARIANTS = {
+    "--segmentation-chunk-ms": "32",
+    "--segmentation-num-threads": "4",
+    "--min-duration-on": "0.5",
+    "--min-duration-off": "0.5",
+    "--change-vote-threshold": "0.5",
+}
 _SPECIAL_VARIANT_OPTIONS = {
     "--audio",
     "--run-label",
-    "--segmentation-chunk-ms",
+    *STREAMING_INVARIANTS,
 }
 _REQUIRED_FAIR_OPTIONS = {
     "--num-clusters": "-1",
@@ -63,7 +71,8 @@ def build_invocation(kind: str, pcm: Path, common: list[str]) -> list[str]:
         *common,
     ]
     if kind == "streaming":
-        invocation.extend(["--segmentation-chunk-ms", "32"])
+        for option, value in STREAMING_INVARIANTS.items():
+            invocation.extend([option, value])
     return invocation
 
 
@@ -109,10 +118,15 @@ def validate_variant_fairness(
     baseline_options = _option_map(baseline_argv)
     streaming_options = _option_map(streaming_argv)
 
-    if "--segmentation-chunk-ms" in baseline_options:
-        raise ValueError("baseline invocation must not set --segmentation-chunk-ms")
-    if streaming_options.get("--segmentation-chunk-ms") != "32":
-        raise ValueError("streaming --segmentation-chunk-ms must equal 32")
+    for option, expected_value in STREAMING_INVARIANTS.items():
+        if option in baseline_options:
+            raise ValueError(f"baseline invocation must not set {option}")
+        if streaming_options.get(option) != expected_value:
+            raise ValueError(
+                f"streaming {option} must equal {expected_value}, "
+                f"got {streaming_options.get(option)!r}"
+            )
+
     if common_option_map(baseline_argv) != common_option_map(streaming_argv):
         raise ValueError("baseline and streaming common arguments differ")
 
@@ -128,15 +142,40 @@ def validate_variant_fairness(
                 )
 
 
+def _segment_times(segment: dict[str, object]) -> tuple[int, int]:
+    """Parse the trailing ``_<start_ms>_<end_ms>`` fields from a segment ID."""
+    segment_id = segment.get("segment_id")
+    if not isinstance(segment_id, str):
+        raise ValueError("segment_id must be a string ending in _<start_ms>_<end_ms>")
+
+    parts = segment_id.rsplit("_", 2)
+    if len(parts) != 3 or not parts[0] or not parts[1].isdigit() or not parts[2].isdigit():
+        raise ValueError(f"malformed segment_id: {segment_id!r}")
+
+    start_ms, end_ms = int(parts[1]), int(parts[2])
+    if end_ms <= start_ms:
+        raise ValueError(f"invalid segment interval: {start_ms}-{end_ms}")
+
+    if "duration_ms" in segment:
+        try:
+            duration_ms = int(segment["duration_ms"])
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"invalid duration_ms for {segment_id!r}") from error
+        if duration_ms != end_ms - start_ms:
+            raise ValueError(
+                f"inconsistent duration_ms for {segment_id!r}: "
+                f"expected {end_ms - start_ms}, got {duration_ms}"
+            )
+    return start_ms, end_ms
+
+
 def write_metrics_asr_file(output_dir: Path, file_id: str, result: dict[str, object]) -> Path:
     """Convert result.json segments to the three-column diarization metric format."""
     rows: list[str] = []
     for item in result["segments"]:
         if not isinstance(item, dict):
             raise ValueError("result segment must be an object")
-        start_ms, end_ms = int(item["start_ms"]), int(item["end_ms"])
-        if end_ms <= start_ms:
-            raise ValueError(f"invalid segment interval: {start_ms}-{end_ms}")
+        start_ms, end_ms = _segment_times(item)
         speaker = str(item.get("speaker_id", "-")).strip().strip("()") or "-"
         text = str(item.get("asr_text", "")).replace("\r", " ").replace("\n", " ").strip()
         rows.append(f"{file_id}_{start_ms}_{end_ms - start_ms} {speaker} {text}".rstrip())
@@ -174,7 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.audio,
         build_common_arguments(paths, args.output_root),
     )
-    print(" ".join(command))
+    print(json.dumps({"argv": command}, ensure_ascii=False))
     return 0
 
 
