@@ -231,7 +231,17 @@ class TaskTwoTest(unittest.TestCase):
         output_root = self.root / "evaluation"
         inputs = []
         commands = {"baseline": {}, "streaming": {}}
-        paths = model_paths()
+        remote_models = self._model_inventory("/models", "c" * 64)
+        # Task 4 invokes the commands remotely, so their directories must
+        # bind to the audited remote inventory, not the Windows inventory.
+        # Keep the actual argv values as POSIX strings: Path("/models/asr")
+        # serializes as a Windows path when these tests run on Windows.
+        paths = module.ModelPaths(
+            asr_dir=Path("C:/placeholder/asr"),
+            vad_dir=Path("C:/placeholder/vad"),
+            speaker_dir=Path("C:/placeholder/speaker"),
+            segmentation_dir=Path("C:/placeholder/segmentation"),
+        )
         for test_case in module.TEST_CASES:
             frozen_pcm = output_root / "01_input" / "pcm" / test_case.pcm.name
             frozen_label = output_root / "01_input" / "labels" / test_case.label.name
@@ -249,6 +259,13 @@ class TaskTwoTest(unittest.TestCase):
                 },
             })
             common = module.build_common_arguments(paths, output_root)
+            for option, role in (
+                ("--asr-dir", "asr"),
+                ("--vad-dir", "vad"),
+                ("--speaker-dir", "speaker"),
+                ("--segmentation-dir", "segmentation"),
+            ):
+                self._replace_option(common, option, remote_models[role]["directory"])
             commands["baseline"][test_case.file_id] = module.build_invocation(
                 "baseline", frozen_pcm, common
             )
@@ -260,12 +277,100 @@ class TaskTwoTest(unittest.TestCase):
             inputs=inputs,
             commands=commands,
             local_models=self._model_inventory("C:/models", "c" * 64),
-            remote_models=self._model_inventory("/models", "c" * 64),
+            remote_models=remote_models,
             windows_repo={"commit": "1" * 40, "status_porcelain": ""},
             remote_repo={"commit": "1" * 40, "status_porcelain": ""},
             created_at="2026-09-17T00:00:00Z",
             status="prepared",
         )
+
+    def _materialize_frozen_inputs(self, manifest):
+        for index, test_case in enumerate(manifest["test_cases"]):
+            for kind, payload in (("pcm", f"pcm-{index}".encode()), ("label", f"label-{index}".encode())):
+                frozen = Path(test_case[kind]["path"])
+                frozen.parent.mkdir(parents=True, exist_ok=True)
+                frozen.write_bytes(payload)
+                test_case[kind]["sha256"] = module.sha256_file(frozen)
+
+    @staticmethod
+    def _replace_option(argv, option, value):
+        argv[argv.index(option) + 1] = value
+
+    def test_manifest_commands_bind_each_model_dir_to_remote_inventory(self):
+        for option, role in (
+            ("--asr-dir", "asr"),
+            ("--vad-dir", "vad"),
+            ("--speaker-dir", "speaker"),
+            ("--segmentation-dir", "segmentation"),
+        ):
+            with self.subTest(option=option):
+                manifest = self._valid_manifest()
+                file_id = module.TEST_CASES[0].file_id
+                for kind in ("baseline", "streaming"):
+                    self._replace_option(
+                        manifest["commands"][kind][file_id], option, f"/unverified/{role}"
+                    )
+                with self.assertRaisesRegex(ValueError, f"remote {role} model directory"):
+                    module.validate_manifest(manifest)
+
+    def test_manifest_requires_pcm_and_label_at_frozen_paths_under_command_output_root(self):
+        manifest = self._valid_manifest()
+        file_id = module.TEST_CASES[0].file_id
+        record = manifest["test_cases"][0]
+        record["pcm"]["path"] = str(self.root / "unfrozen.pcm")
+        for kind in ("baseline", "streaming"):
+            self._replace_option(manifest["commands"][kind][file_id], "--audio", record["pcm"]["path"])
+        with self.assertRaisesRegex(ValueError, "PCM frozen path"):
+            module.validate_manifest(manifest)
+
+        manifest = self._valid_manifest()
+        manifest["test_cases"][0]["label"]["path"] = str(self.root / "unfrozen_label.txt")
+        with self.assertRaisesRegex(ValueError, "label frozen path"):
+            module.validate_manifest(manifest)
+
+    def test_manifest_requires_one_consistent_absolute_output_root(self):
+        manifest = self._valid_manifest()
+        test_case = module.TEST_CASES[0]
+        record = manifest["test_cases"][0]
+        changed_root = self.root / "other-evaluation"
+        frozen_pcm = changed_root / "01_input" / "pcm" / test_case.pcm.name
+        frozen_label = changed_root / "01_input" / "labels" / test_case.label.name
+        record["pcm"]["path"] = str(frozen_pcm)
+        record["label"]["path"] = str(frozen_label)
+        for kind in ("baseline", "streaming"):
+            command = manifest["commands"][kind][test_case.file_id]
+            self._replace_option(command, "--output-root", str(changed_root))
+            self._replace_option(command, "--audio", str(frozen_pcm))
+
+        with self.assertRaisesRegex(ValueError, "single consistent absolute --output-root"):
+            module.validate_manifest(manifest)
+
+    def test_frozen_file_verification_rejects_missing_and_hash_mismatches_without_unc_access(self):
+        manifest = self._valid_manifest()
+        self._materialize_frozen_inputs(manifest)
+        self.assertIsNone(module.validate_manifest(manifest, verify_frozen_files=True))
+
+        missing = self._valid_manifest()
+        self._materialize_frozen_inputs(missing)
+        Path(missing["test_cases"][0]["label"]["path"]).unlink()
+        with self.assertRaisesRegex(FileNotFoundError, "frozen label file"):
+            module.validate_manifest(missing, verify_frozen_files=True)
+
+        mismatched = self._valid_manifest()
+        self._materialize_frozen_inputs(mismatched)
+        Path(mismatched["test_cases"][0]["pcm"]["path"]).write_bytes(b"tampered")
+        with self.assertRaisesRegex(ValueError, "frozen PCM SHA-256"):
+            module.validate_manifest(mismatched, verify_frozen_files=True)
+
+    def test_validate_manifest_cli_verifies_frozen_file_hashes(self):
+        manifest = self._valid_manifest()
+        self._materialize_frozen_inputs(manifest)
+        manifest_path = self.root / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(module.main(["validate-manifest", "--manifest", str(manifest_path)]), 0)
+        Path(manifest["test_cases"][0]["pcm"]["path"]).write_bytes(b"tampered")
+        with self.assertRaisesRegex(ValueError, "frozen PCM SHA-256"):
+            module.main(["validate-manifest", "--manifest", str(manifest_path)])
 
     def test_task_two_fixed_common_and_metric_argument_constants(self):
         self.assertEqual(

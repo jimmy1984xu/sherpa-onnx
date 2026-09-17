@@ -425,13 +425,23 @@ def _is_absolute_directory(value: str) -> bool:
     return PureWindowsPath(value).is_absolute() or PurePosixPath(value).is_absolute()
 
 
+def _frozen_input_path(output_root: str, directory: str, filename: str) -> str:
+    if PureWindowsPath(output_root).is_absolute():
+        root = PureWindowsPath(output_root)
+    elif PurePosixPath(output_root).is_absolute():
+        root = PurePosixPath(output_root)
+    else:
+        raise ValueError(f"command --output-root must be absolute: {output_root!r}")
+    return str(root / "01_input" / directory / filename)
+
+
 def _require_mapping(value: object, description: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{description} must be an object")
     return value
 
 
-def validate_manifest(manifest: Mapping[str, Any]) -> None:
+def validate_manifest(manifest: Mapping[str, Any], *, verify_frozen_files: bool = False) -> None:
     """Reject manifests that cannot support a fair fixed-input comparison."""
     if manifest.get("schema_version") != 1:
         raise ValueError("manifest schema_version must equal 1")
@@ -443,6 +453,8 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
     if found_ids != list(expected_cases):
         raise ValueError(f"manifest file IDs must exactly equal {list(expected_cases)!r}")
     frozen_audio: dict[str, str] = {}
+    frozen_labels: dict[str, str] = {}
+    frozen_records: dict[str, Mapping[str, Mapping[str, Any]]] = {}
     for item in test_cases:
         case = expected_cases[item["file_id"]]
         for name, source in (("pcm", case.pcm), ("label", case.label)):
@@ -455,6 +467,9 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
                 raise ValueError(f"{case.file_id} {name} SHA-256 must be a 64-character hexadecimal value")
             if name == "pcm":
                 frozen_audio[case.file_id] = record["path"]
+            else:
+                frozen_labels[case.file_id] = record["path"]
+        frozen_records[case.file_id] = {"pcm": item["pcm"], "label": item["label"]}
 
     commands = _require_mapping(manifest.get("commands"), "commands")
     if set(commands) != {"baseline", "streaming"}:
@@ -462,6 +477,7 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
     for kind in ("baseline", "streaming"):
         if not isinstance(commands[kind], Mapping) or list(commands[kind]) != list(expected_cases):
             raise ValueError(f"{kind} commands must exactly match manifest file IDs")
+    manifest_output_root: str | None = None
     for file_id in expected_cases:
         baseline = commands["baseline"][file_id]
         streaming = commands["streaming"][file_id]
@@ -471,6 +487,20 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
         if option_value(baseline, "--audio") != frozen_audio[file_id]:
             raise ValueError(f"{file_id} command audio must equal the frozen PCM path")
         options = _option_map(baseline)
+        output_root = options.get("--output-root")
+        if output_root is None:
+            raise ValueError(f"{file_id} command must set --output-root")
+        if manifest_output_root is None:
+            manifest_output_root = output_root
+        elif output_root != manifest_output_root:
+            raise ValueError("all commands must use one single consistent absolute --output-root")
+        case = expected_cases[file_id]
+        expected_pcm = _frozen_input_path(output_root, "pcm", case.pcm.name)
+        expected_label = _frozen_input_path(output_root, "labels", case.label.name)
+        if frozen_audio[file_id] != expected_pcm:
+            raise ValueError(f"{file_id} PCM frozen path must equal {expected_pcm!r}")
+        if frozen_labels[file_id] != expected_label:
+            raise ValueError(f"{file_id} label frozen path must equal {expected_label!r}")
         for option, expected_value in _FIXED_COMMAND_OPTIONS.items():
             if options.get(option) != expected_value:
                 raise ValueError(f"{file_id} {option} must equal {expected_value}")
@@ -490,6 +520,30 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
                 raise ValueError(f"{location} {role} model SHA-256 must be a 64-character hexadecimal value")
         if local["sha256"] != remote["sha256"]:
             raise ValueError(f"{role.upper()} model SHA-256 differs between local and remote")
+        option = f"--{role}-dir"
+        expected_remote_directory = remote["directory"]
+        for file_id in expected_cases:
+            for kind in ("baseline", "streaming"):
+                command_directory = option_value(commands[kind][file_id], option)
+                if command_directory != expected_remote_directory:
+                    raise ValueError(
+                        f"remote {role} model directory must equal audited inventory: "
+                        f"{command_directory!r} != {expected_remote_directory!r}"
+                    )
+
+    if verify_frozen_files:
+        for file_id, records in frozen_records.items():
+            for name, display_name in (("pcm", "PCM"), ("label", "label")):
+                record = records[name]
+                frozen_path = Path(record["path"])
+                if not frozen_path.is_file():
+                    raise FileNotFoundError(f"{file_id} frozen {display_name} file is missing: {frozen_path}")
+                actual_sha256 = sha256_file(frozen_path)
+                if actual_sha256 != record["sha256"]:
+                    raise ValueError(
+                        f"{file_id} frozen {display_name} SHA-256 differs: "
+                        f"{actual_sha256} != {record['sha256']}"
+                    )
 
     if manifest.get("metrics_parameters") != METRIC_PARAMETERS:
         metrics = manifest.get("metrics_parameters")
@@ -593,7 +647,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"test_cases": prepare_inputs(args.output_root)}, ensure_ascii=False, indent=2))
         return 0
     if args.command == "validate-manifest":
-        validate_manifest(json.loads(args.manifest.read_text(encoding="utf-8")))
+        validate_manifest(
+            json.loads(args.manifest.read_text(encoding="utf-8")),
+            verify_frozen_files=True,
+        )
         print(json.dumps({"manifest": str(args.manifest), "valid": True}, ensure_ascii=False))
         return 0
     if args.command == "normalize-results":
