@@ -648,6 +648,301 @@ class TaskTwoTest(unittest.TestCase):
         )
         self.assertEqual(module.parse_args(["summarize"]).command, "summarize")
 
+class TaskThreeTest(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _write_boundary_csv(path, rows):
+        import csv
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fields = [
+            "文件ID", "切换序号", "参考前说话人", "参考后说话人",
+            "区间起始毫秒", "区间结束毫秒", "扩展后起始毫秒", "扩展后结束毫秒",
+            "匹配预测边界毫秒", "状态",
+        ]
+        with path.open("w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    @staticmethod
+    def _metrics_summary(*, der, hit_rate, evaluated=2, errors=0):
+        return {
+            "counts": {"asr_files": evaluated + errors, "evaluated": evaluated, "errors": errors},
+            "metrics": {
+                "der": der,
+                "speaker_change_hit_rate": hit_rate,
+                "speaker_change_hits": 8,
+                "speaker_change_count": 10,
+            },
+        }
+
+    def _write_fake_metrics_source(self, *, exit_code=0):
+        source = self.root / "speaker_diarization_metrics.py"
+        source.write_text(
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            "out = Path(sys.argv[sys.argv.index('--output-dir') + 1])\n"
+            "out.mkdir(parents=True, exist_ok=True)\n"
+            "(out / 'received_args.json').write_text(json.dumps(sys.argv[1:]), encoding='utf-8')\n"
+            "(out / 'speaker_diarization_summary.json').write_text(json.dumps({"
+            "'counts': {'asr_files': 2, 'evaluated': 2, 'errors': 0}, "
+            "'metrics': {'der': 0.2, 'speaker_change_hit_rate': 0.7, "
+            "'speaker_change_hits': 7, 'speaker_change_count': 10}}), encoding='utf-8')\n"
+            f"print('fake metrics exit {exit_code}')\n"
+            f"raise SystemExit({exit_code})\n",
+            encoding="utf-8",
+        )
+        return source
+
+    def test_winner_prefers_boundary_hit_rate_then_lower_der(self):
+        winner = module.select_winner({
+            "baseline": {"hit_rate": 0.80, "der": 0.10},
+            "streaming": {"hit_rate": 0.80, "der": 0.08},
+        })
+        self.assertEqual(winner, "streaming")
+        self.assertEqual(
+            module.select_winner({
+                "baseline": {"hit_rate": 0.81, "der": 0.10},
+                "streaming": {"hit_rate": 0.80, "der": 0.01},
+            }),
+            "baseline",
+        )
+        self.assertIsNone(module.select_winner({
+            "baseline": {"hit_rate": 0.80, "der": 0.10},
+            "streaming": {"hit_rate": 0.805, "der": 0.10},
+        }))
+
+    def test_boundary_difference_keeps_text_and_both_matched_times(self):
+        row = module.make_boundary_difference(
+            reference_boundary_ms=5000,
+            baseline_match_ms=None,
+            streaming_match_ms=5100,
+            tolerance_ms=500,
+            before_text="甲",
+            after_text="乙",
+        )
+        self.assertEqual(row["classification"], "streaming_only_hit")
+        self.assertEqual(row["after_text"], "乙")
+        self.assertEqual(row["reference_boundary_ms"], 5000)
+        self.assertIsNone(row["baseline_match_ms"])
+        self.assertEqual(row["streaming_match_ms"], 5100)
+
+    def test_install_metrics_tool_records_hash_before_copy_and_refuses_wrong_name(self):
+        source = self._write_fake_metrics_source()
+        tools_dir = self.root / "tools"
+        installed = module.install_metrics_tool(source, tools_dir)
+        self.assertEqual(installed, tools_dir / "speaker_diarization_metrics.py")
+        self.assertEqual(installed.read_text(encoding="utf-8"), source.read_text(encoding="utf-8"))
+        receipt = json.loads((tools_dir / "speaker_diarization_metrics.sha256.json").read_text(encoding="utf-8"))
+        self.assertEqual(receipt["sha256"], module.sha256_file(source))
+        wrong = self.root / "wrong.py"
+        wrong.write_text("pass\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "speaker_diarization_metrics.py"):
+            module.install_metrics_tool(wrong, tools_dir)
+
+    def test_run_speaker_metrics_executes_copied_tool_with_fixed_arguments_and_logs(self):
+        source = self._write_fake_metrics_source()
+        tools_dir = self.root / "tools"
+        module.install_metrics_tool(source, tools_dir)
+        normalized = self.root / "normalized"
+        labels = self.root / "labels"
+        normalized.mkdir()
+        labels.mkdir()
+        metrics_dir = self.root / "metrics"
+        result = module.run_speaker_metrics("baseline", tools_dir, normalized, labels, metrics_dir)
+        self.assertEqual(result["status"], "metrics_completed")
+        self.assertEqual(result["summary"]["metrics"]["der"], 0.2)
+        self.assertTrue((metrics_dir / "speaker_metrics.stdout.log").is_file())
+        self.assertTrue((metrics_dir / "speaker_metrics.stderr.log").is_file())
+        received = json.loads((metrics_dir / "received_args.json").read_text(encoding="utf-8"))
+        self.assertEqual(received[received.index("--boundary-tolerance-ms") + 1], "500")
+        self.assertEqual(received[received.index("--collar-ms") + 1], "500")
+
+    def test_run_speaker_metrics_failure_preserves_logs_and_is_not_rankable(self):
+        source = self._write_fake_metrics_source(exit_code=3)
+        tools_dir = self.root / "tools"
+        module.install_metrics_tool(source, tools_dir)
+        normalized = self.root / "normalized"
+        labels = self.root / "labels"
+        normalized.mkdir()
+        labels.mkdir()
+        metrics_dir = self.root / "metrics"
+        result = module.run_speaker_metrics("streaming", tools_dir, normalized, labels, metrics_dir)
+        self.assertEqual(result["status"], "metrics_failed")
+        self.assertEqual(result["returncode"], 3)
+        self.assertIn("fake metrics exit 3", (metrics_dir / "speaker_metrics.stdout.log").read_text(encoding="utf-8"))
+        self.assertIsNone(module.select_winner({
+            "baseline": {"hit_rate": 0.8, "der": 0.1},
+            "streaming": {"hit_rate": None, "der": None},
+        }))
+
+    def test_comparison_merges_boundaries_and_chinese_report_uses_valid_ranking(self):
+        labels = self.root / "01_input" / "labels"
+        first_case, second_case = module.TEST_CASES
+        labels.mkdir(parents=True)
+        for case in (first_case, second_case):
+            (labels / case.label.name).write_text(
+                f"{case.file_id}_0_5000 A 甲\n{case.file_id}_5000_5000 B 乙\n",
+                encoding="utf-8",
+            )
+        metrics_root = self.root / "03_metrics"
+        baseline_csv = metrics_root / "baseline" / "speaker_diarization_boundary_details.csv"
+        streaming_csv = metrics_root / "streaming" / "speaker_diarization_boundary_details.csv"
+        row = {
+            "文件ID": first_case.file_id, "切换序号": 1, "参考前说话人": "A", "参考后说话人": "B",
+            "区间起始毫秒": 5000, "区间结束毫秒": 5000,
+            "扩展后起始毫秒": 4500, "扩展后结束毫秒": 5500,
+            "匹配预测边界毫秒": "", "状态": "未命中",
+        }
+        self._write_boundary_csv(baseline_csv, [row])
+        streaming_row = dict(row)
+        streaming_row["匹配预测边界毫秒"] = 5100
+        streaming_row["状态"] = "命中"
+        self._write_boundary_csv(streaming_csv, [streaming_row])
+        scheme_results = {
+            "baseline": {
+                "status": "metrics_completed", "summary": self._metrics_summary(der=0.10, hit_rate=0.80),
+                "per_file": {"files": [{"file_id": case.file_id, "error": None} for case in (first_case, second_case)]},
+                "metrics_dir": str(baseline_csv.parent), "boundary_details_path": str(baseline_csv),
+                "der_components": {"miss": 1.0, "false_alarm": 2.0, "confusion": 3.0, "total": 20.0},
+            },
+            "streaming": {
+                "status": "metrics_completed", "summary": self._metrics_summary(der=0.08, hit_rate=0.80),
+                "per_file": {"files": [{"file_id": case.file_id, "error": None} for case in (first_case, second_case)]},
+                "metrics_dir": str(streaming_csv.parent), "boundary_details_path": str(streaming_csv),
+                "der_components": {"miss": 1.0, "false_alarm": 1.0, "confusion": 2.0, "total": 20.0},
+            },
+        }
+        for scheme in ("baseline", "streaming"):
+            for case in (first_case, second_case):
+                wer_dir = self.root / scheme / case.file_id / "metrics"
+                wer_dir.mkdir(parents=True, exist_ok=True)
+                (wer_dir / "wer.json").write_text(json.dumps({"wer": 0.0}), encoding="utf-8")
+        runtime = self.root / "remote-artifacts" / "raw" / "baseline" / first_case.file_id / "run_metadata.json"
+        runtime.parent.mkdir(parents=True)
+        runtime.write_text(json.dumps({"argv": ["python3", "baseline-real.py"], "rtf": 0.5}), encoding="utf-8")
+        comparison = module.write_comparison(self.root, scheme_results, labels)
+        boundary_rows = comparison["boundary_differences"]
+        self.assertEqual(boundary_rows[0]["classification"], "streaming_only_hit")
+        self.assertEqual(boundary_rows[0]["before_text"], "甲")
+        self.assertEqual(comparison["winner"], "streaming")
+        self.assertTrue((self.root / "05_comparison" / "comparison.json").is_file())
+        self.assertTrue((self.root / "05_comparison" / "boundary_differences.csv").is_file())
+        manifest = {
+            "commands": {"baseline": {first_case.file_id: ["python", "baseline.py"]}, "streaming": {first_case.file_id: ["python", "streaming.py"]}},
+            "models": {"local": {"asr": {"directory": "C:/models/asr", "sha256": "a" * 64}}},
+        }
+        report = module.write_report(self.root, manifest, comparison)
+        report_text = report.read_text(encoding="utf-8")
+        self.assertIn("本次数据集排名", report_text)
+        self.assertIn("streaming", report_text)
+        self.assertIn("C:/models/asr", report_text)
+        self.assertIn("baseline-real.py", report_text)
+        self.assertIn("false_alarm", report_text)
+
+    def test_comparison_refuses_ranking_when_metrics_evaluate_wrong_file_ids(self):
+        labels = self.root / "01_input" / "labels"
+        labels.mkdir(parents=True)
+        for scheme in module.SCHEMES:
+            for case in module.TEST_CASES:
+                wer_dir = self.root / scheme / case.file_id / "metrics"
+                wer_dir.mkdir(parents=True, exist_ok=True)
+                (wer_dir / "wer.json").write_text(json.dumps({"wer": 0.0}), encoding="utf-8")
+        wrong_per_file = {
+            "files": [
+                {"file_id": "unexpected_a", "error": None},
+                {"file_id": "unexpected_b", "error": None},
+            ]
+        }
+        comparison = module.write_comparison(
+            self.root,
+            {
+                scheme: {
+                    "status": "metrics_completed",
+                    "summary": self._metrics_summary(der=0.1, hit_rate=0.8),
+                    "per_file": wrong_per_file,
+                }
+                for scheme in module.SCHEMES
+            },
+            labels,
+        )
+        self.assertFalse(comparison["ranking_eligible"])
+        self.assertIsNone(comparison["winner"])
+        self.assertIn("fixed audio file IDs", comparison["ranking_reason"])
+
+    def test_report_does_not_rank_when_any_case_is_not_successfully_evaluated(self):
+        comparison = {
+            "winner": "streaming", "ranking_eligible": False, "ranking_reason": "缺少完整指标",
+            "schemes": {}, "boundary_differences": [], "failures": ["streaming metrics_failed"],
+        }
+        report = module.write_report(self.root, {"commands": {}, "models": {}}, comparison)
+        text = report.read_text(encoding="utf-8")
+        self.assertIn("未形成有效总体排名", text)
+        self.assertNotIn("本次数据集排名：streaming", text)
+
+    def test_copied_metrics_tool_exposes_per_file_der_components_after_cli_run(self):
+        source = self.root / "speaker_diarization_metrics.py"
+        source.write_text(
+            "import json, sys\n"
+            "from dataclasses import dataclass\n"
+            "from pathlib import Path\n"
+            "@dataclass\nclass Report:\n    files: list\n"
+            "def evaluate_paths(**kwargs):\n"
+            "    return Report([{'error': None, 'file_id': 'sample', 'der_components': {'miss': 1.0, 'false_alarm': 2.0, 'confusion': 3.0, 'total': 10.0}, 'metrics': {'der': 0.6}}])\n"
+            "if __name__ == '__main__':\n"
+            "    out = Path(sys.argv[sys.argv.index('--output-dir') + 1]); out.mkdir(parents=True, exist_ok=True)\n"
+            "    (out / 'speaker_diarization_summary.json').write_text(json.dumps({'counts': {'asr_files': 1, 'evaluated': 1, 'errors': 0}, 'metrics': {'der': 0.6, 'speaker_change_hit_rate': 0.5, 'speaker_change_hits': 1, 'speaker_change_count': 2}}), encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        tools_dir = self.root / "tools"
+        module.install_metrics_tool(source, tools_dir)
+        normalized = self.root / "normalized"
+        labels = self.root / "labels"
+        normalized.mkdir()
+        labels.mkdir()
+        result = module.run_speaker_metrics("baseline", tools_dir, normalized, labels, self.root / "metrics")
+        self.assertEqual(result["der_components"], {"miss": 1.0, "false_alarm": 2.0, "confusion": 3.0, "total": 10.0})
+        self.assertEqual(result["der_components_by_file"]["sample"]["confusion"], 3.0)
+
+    def test_boundary_text_uses_last_text_of_merged_same_speaker_turn(self):
+        case = module.TEST_CASES[0]
+        labels = self.root / "labels"
+        labels.mkdir()
+        (labels / case.label.name).write_text(
+            f"{case.file_id}_0_1000 A 第一段\n{case.file_id}_1000_1000 A 第二段\n{case.file_id}_2000_1000 B 后续\n",
+            encoding="utf-8",
+        )
+        row = {
+            "文件ID": case.file_id, "切换序号": 1, "参考前说话人": "A", "参考后说话人": "B",
+            "区间起始毫秒": 2000, "区间结束毫秒": 2000,
+            "扩展后起始毫秒": 1500, "扩展后结束毫秒": 2500,
+            "匹配预测边界毫秒": "2000", "状态": "命中",
+        }
+        baseline = self.root / "baseline.csv"
+        streaming = self.root / "streaming.csv"
+        self._write_boundary_csv(baseline, [row])
+        self._write_boundary_csv(streaming, [row])
+        differences = module.merge_boundary_differences(baseline, streaming, labels)
+        self.assertEqual(differences[0]["before_text"], "第二段")
+        self.assertEqual(differences[0]["after_text"], "后续")
+
+    def test_summarize_cli_accepts_task_three_artifact_locations(self):
+        args = module.parse_args([
+            "summarize", "--output-root", str(self.root),
+            "--manifest", str(self.root / "manifest.json"),
+            "--metrics-source", str(self.root / "speaker_diarization_metrics.py"),
+            "--normalized-results-root", str(self.root / "normalized"),
+            "--labels-dir", str(self.root / "labels"),
+        ])
+        self.assertEqual(args.command, "summarize")
+        self.assertEqual(args.output_root, self.root)
+
 
 if __name__ == "__main__":
     unittest.main()

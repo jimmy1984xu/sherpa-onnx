@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import importlib.util
 import json
 import shutil
+import subprocess
 import sys
 import uuid
 from dataclasses import dataclass
@@ -635,6 +637,705 @@ def create_manifest(
     return manifest
 
 
+
+METRICS_TOOL_FILENAME = "speaker_diarization_metrics.py"
+DEFAULT_METRICS_SOURCE = Path(
+    r"D:\code\proMax\tz-llm-sdk\agent-sdk-test\python\speaker_diarization_metrics.py"
+)
+SCHEMES = ("baseline", "streaming")
+BOUNDARY_DIFFERENCE_FIELDS = (
+    "file_id",
+    "reference_start_ms",
+    "reference_end_ms",
+    "reference_boundary_ms",
+    "baseline_match_ms",
+    "streaming_match_ms",
+    "tolerance_ms",
+    "classification",
+    "before_text",
+    "after_text",
+)
+
+
+def _write_json(path: Path, payload: object) -> None:
+    """Atomically write a UTF-8 JSON artifact with deterministic formatting."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def install_metrics_tool(source: Path, tools_dir: Path) -> Path:
+    """Record the source SHA-256, then atomically copy the approved metrics script."""
+    source = Path(source)
+    tools_dir = Path(tools_dir)
+    if source.name != METRICS_TOOL_FILENAME:
+        raise ValueError(f"metrics source must be named {METRICS_TOOL_FILENAME!r}: {source}")
+    if not source.is_file():
+        raise FileNotFoundError(f"metrics source is missing: {source}")
+    digest = sha256_file(source)
+    destination = tools_dir / METRICS_TOOL_FILENAME
+    receipt = tools_dir / "speaker_diarization_metrics.sha256.json"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(receipt, {
+        "source_path": str(source),
+        "sha256": digest,
+        "destination_path": str(destination),
+    })
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    shutil.copyfile(source, temporary)
+    if sha256_file(temporary) != digest:
+        temporary.unlink(missing_ok=True)
+        raise ValueError("metrics tool SHA-256 changed while copying")
+    temporary.replace(destination)
+    return destination
+
+
+def _read_json_mapping(path: Path, description: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot parse {description}: {path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise ValueError(f"{description} must be a JSON object: {path}")
+    return payload
+
+
+def _extract_der_components_from_tool(
+    tool_path: Path,
+    normalized_result_root: Path,
+    input_labels_dir: Path,
+) -> tuple[dict[str, float] | None, dict[str, dict[str, float]], str | None]:
+    """Expose aggregate and per-file DER components from the exact copied metric source.
+
+    Its CLI publishes aggregate DER but not miss/false-alarm/confusion components.
+    The copied source's public ``evaluate_paths`` API retains those values, so this
+    reads them without reimplementing diarization scoring.
+    """
+    try:
+        module_name = f"_copied_speaker_metrics_{uuid.uuid4().hex}"
+        spec = importlib.util.spec_from_file_location(module_name, tool_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load copied metrics tool: {tool_path}")
+        metrics_module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = metrics_module
+        try:
+            spec.loader.exec_module(metrics_module)
+        finally:
+            sys.modules.pop(module_name, None)
+        report = metrics_module.evaluate_paths(
+            results_dir=normalized_result_root,
+            labels_dir=input_labels_dir,
+            boundary_tolerance_ms=METRIC_PARAMETERS["boundary_tolerance_ms"],
+            collar_ms=METRIC_PARAMETERS["collar_ms"],
+        )
+        evaluated = [item for item in report.files if item.get("error") is None]
+        if not evaluated:
+            return None, {}, "copied metrics tool evaluated no files while extracting DER components"
+        aggregate = {key: 0.0 for key in ("miss", "false_alarm", "confusion", "total")}
+        per_file: dict[str, dict[str, float]] = {}
+        for item in evaluated:
+            file_id = item.get("file_id")
+            values = item.get("der_components")
+            if not isinstance(file_id, str) or not isinstance(values, Mapping):
+                return None, {}, "copied metrics tool did not expose per-file DER components"
+            parsed: dict[str, float] = {}
+            for key in aggregate:
+                value = values.get(key)
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    return None, {}, f"invalid copied metrics {key} component: {value!r}"
+                parsed[key] = float(value)
+                aggregate[key] += parsed[key]
+            per_file[file_id] = parsed
+        return aggregate, per_file, None
+    except Exception as error:  # CLI output remains authoritative; retain the extraction limitation.
+        return None, {}, f"unable to extract DER components from copied metrics tool: {error}"
+
+
+def run_speaker_metrics(
+    scheme: str,
+    tools_dir: Path,
+    normalized_result_root: Path,
+    input_labels_dir: Path,
+    metrics_dir: Path,
+) -> dict[str, Any]:
+    """Run the copied metrics CLI and retain its command, output and failure logs."""
+    if scheme not in SCHEMES:
+        raise ValueError(f"unsupported scheme: {scheme}")
+    tools_dir = Path(tools_dir)
+    normalized_result_root = Path(normalized_result_root)
+    input_labels_dir = Path(input_labels_dir)
+    metrics_dir = Path(metrics_dir)
+    tool_path = tools_dir / METRICS_TOOL_FILENAME
+    if not tool_path.is_file():
+        raise FileNotFoundError(f"copied metrics tool is missing: {tool_path}")
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    command = [
+        sys.executable, str(tool_path),
+        "--results-dir", str(normalized_result_root),
+        "--labels-dir", str(input_labels_dir),
+        "--output-dir", str(metrics_dir),
+        "--boundary-tolerance-ms", str(METRIC_PARAMETERS["boundary_tolerance_ms"]),
+        "--collar-ms", str(METRIC_PARAMETERS["collar_ms"]),
+    ]
+    completed = subprocess.run(command, text=True, capture_output=True, check=False)
+    stdout_path = metrics_dir / "speaker_metrics.stdout.log"
+    stderr_path = metrics_dir / "speaker_metrics.stderr.log"
+    stdout_path.write_text(completed.stdout, encoding="utf-8")
+    stderr_path.write_text(completed.stderr, encoding="utf-8")
+    summary_path = metrics_dir / "speaker_diarization_summary.json"
+    boundary_path = metrics_dir / "speaker_diarization_boundary_details.csv"
+    per_file_path = metrics_dir / "speaker_diarization_per_file.json"
+    result: dict[str, Any] = {
+        "scheme": scheme,
+        "status": "metrics_failed" if completed.returncode else "metrics_missing_summary",
+        "returncode": completed.returncode,
+        "command": command,
+        "metrics_dir": str(metrics_dir),
+        "stdout_log": str(stdout_path),
+        "stderr_log": str(stderr_path),
+        "summary_path": str(summary_path),
+        "boundary_details_path": str(boundary_path),
+        "per_file_path": str(per_file_path),
+        "summary": None,
+        "per_file": None,
+        "der_components": None,
+        "der_components_by_file": {},
+        "der_components_error": None,
+    }
+    if completed.returncode:
+        return result
+    if not summary_path.is_file():
+        return result
+    try:
+        summary = _read_json_mapping(summary_path, "speaker diarization summary")
+        counts = summary.get("counts")
+        metrics = summary.get("metrics")
+        if not isinstance(counts, Mapping) or not isinstance(metrics, Mapping):
+            raise ValueError("speaker diarization summary lacks counts or metrics object")
+        result["summary"] = summary
+        if per_file_path.is_file():
+            result["per_file"] = _read_json_mapping(per_file_path, "speaker diarization per-file result")
+        components, components_by_file, component_error = _extract_der_components_from_tool(
+            tool_path, normalized_result_root, input_labels_dir,
+        )
+        result["der_components"] = components
+        result["der_components_by_file"] = components_by_file
+        result["der_components_error"] = component_error
+        result["status"] = "metrics_completed"
+    except ValueError as error:
+        result["status"] = "metrics_invalid_summary"
+        result["summary_error"] = str(error)
+    return result
+
+
+def _as_metric_number(value: object) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    return float(value)
+
+
+def select_winner(metrics: Mapping[str, Mapping[str, object]]) -> str | None:
+    """Apply the fixed hit-rate-first, DER-second comparison policy."""
+    baseline = metrics.get("baseline")
+    streaming = metrics.get("streaming")
+    if not isinstance(baseline, Mapping) or not isinstance(streaming, Mapping):
+        return None
+    baseline_hit = _as_metric_number(baseline.get("hit_rate"))
+    streaming_hit = _as_metric_number(streaming.get("hit_rate"))
+    baseline_der = _as_metric_number(baseline.get("der"))
+    streaming_der = _as_metric_number(streaming.get("der"))
+    if None in (baseline_hit, streaming_hit, baseline_der, streaming_der):
+        return None
+    assert baseline_hit is not None and streaming_hit is not None
+    assert baseline_der is not None and streaming_der is not None
+    if abs(baseline_hit - streaming_hit) >= 0.01:
+        return "baseline" if baseline_hit > streaming_hit else "streaming"
+    if baseline_der < streaming_der:
+        return "baseline"
+    if streaming_der < baseline_der:
+        return "streaming"
+    return None
+
+
+def make_boundary_difference(
+    *,
+    reference_boundary_ms: int,
+    baseline_match_ms: int | None,
+    streaming_match_ms: int | None,
+    tolerance_ms: int,
+    before_text: str,
+    after_text: str,
+    reference_start_ms: int | None = None,
+    reference_end_ms: int | None = None,
+    file_id: str = "",
+) -> dict[str, object]:
+    """Create one auditable row explaining whether either scheme hit a reference turn."""
+    if baseline_match_ms is not None and streaming_match_ms is not None:
+        classification = "both_hit"
+    elif baseline_match_ms is not None:
+        classification = "baseline_only_hit"
+    elif streaming_match_ms is not None:
+        classification = "streaming_only_hit"
+    else:
+        classification = "both_miss"
+    return {
+        "file_id": file_id,
+        "reference_start_ms": reference_boundary_ms if reference_start_ms is None else reference_start_ms,
+        "reference_end_ms": reference_boundary_ms if reference_end_ms is None else reference_end_ms,
+        "reference_boundary_ms": reference_boundary_ms,
+        "baseline_match_ms": baseline_match_ms,
+        "streaming_match_ms": streaming_match_ms,
+        "tolerance_ms": tolerance_ms,
+        "classification": classification,
+        "before_text": before_text,
+        "after_text": after_text,
+    }
+
+
+def _int_csv_value(row: Mapping[str, str], name: str, path: Path) -> int:
+    value = row.get(name, "").strip()
+    try:
+        return int(value)
+    except ValueError as error:
+        raise ValueError(f"{path} has invalid {name}: {value!r}") from error
+
+
+def _optional_int_csv_value(row: Mapping[str, str], name: str, path: Path) -> int | None:
+    value = row.get(name, "").strip()
+    return None if not value else _int_csv_value(row, name, path)
+
+
+def _read_boundary_details(path: Path) -> dict[tuple[str, int, int], dict[str, object]]:
+    if not path.is_file():
+        return {}
+    required = {
+        "文件ID", "区间起始毫秒", "区间结束毫秒", "扩展后起始毫秒", "扩展后结束毫秒",
+        "匹配预测边界毫秒", "状态",
+    }
+    with path.open(encoding="utf-8-sig", newline="") as stream:
+        reader = csv.DictReader(stream)
+        if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+            raise ValueError(f"boundary details CSV has unexpected columns: {path}")
+        details: dict[tuple[str, int, int], dict[str, object]] = {}
+        for row in reader:
+            file_id = row["文件ID"].strip()
+            start_ms = _int_csv_value(row, "区间起始毫秒", path)
+            end_ms = _int_csv_value(row, "区间结束毫秒", path)
+            key = (file_id, start_ms, end_ms)
+            if key in details:
+                raise ValueError(f"duplicate reference boundary in {path}: {key}")
+            details[key] = {
+                "file_id": file_id,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "matched_ms": _optional_int_csv_value(row, "匹配预测边界毫秒", path),
+                "tolerance_ms": max(
+                    abs(_int_csv_value(row, "扩展后起始毫秒", path) - min(start_ms, end_ms)),
+                    abs(_int_csv_value(row, "扩展后结束毫秒", path) - max(start_ms, end_ms)),
+                ),
+            }
+    return details
+
+
+def _reference_boundary_texts(labels_dir: Path) -> dict[tuple[str, int, int], tuple[str, str]]:
+    """Mirror the copied tool's same-speaker turn merge while retaining adjacent text."""
+    texts: dict[tuple[str, int, int], tuple[str, str]] = {}
+    for case in TEST_CASES:
+        label_path = Path(labels_dir) / case.label.name
+        if not label_path.is_file():
+            continue
+        records = sorted(parse_three_column_file(label_path), key=lambda record: (_record_start_ms(record), record.segment_id))
+        turns: list[dict[str, object]] = []
+        for record in records:
+            if record.speaker_id.lower() == "multi":
+                continue
+            start_ms = _record_start_ms(record)
+            duration_ms = int(record.segment_id.rsplit("_", 1)[1])
+            end_ms = start_ms + duration_ms
+            if turns and turns[-1]["speaker_id"] == record.speaker_id:
+                turns[-1]["end_ms"] = max(int(turns[-1]["end_ms"]), end_ms)
+                turns[-1]["last_text"] = record.text
+            else:
+                turns.append({
+                    "speaker_id": record.speaker_id,
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                    "first_text": record.text,
+                    "last_text": record.text,
+                })
+        for previous, following in zip(turns, turns[1:]):
+            key = (case.file_id, int(previous["end_ms"]), int(following["start_ms"]))
+            texts[key] = (str(previous["last_text"]), str(following["first_text"]))
+    return texts
+
+
+def merge_boundary_differences(
+    baseline_boundary_path: Path,
+    streaming_boundary_path: Path,
+    labels_dir: Path,
+) -> list[dict[str, object]]:
+    """Merge two copied-tool boundary CSVs by file and reference interval."""
+    baseline = _read_boundary_details(Path(baseline_boundary_path))
+    streaming = _read_boundary_details(Path(streaming_boundary_path))
+    label_texts = _reference_boundary_texts(Path(labels_dir))
+    differences: list[dict[str, object]] = []
+    for key in sorted(set(baseline) | set(streaming)):
+        file_id, start_ms, end_ms = key
+        left = baseline.get(key, {})
+        right = streaming.get(key, {})
+        tolerance = int(left.get("tolerance_ms", right.get("tolerance_ms", METRIC_PARAMETERS["boundary_tolerance_ms"])))
+        before_text, after_text = label_texts.get(key, ("", ""))
+        differences.append(make_boundary_difference(
+            file_id=file_id,
+            reference_start_ms=start_ms,
+            reference_end_ms=end_ms,
+            reference_boundary_ms=start_ms if start_ms == end_ms else (start_ms + end_ms) // 2,
+            baseline_match_ms=left.get("matched_ms") if isinstance(left.get("matched_ms"), int) else None,
+            streaming_match_ms=right.get("matched_ms") if isinstance(right.get("matched_ms"), int) else None,
+            tolerance_ms=tolerance,
+            before_text=before_text,
+            after_text=after_text,
+        ))
+    return differences
+
+
+def _load_wer_by_file(output_root: Path, scheme: str) -> dict[str, dict[str, object]]:
+    values: dict[str, dict[str, object]] = {}
+    for case in TEST_CASES:
+        path = output_root / scheme / case.file_id / "metrics" / "wer.json"
+        if not path.is_file():
+            values[case.file_id] = {"status": "missing", "path": str(path), "wer": None}
+            continue
+        try:
+            payload = _read_json_mapping(path, "WER result")
+            values[case.file_id] = {
+                "status": "completed",
+                "path": str(path),
+                "wer": _as_metric_number(payload.get("wer")),
+                "metrics": payload,
+            }
+        except ValueError as error:
+            values[case.file_id] = {"status": "invalid", "path": str(path), "wer": None, "error": str(error)}
+    return values
+
+
+def _find_runtime_metadata(output_root: Path) -> dict[str, dict[str, dict[str, object]]]:
+    """Best-effort discovery of Task-4 run metadata without executing remote code."""
+    found: dict[str, dict[str, dict[str, object]]] = {scheme: {} for scheme in SCHEMES}
+    remote_root = Path(output_root) / "remote-artifacts"
+    if not remote_root.is_dir():
+        return found
+    for path in remote_root.rglob("run_metadata.json"):
+        try:
+            payload = _read_json_mapping(path, "run metadata")
+        except ValueError:
+            continue
+        path_text = str(path).replace("\\", "/")
+        scheme = next((name for name in SCHEMES if f"/{name}/" in path_text), None)
+        if scheme is None:
+            continue
+        file_id = next((case.file_id for case in TEST_CASES if case.file_id in path_text), None)
+        if file_id is None:
+            file_id = next((case.file_id for case in TEST_CASES if case.file_id == payload.get("file_id")), None)
+        if file_id is not None:
+            found[scheme][file_id] = {"path": str(path), "metadata": payload}
+    return found
+
+
+def _scheme_is_rankable(result: Mapping[str, object], wer_by_file: Mapping[str, Mapping[str, object]]) -> tuple[bool, str]:
+    if result.get("status") != "metrics_completed":
+        return False, f"{result.get('scheme', 'scheme')} speaker metrics status is {result.get('status')}"
+    summary = result.get("summary")
+    if not isinstance(summary, Mapping):
+        return False, "speaker diarization summary is missing"
+    counts = summary.get("counts")
+    if not isinstance(counts, Mapping):
+        return False, "speaker diarization summary counts are missing"
+    if counts.get("evaluated") != len(TEST_CASES) or counts.get("errors") != 0:
+        return False, "not all fixed audio cases were successfully evaluated"
+    per_file = result.get("per_file")
+    files = per_file.get("files") if isinstance(per_file, Mapping) else None
+    if not isinstance(files, list):
+        return False, "speaker diarization per-file results are missing"
+    evaluated_file_ids: list[str] = []
+    for item in files:
+        if not isinstance(item, Mapping) or not isinstance(item.get("file_id"), str) or item.get("error") is not None:
+            return False, "speaker diarization per-file results include an invalid or failed file"
+        evaluated_file_ids.append(item["file_id"])
+    expected_file_ids = [case.file_id for case in TEST_CASES]
+    if len(evaluated_file_ids) != len(expected_file_ids) or set(evaluated_file_ids) != set(expected_file_ids):
+        return False, "speaker diarization did not evaluate exactly the fixed audio file IDs"
+    missing_wer = [file_id for file_id, payload in wer_by_file.items() if payload.get("status") != "completed"]
+    if missing_wer:
+        return False, f"WER is unavailable for {', '.join(missing_wer)}"
+    return True, "all fixed audio cases have speaker metrics and WER"
+
+
+def write_comparison(
+    output_root: Path,
+    scheme_results: Mapping[str, Mapping[str, object]],
+    labels_dir: Path,
+) -> dict[str, Any]:
+    """Write machine-readable aggregate comparison and auditable boundary differences."""
+    output_root = Path(output_root)
+    comparison_dir = output_root / "05_comparison"
+    comparison_dir.mkdir(parents=True, exist_ok=True)
+    normalized: dict[str, dict[str, Any]] = {}
+    rank_inputs: dict[str, dict[str, object]] = {}
+    eligibility: list[bool] = []
+    reasons: list[str] = []
+    failures: list[str] = []
+    for scheme in SCHEMES:
+        result = dict(scheme_results.get(scheme, {"scheme": scheme, "status": "metrics_missing"}))
+        result.setdefault("scheme", scheme)
+        wer_by_file = _load_wer_by_file(output_root, scheme)
+        result["wer_by_file"] = wer_by_file
+        rankable, reason = _scheme_is_rankable(result, wer_by_file)
+        result["ranking_eligible"] = rankable
+        result["ranking_reason"] = reason
+        eligibility.append(rankable)
+        reasons.append(f"{scheme}: {reason}")
+        if result.get("status") != "metrics_completed":
+            failures.append(f"{scheme}: {result.get('status')}")
+        component_error = result.get("der_components_error")
+        if isinstance(component_error, str) and component_error:
+            failures.append(f"{scheme}: {component_error}")
+        summary = result.get("summary")
+        if isinstance(summary, Mapping) and isinstance(summary.get("metrics"), Mapping):
+            metric_values = summary["metrics"]
+            rank_inputs[scheme] = {
+                "hit_rate": metric_values.get("speaker_change_hit_rate"),
+                "der": metric_values.get("der"),
+            }
+        normalized[scheme] = result
+
+    baseline_boundary = Path(str(normalized["baseline"].get("boundary_details_path", "")))
+    streaming_boundary = Path(str(normalized["streaming"].get("boundary_details_path", "")))
+    boundary_rows = merge_boundary_differences(baseline_boundary, streaming_boundary, Path(labels_dir))
+    boundary_path = comparison_dir / "boundary_differences.csv"
+    with boundary_path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=BOUNDARY_DIFFERENCE_FIELDS)
+        writer.writeheader()
+        writer.writerows(boundary_rows)
+
+    ranking_eligible = all(eligibility)
+    winner = select_winner(rank_inputs) if ranking_eligible else None
+    if not ranking_eligible:
+        ranking_reason = "；".join(reasons)
+    elif winner is None:
+        ranking_reason = "命中率差值小于 0.01，且 DER 无差异"
+    else:
+        ranking_reason = "按断句命中率优先、DER 次级规则得出"
+    comparison: dict[str, Any] = {
+        "schema_version": 1,
+        "metric_parameters": dict(METRIC_PARAMETERS),
+        "schemes": normalized,
+        "boundary_differences": boundary_rows,
+        "boundary_differences_path": str(boundary_path),
+        "runtime_metadata": _find_runtime_metadata(output_root),
+        "ranking_eligible": ranking_eligible,
+        "winner": winner,
+        "ranking_reason": ranking_reason,
+        "failures": failures,
+    }
+    _write_json(comparison_dir / "comparison.json", comparison)
+    return comparison
+
+
+def _display_metric(value: object) -> str:
+    numeric = _as_metric_number(value)
+    return "未提供" if numeric is None else f"{numeric:.4f}"
+
+
+def _markdown_cell(value: object) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def write_report(
+    output_root: Path,
+    manifest: Mapping[str, object],
+    comparison: Mapping[str, object],
+    *,
+    diart_summary: Mapping[str, object] | None = None,
+) -> Path:
+    """Write the Chinese Task-3 report without claiming a ranking on partial results."""
+    output_root = Path(output_root)
+    report_path = output_root / "报告.md"
+    schemes = comparison.get("schemes") if isinstance(comparison.get("schemes"), Mapping) else {}
+    lines = [
+        "# sherpa-onnx pyannote segmentation 断句优化测试报告",
+        "",
+        "## 评测范围与公平性",
+        "- 方式一：`offline-long-audio-pipeline-asr-speaker.py`。",
+        "- 方式二：`offline-long-audio-pipeline-asr-speaker-segmentation.py`（10 秒窗口、1 秒滑移融合；`--segmentation-chunk-ms 32`）。",
+        "- 固定聚类参数：`--num-clusters -1`、`--cluster-threshold 0.6`；DER collar 与断句容差均为 500 ms。",
+        "",
+        "## 实际命令",
+    ]
+    commands = manifest.get("commands") if isinstance(manifest.get("commands"), Mapping) else {}
+    lines.append("```json")
+    lines.append(json.dumps(commands, ensure_ascii=False, indent=2))
+    lines.append("```")
+    lines.extend(["", "## 模型路径与 SHA-256"])
+    models = manifest.get("models") if isinstance(manifest.get("models"), Mapping) else {}
+    for location in ("local", "remote"):
+        inventory = models.get(location) if isinstance(models, Mapping) else None
+        lines.append(f"### {location}")
+        if not isinstance(inventory, Mapping):
+            lines.append("未记录。")
+            continue
+        lines.extend(["| 角色 | 路径 | SHA-256 |", "| --- | --- | --- |"])
+        for role, item in inventory.items():
+            if isinstance(item, Mapping):
+                lines.append(f"| {_markdown_cell(role)} | {_markdown_cell(item.get('directory', ''))} | {_markdown_cell(item.get('sha256', ''))} |")
+    runtime_metadata = comparison.get("runtime_metadata") if isinstance(comparison.get("runtime_metadata"), Mapping) else {}
+    lines.extend(["", "## 实际远程命令记录"])
+    actual_commands: dict[str, object] = {}
+    for scheme in SCHEMES:
+        scheme_runtime = runtime_metadata.get(scheme) if isinstance(runtime_metadata, Mapping) else {}
+        if not isinstance(scheme_runtime, Mapping):
+            continue
+        for file_id, run in scheme_runtime.items():
+            metadata = run.get("metadata") if isinstance(run, Mapping) and isinstance(run.get("metadata"), Mapping) else {}
+            actual_argv = metadata.get("argv", metadata.get("command")) if isinstance(metadata, Mapping) else None
+            if actual_argv is not None:
+                actual_commands.setdefault(scheme, {})[file_id] = actual_argv
+    if actual_commands:
+        lines.append("以下 argv/command 来自远端回收的 `run_metadata.json`。")
+        lines.append("```json")
+        lines.append(json.dumps(actual_commands, ensure_ascii=False, indent=2))
+        lines.append("```")
+    else:
+        lines.append("尚未回收实际远程命令；上方仅为受控命令模板，不能视为已执行记录。")
+    lines.extend(["", "## 每条音频指标"])
+    lines.append("| 方案 | 音频 | WER | DER | miss | false_alarm | confusion | 命中率 | 音频时长 | 运行耗时 | RTF | segment 数 | speaker 分布 |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    for scheme in SCHEMES:
+        result = schemes.get(scheme) if isinstance(schemes, Mapping) else None
+        result = result if isinstance(result, Mapping) else {}
+        summary = result.get("summary") if isinstance(result.get("summary"), Mapping) else {}
+        aggregate_metrics = summary.get("metrics") if isinstance(summary, Mapping) and isinstance(summary.get("metrics"), Mapping) else {}
+        per_file_payload = result.get("per_file") if isinstance(result.get("per_file"), Mapping) else {}
+        public_files = per_file_payload.get("files") if isinstance(per_file_payload, Mapping) else []
+        if not isinstance(public_files, list):
+            public_files = []
+        metrics_by_file = {
+            item.get("file_id"): item.get("metrics")
+            for item in public_files
+            if isinstance(item, Mapping) and isinstance(item.get("file_id"), str) and isinstance(item.get("metrics"), Mapping)
+        }
+        components_by_file = result.get("der_components_by_file") if isinstance(result.get("der_components_by_file"), Mapping) else {}
+        wer_by_file = result.get("wer_by_file") if isinstance(result.get("wer_by_file"), Mapping) else {}
+        runtime_by_file = runtime_metadata.get(scheme) if isinstance(runtime_metadata, Mapping) else {}
+        for case in TEST_CASES:
+            metrics = metrics_by_file.get(case.file_id, aggregate_metrics)
+            components = components_by_file.get(case.file_id, {}) if isinstance(components_by_file, Mapping) else {}
+            wer = wer_by_file.get(case.file_id) if isinstance(wer_by_file, Mapping) else {}
+            run = runtime_by_file.get(case.file_id) if isinstance(runtime_by_file, Mapping) else {}
+            metadata = run.get("metadata") if isinstance(run, Mapping) and isinstance(run.get("metadata"), Mapping) else {}
+            duration = metadata.get("audio_duration_seconds", metadata.get("audio_duration_s", "未记录"))
+            elapsed = metadata.get("elapsed_seconds", metadata.get("elapsed_s", metadata.get("run_seconds", "未记录")))
+            rtf = metadata.get("rtf", "未记录")
+            segment_count = metadata.get("segment_count", "未记录")
+            speaker_distribution = metadata.get("speaker_distribution", "未记录")
+            lines.append(
+                f"| {scheme} | {case.file_id} | {_display_metric(wer.get('wer') if isinstance(wer, Mapping) else None)} | "
+                f"{_display_metric(metrics.get('der'))} | {_display_metric(components.get('miss'))} | "
+                f"{_display_metric(components.get('false_alarm'))} | {_display_metric(components.get('confusion'))} | "
+                f"{_display_metric(metrics.get('speaker_change_hit_rate'))} | {_markdown_cell(duration)} | "
+                f"{_markdown_cell(elapsed)} | {_markdown_cell(rtf)} | {_markdown_cell(segment_count)} | {_markdown_cell(speaker_distribution)} |"
+            )
+    lines.extend(["", "## 边界差异（最多前 50 条）"])
+    boundary_rows = comparison.get("boundary_differences") if isinstance(comparison.get("boundary_differences"), list) else []
+    lines.extend(["| 文件 | 参考边界(ms) | baseline | streaming | 分类 | 前文本 | 后文本 |", "| --- | --- | --- | --- | --- | --- | --- |"])
+    for row in boundary_rows[:50]:
+        if not isinstance(row, Mapping):
+            continue
+        lines.append(
+            f"| {_markdown_cell(row.get('file_id', ''))} | {_markdown_cell(row.get('reference_boundary_ms', ''))} | "
+            f"{_markdown_cell(row.get('baseline_match_ms', ''))} | {_markdown_cell(row.get('streaming_match_ms', ''))} | "
+            f"{_markdown_cell(row.get('classification', ''))} | {_markdown_cell(row.get('before_text', ''))} | {_markdown_cell(row.get('after_text', ''))} |"
+        )
+    lines.extend(["", "## 结论"])
+    if comparison.get("ranking_eligible"):
+        winner = comparison.get("winner")
+        if winner in SCHEMES:
+            lines.append(f"本次数据集排名：{winner}。{comparison.get('ranking_reason', '')}")
+        else:
+            lines.append("无明显差异。命中率差值小于 0.01，且 DER 无差异。")
+    else:
+        lines.append(f"未形成有效总体排名：{comparison.get('ranking_reason', '两条音频未全部成功评价')}。")
+    lines.extend(["", "## Diart 源码分析摘要"])
+    if diart_summary is None:
+        default_diart = output_root / "04_diart_source_analysis" / "diart_analysis.json"
+        if default_diart.is_file():
+            try:
+                diart_summary = _read_json_mapping(default_diart, "Diart analysis")
+            except ValueError as error:
+                lines.append(f"Diart 分析文件不可读取：{error}")
+        else:
+            lines.append("尚未生成（Task 5 负责源码分析；本 Task 不运行 Diart 推理）。")
+    if isinstance(diart_summary, Mapping):
+        lines.append("```json")
+        lines.append(json.dumps(diart_summary, ensure_ascii=False, indent=2))
+        lines.append("```")
+    lines.extend(["", "## 失败与限制"])
+    failures = comparison.get("failures") if isinstance(comparison.get("failures"), list) else []
+    if failures:
+        lines.extend(f"- {item}" for item in failures)
+    else:
+        lines.append("- 未记录 Task 3 汇总阶段失败；远程构建/推理及 Diart 分析由后续任务执行。")
+    for scheme in SCHEMES:
+        result = schemes.get(scheme) if isinstance(schemes, Mapping) else None
+        if isinstance(result, Mapping):
+            for key in ("stdout_log", "stderr_log", "summary_path", "boundary_details_path"):
+                if result.get(key):
+                    lines.append(f"- {scheme} {key}: {result[key]}")
+            if result.get("der_components_error"):
+                lines.append(f"- {scheme} DER 分量限制：{result['der_components_error']}")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return report_path
+
+
+def summarize_evaluation(
+    output_root: Path,
+    *,
+    manifest_path: Path | None = None,
+    metrics_source: Path = DEFAULT_METRICS_SOURCE,
+    normalized_results_root: Path | None = None,
+    labels_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Run Task-3 local metrics/report aggregation only; it never starts remote work."""
+    output_root = Path(output_root)
+    manifest_path = output_root / "manifest.json" if manifest_path is None else Path(manifest_path)
+    manifest = _read_json_mapping(manifest_path, "manifest")
+    validate_manifest(manifest, verify_frozen_files=True)
+    labels_dir = output_root / "01_input" / "labels" if labels_dir is None else Path(labels_dir)
+    normalized_results_root = output_root / "03_normalized_results" if normalized_results_root is None else Path(normalized_results_root)
+    tools_dir = output_root / "tools"
+    scheme_results: dict[str, dict[str, Any]] = {}
+    try:
+        install_metrics_tool(Path(metrics_source), tools_dir)
+    except (OSError, ValueError) as error:
+        for scheme in SCHEMES:
+            scheme_results[scheme] = {"scheme": scheme, "status": "metrics_failed", "error": str(error)}
+        comparison = write_comparison(output_root, scheme_results, labels_dir)
+        write_report(output_root, manifest, comparison)
+        return comparison
+    for scheme in SCHEMES:
+        scheme_results[scheme] = run_speaker_metrics(
+            scheme,
+            tools_dir,
+            normalized_results_root / scheme,
+            labels_dir,
+            output_root / "03_metrics" / scheme,
+        )
+    comparison = write_comparison(output_root, scheme_results, labels_dir)
+    write_report(output_root, manifest, comparison)
+    return comparison
+
 def _legacy_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kind", choices=("baseline", "streaming"), required=True)
@@ -671,7 +1372,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     wer.add_argument("--file-id", required=True)
     wer.add_argument("--output-root", type=Path, required=True)
     wer.add_argument("--language", default="zh")
-    subparsers.add_parser("summarize")
+    summarize = subparsers.add_parser("summarize")
+    summarize.add_argument("--output-root", type=Path, default=OUTPUT_ROOT)
+    summarize.add_argument("--manifest", type=Path)
+    summarize.add_argument("--metrics-source", type=Path, default=DEFAULT_METRICS_SOURCE)
+    summarize.add_argument("--normalized-results-root", type=Path)
+    summarize.add_argument("--labels-dir", type=Path)
     return parser.parse_args(values)
 
 
@@ -701,7 +1407,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(compute_wer(args.label, args.predicted, language=args.language, output_root=args.output_root, scheme=args.scheme, file_id=args.file_id), ensure_ascii=False, indent=2))
         return 0
     if args.command == "summarize":
-        print(json.dumps({"status": "deferred", "reason": "Task 3 report, DER, and boundary analysis are not implemented in Task 2."}, ensure_ascii=False))
+        comparison = summarize_evaluation(
+            args.output_root,
+            manifest_path=args.manifest,
+            metrics_source=args.metrics_source,
+            normalized_results_root=args.normalized_results_root,
+            labels_dir=args.labels_dir,
+        )
+        print(json.dumps(comparison, ensure_ascii=False, indent=2))
         return 0
     raise AssertionError(f"unexpected command: {args.command}")
 
