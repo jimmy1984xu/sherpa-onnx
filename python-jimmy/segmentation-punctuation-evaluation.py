@@ -57,12 +57,21 @@ def build_common_arguments(paths: ModelPaths, output_root: Path) -> list[str]:
     ]
 
 
+EXPECTED_ENTRY_SCRIPTS = {
+    "baseline": str(SCRIPT_DIR / "offline-long-audio-pipeline-asr-speaker.py"),
+    "streaming": str(SCRIPT_DIR / "offline-long-audio-pipeline-asr-speaker-segmentation.py"),
+}
+COMMON_OPTION_NAMES = frozenset(
+    build_common_arguments(
+        ModelPaths(Path("asr"), Path("vad"), Path("speaker"), Path("segmentation")),
+        Path("output"),
+    )[::2]
+)
+
+
 def build_invocation(kind: str, pcm: Path, common: list[str]) -> list[str]:
     """Build one pipeline command without executing it."""
-    script = {
-        "baseline": "offline-long-audio-pipeline-asr-speaker.py",
-        "streaming": "offline-long-audio-pipeline-asr-speaker-segmentation.py",
-    }[kind]
+    script = EXPECTED_ENTRY_SCRIPTS[kind]
     invocation = [
         sys.executable,
         str(SCRIPT_DIR / script),
@@ -115,8 +124,25 @@ def validate_variant_fairness(
     baseline_argv: Sequence[str], streaming_argv: Sequence[str]
 ) -> None:
     """Verify only approved variant-specific invocation differences exist."""
+    for variant, argv in (("baseline", baseline_argv), ("streaming", streaming_argv)):
+        expected_script = EXPECTED_ENTRY_SCRIPTS[variant]
+        if len(argv) < 2 or argv[1] != expected_script:
+            actual_script = argv[1] if len(argv) >= 2 else None
+            raise ValueError(
+                f"{variant} entry script must equal {expected_script!r}, "
+                f"got {actual_script!r}"
+            )
+
     baseline_options = _option_map(baseline_argv)
     streaming_options = _option_map(streaming_argv)
+
+    for option in COMMON_OPTION_NAMES:
+        for variant, options in (
+            ("baseline", baseline_options),
+            ("streaming", streaming_options),
+        ):
+            if option not in options:
+                raise ValueError(f"{variant} missing required common option: {option}")
 
     baseline_audio = baseline_options.get("--audio")
     streaming_audio = streaming_options.get("--audio")

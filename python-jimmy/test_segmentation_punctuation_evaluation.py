@@ -59,6 +59,33 @@ class InvocationTest(unittest.TestCase):
         self.assertEqual(module.option_value(self.baseline, "--num-clusters"), "-1")
         self.assertEqual(module.option_value(self.streaming, "--cluster-threshold"), "0.6")
 
+    @staticmethod
+    def _without_option(argv, option):
+        updated = list(argv)
+        option_index = updated.index(option)
+        del updated[option_index : option_index + 2]
+        return updated
+
+    def test_validate_variant_fairness_rejects_wrong_pipeline_entry_script(self):
+        for variant, baseline, streaming in (
+            ("baseline", [self.baseline[0], "wrong-baseline.py", *self.baseline[2:]], self.streaming),
+            ("streaming", self.baseline, [self.streaming[0], "wrong-streaming.py", *self.streaming[2:]]),
+        ):
+            with self.subTest(variant=variant):
+                with self.assertRaisesRegex(ValueError, variant):
+                    module.validate_variant_fairness(baseline, streaming)
+
+    def test_validate_variant_fairness_requires_every_common_option_in_both_variants(self):
+        for option in module.common_option_map(self.baseline):
+            with self.subTest(option=option):
+                baseline = self._without_option(self.baseline, option)
+                streaming = self._without_option(self.streaming, option)
+                with self.assertRaisesRegex(ValueError, option):
+                    module.validate_variant_fairness(baseline, streaming)
+    def test_validate_variant_fairness_allows_different_run_labels(self):
+        baseline = [*self.baseline, "--run-label", "baseline"]
+        streaming = [*self.streaming, "--run-label", "streaming"]
+        self.assertIsNone(module.validate_variant_fairness(baseline, streaming))
     def test_validate_variant_fairness_accepts_standard_variants(self):
         self.assertIsNone(module.validate_variant_fairness(self.baseline, self.streaming))
 
