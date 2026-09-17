@@ -66,6 +66,46 @@ class InvocationTest(unittest.TestCase):
         del updated[option_index : option_index + 2]
         return updated
 
+    def test_build_invocation_preserves_raw_posix_path_strings(self):
+        paths = module.ModelPaths(
+            asr_dir="/opt/models/asr",
+            vad_dir="/opt/models/vad",
+            speaker_dir="/opt/models/speaker",
+            segmentation_dir="/opt/models/segmentation",
+        )
+        common = module.build_common_arguments(paths, "/opt/evaluation")
+        invocation = module.build_invocation("baseline", "/opt/input/audio.pcm", common)
+
+        self.assertEqual(module.option_value(invocation, "--output-root"), "/opt/evaluation")
+        self.assertEqual(module.option_value(invocation, "--audio"), "/opt/input/audio.pcm")
+        self.assertEqual(module.option_value(invocation, "--asr-dir"), "/opt/models/asr")
+        self.assertEqual(module.option_value(invocation, "--vad-dir"), "/opt/models/vad")
+        self.assertEqual(module.option_value(invocation, "--speaker-dir"), "/opt/models/speaker")
+        self.assertEqual(module.option_value(invocation, "--segmentation-dir"), "/opt/models/segmentation")
+
+    def test_validate_variant_fairness_accepts_remote_official_entrypoint_paths(self):
+        baseline = [
+            self.baseline[0],
+            "/srv/sherpa-onnx/python-jimmy/offline-long-audio-pipeline-asr-speaker.py",
+            *self.baseline[2:],
+        ]
+        streaming = [
+            self.streaming[0],
+            r"C:\remote\python-jimmy\offline-long-audio-pipeline-asr-speaker-segmentation.py",
+            *self.streaming[2:],
+        ]
+        self.assertIsNone(module.validate_variant_fairness(baseline, streaming))
+
+    def test_validate_variant_fairness_rejects_wrong_remote_entrypoint_basenames(self):
+        baseline = [self.baseline[0], "/srv/sherpa-onnx/wrong-baseline.py", *self.baseline[2:]]
+        streaming = [
+            self.streaming[0],
+            r"C:\remote\python-jimmy\wrong-streaming.py",
+            *self.streaming[2:],
+        ]
+        with self.assertRaisesRegex(ValueError, "entry script"):
+            module.validate_variant_fairness(baseline, streaming)
+
     def test_validate_variant_fairness_rejects_wrong_pipeline_entry_script(self):
         for variant, baseline, streaming in (
             ("baseline", [self.baseline[0], "wrong-baseline.py", *self.baseline[2:]], self.streaming),
@@ -231,16 +271,15 @@ class TaskTwoTest(unittest.TestCase):
         output_root = self.root / "evaluation"
         inputs = []
         commands = {"baseline": {}, "streaming": {}}
+        local_models = self._model_inventory("C:/models", "c" * 64)
         remote_models = self._model_inventory("/models", "c" * 64)
-        # Task 4 invokes the commands remotely, so their directories must
-        # bind to the audited remote inventory, not the Windows inventory.
-        # Keep the actual argv values as POSIX strings: Path("/models/asr")
-        # serializes as a Windows path when these tests run on Windows.
+        # The manifest stores Windows/local canonical commands. Task 4 will
+        # render and record remote argv separately from this template.
         paths = module.ModelPaths(
-            asr_dir=Path("C:/placeholder/asr"),
-            vad_dir=Path("C:/placeholder/vad"),
-            speaker_dir=Path("C:/placeholder/speaker"),
-            segmentation_dir=Path("C:/placeholder/segmentation"),
+            asr_dir=local_models["asr"]["directory"],
+            vad_dir=local_models["vad"]["directory"],
+            speaker_dir=local_models["speaker"]["directory"],
+            segmentation_dir=local_models["segmentation"]["directory"],
         )
         for test_case in module.TEST_CASES:
             frozen_pcm = output_root / "01_input" / "pcm" / test_case.pcm.name
@@ -259,13 +298,6 @@ class TaskTwoTest(unittest.TestCase):
                 },
             })
             common = module.build_common_arguments(paths, output_root)
-            for option, role in (
-                ("--asr-dir", "asr"),
-                ("--vad-dir", "vad"),
-                ("--speaker-dir", "speaker"),
-                ("--segmentation-dir", "segmentation"),
-            ):
-                self._replace_option(common, option, remote_models[role]["directory"])
             commands["baseline"][test_case.file_id] = module.build_invocation(
                 "baseline", frozen_pcm, common
             )
@@ -276,7 +308,7 @@ class TaskTwoTest(unittest.TestCase):
             self.root / "manifest.json",
             inputs=inputs,
             commands=commands,
-            local_models=self._model_inventory("C:/models", "c" * 64),
+            local_models=local_models,
             remote_models=remote_models,
             windows_repo={"commit": "1" * 40, "status_porcelain": ""},
             remote_repo={"commit": "1" * 40, "status_porcelain": ""},
@@ -296,7 +328,7 @@ class TaskTwoTest(unittest.TestCase):
     def _replace_option(argv, option, value):
         argv[argv.index(option) + 1] = value
 
-    def test_manifest_commands_bind_each_model_dir_to_remote_inventory(self):
+    def test_manifest_commands_bind_each_model_dir_to_local_inventory(self):
         for option, role in (
             ("--asr-dir", "asr"),
             ("--vad-dir", "vad"),
@@ -310,8 +342,31 @@ class TaskTwoTest(unittest.TestCase):
                     self._replace_option(
                         manifest["commands"][kind][file_id], option, f"/unverified/{role}"
                     )
-                with self.assertRaisesRegex(ValueError, f"remote {role} model directory"):
+                with self.assertRaisesRegex(ValueError, f"local {role} model directory"):
                     module.validate_manifest(manifest)
+
+    def test_preflight_pending_allows_all_remote_hashes_to_be_pending(self):
+        manifest = self._valid_manifest()
+        manifest["status"] = "preflight-pending"
+        for role in module.MODEL_ROLES:
+            manifest["models"]["remote"][role]["sha256"] = "pending"
+        self.assertIsNone(module.validate_manifest(manifest))
+
+    def test_manifest_rejects_pending_remote_hashes_outside_preflight_pending(self):
+        manifest = self._valid_manifest()
+        for role in module.MODEL_ROLES:
+            manifest["models"]["remote"][role]["sha256"] = "pending"
+        with self.assertRaisesRegex(ValueError, "pending.*preflight-pending"):
+            module.validate_manifest(manifest)
+
+    def test_preflight_pending_rejects_a_real_remote_hash_that_mismatches_local(self):
+        manifest = self._valid_manifest()
+        manifest["status"] = "preflight-pending"
+        for role in module.MODEL_ROLES:
+            manifest["models"]["remote"][role]["sha256"] = "pending"
+        manifest["models"]["remote"]["asr"]["sha256"] = "f" * 64
+        with self.assertRaisesRegex(ValueError, "ASR.*SHA-256"):
+            module.validate_manifest(manifest)
 
     def test_manifest_requires_pcm_and_label_at_frozen_paths_under_command_output_root(self):
         manifest = self._valid_manifest()

@@ -79,16 +79,16 @@ TEST_CASES = (
 
 @dataclass(frozen=True)
 class ModelPaths:
-    """Model directories supplied explicitly to both pipeline variants."""
+    """Model directories for an invocation; raw path strings retain their original syntax."""
 
-    asr_dir: Path
-    vad_dir: Path
-    speaker_dir: Path
-    segmentation_dir: Path
+    asr_dir: Path | str
+    vad_dir: Path | str
+    speaker_dir: Path | str
+    segmentation_dir: Path | str
 
 
-def build_common_arguments(paths: ModelPaths, output_root: Path) -> list[str]:
-    """Return the arguments that must remain identical across variants."""
+def build_common_arguments(paths: ModelPaths, output_root: Path | str) -> list[str]:
+    """Return common arguments while preserving raw local or POSIX path strings exactly."""
     return [
         "--output-root", str(output_root), "--audio-format", "pcm",
         "--sample-rate", "16000", "--channels", "1", "--sample-width", "2",
@@ -105,9 +105,13 @@ def build_common_arguments(paths: ModelPaths, output_root: Path) -> list[str]:
     ]
 
 
+ENTRY_SCRIPT_FILENAMES = {
+    "baseline": "offline-long-audio-pipeline-asr-speaker.py",
+    "streaming": "offline-long-audio-pipeline-asr-speaker-segmentation.py",
+}
 EXPECTED_ENTRY_SCRIPTS = {
-    "baseline": str(SCRIPT_DIR / "offline-long-audio-pipeline-asr-speaker.py"),
-    "streaming": str(SCRIPT_DIR / "offline-long-audio-pipeline-asr-speaker-segmentation.py"),
+    kind: str(SCRIPT_DIR / filename)
+    for kind, filename in ENTRY_SCRIPT_FILENAMES.items()
 }
 COMMON_OPTION_NAMES = frozenset(
     build_common_arguments(
@@ -117,8 +121,8 @@ COMMON_OPTION_NAMES = frozenset(
 )
 
 
-def build_invocation(kind: str, pcm: Path, common: list[str]) -> list[str]:
-    """Build one pipeline command without executing it."""
+def build_invocation(kind: str, pcm: Path | str, common: list[str]) -> list[str]:
+    """Build a local canonical command; Task 4 materializes remote argv separately."""
     if kind not in EXPECTED_ENTRY_SCRIPTS:
         raise ValueError(f"unsupported invocation kind: {kind}")
     invocation = [sys.executable, EXPECTED_ENTRY_SCRIPTS[kind], "--audio", str(pcm), *common]
@@ -159,13 +163,20 @@ def common_option_map(argv: Sequence[str]) -> dict[str, str]:
     return {option: value for option, value in _option_map(argv).items() if option not in _SPECIAL_VARIANT_OPTIONS}
 
 
+def _cross_platform_basename(path: str) -> str:
+    """Return a path basename while recognizing both POSIX and Windows separators."""
+    return path.replace("\\", "/").rsplit("/", 1)[-1]
+
+
 def validate_variant_fairness(baseline_argv: Sequence[str], streaming_argv: Sequence[str]) -> None:
-    """Verify only approved variant-specific invocation differences exist."""
+    """Verify only approved variant-specific differences, including official entrypoint basenames."""
     for variant, argv in (("baseline", baseline_argv), ("streaming", streaming_argv)):
-        expected_script = EXPECTED_ENTRY_SCRIPTS[variant]
-        if len(argv) < 2 or argv[1] != expected_script:
-            actual_script = argv[1] if len(argv) >= 2 else None
-            raise ValueError(f"{variant} entry script must equal {expected_script!r}, got {actual_script!r}")
+        expected_filename = ENTRY_SCRIPT_FILENAMES[variant]
+        actual_script = argv[1] if len(argv) >= 2 else None
+        if not isinstance(actual_script, str) or _cross_platform_basename(actual_script) != expected_filename:
+            raise ValueError(
+                f"{variant} entry script must have basename {expected_filename!r}, got {actual_script!r}"
+            )
 
     baseline_options = _option_map(baseline_argv)
     streaming_options = _option_map(streaming_argv)
@@ -442,9 +453,12 @@ def _require_mapping(value: object, description: str) -> Mapping[str, Any]:
 
 
 def validate_manifest(manifest: Mapping[str, Any], *, verify_frozen_files: bool = False) -> None:
-    """Reject manifests that cannot support a fair fixed-input comparison."""
+    """Validate local canonical commands; Task 4 renders and records remote argv separately."""
     if manifest.get("schema_version") != 1:
         raise ValueError("manifest schema_version must equal 1")
+    status = manifest.get("status")
+    if not isinstance(status, str) or not status:
+        raise ValueError("manifest status must be nonempty")
     expected_cases = {case.file_id: case for case in TEST_CASES}
     test_cases = manifest.get("test_cases")
     if not isinstance(test_cases, list):
@@ -516,19 +530,28 @@ def validate_manifest(manifest: Mapping[str, Any], *, verify_frozen_files: bool 
                 raise ValueError(f"{location} {role} model directory must be nonempty")
             if not _is_absolute_directory(model["directory"]):
                 raise ValueError(f"{location} {role} model directory must be absolute")
-            if not _is_sha256(model.get("sha256")):
-                raise ValueError(f"{location} {role} model SHA-256 must be a 64-character hexadecimal value")
-        if local["sha256"] != remote["sha256"]:
-            raise ValueError(f"{role.upper()} model SHA-256 differs between local and remote")
+        if not _is_sha256(local.get("sha256")):
+            raise ValueError(f"local {role} model SHA-256 must be a 64-character hexadecimal value")
+        remote_sha256 = remote.get("sha256")
+        if remote_sha256 == "pending":
+            if status != "preflight-pending":
+                raise ValueError(
+                    f"remote {role} model SHA-256 may be 'pending' only when status is 'preflight-pending'"
+                )
+        else:
+            if not _is_sha256(remote_sha256):
+                raise ValueError(f"remote {role} model SHA-256 must be a 64-character hexadecimal value")
+            if local["sha256"] != remote_sha256:
+                raise ValueError(f"{role.upper()} model SHA-256 differs between local and remote")
         option = f"--{role}-dir"
-        expected_remote_directory = remote["directory"]
+        expected_local_directory = local["directory"]
         for file_id in expected_cases:
             for kind in ("baseline", "streaming"):
                 command_directory = option_value(commands[kind][file_id], option)
-                if command_directory != expected_remote_directory:
+                if command_directory != expected_local_directory:
                     raise ValueError(
-                        f"remote {role} model directory must equal audited inventory: "
-                        f"{command_directory!r} != {expected_remote_directory!r}"
+                        f"local {role} model directory must equal audited inventory: "
+                        f"{command_directory!r} != {expected_local_directory!r}"
                     )
 
     if verify_frozen_files:
@@ -560,8 +583,6 @@ def validate_manifest(manifest: Mapping[str, Any], *, verify_frozen_files: bool 
             raise ValueError(f"{location} repository status_porcelain must be a string")
     if not isinstance(manifest.get("created_at"), str) or not manifest["created_at"]:
         raise ValueError("manifest created_at must be nonempty")
-    if not isinstance(manifest.get("status"), str) or not manifest["status"]:
-        raise ValueError("manifest status must be nonempty")
 
 
 def create_manifest(
