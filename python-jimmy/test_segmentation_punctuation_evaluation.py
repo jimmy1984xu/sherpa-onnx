@@ -212,5 +212,233 @@ class CliTest(unittest.TestCase):
         self.assertEqual(json.loads(stdout.getvalue()), {"argv": expected_argv})
 
 
+class TaskTwoTest(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _model_inventory(prefix: str, digest: str):
+        return {
+            role: {"directory": f"{prefix}/{role}", "sha256": digest}
+            for role in module.MODEL_ROLES
+        }
+
+    def _valid_manifest(self):
+        output_root = self.root / "evaluation"
+        inputs = []
+        commands = {"baseline": {}, "streaming": {}}
+        paths = model_paths()
+        for test_case in module.TEST_CASES:
+            frozen_pcm = output_root / "01_input" / "pcm" / test_case.pcm.name
+            frozen_label = output_root / "01_input" / "labels" / test_case.label.name
+            inputs.append({
+                "file_id": test_case.file_id,
+                "pcm": {
+                    "source_path": str(test_case.pcm),
+                    "path": str(frozen_pcm),
+                    "sha256": "a" * 64,
+                },
+                "label": {
+                    "source_path": str(test_case.label),
+                    "path": str(frozen_label),
+                    "sha256": "b" * 64,
+                },
+            })
+            common = module.build_common_arguments(paths, output_root)
+            commands["baseline"][test_case.file_id] = module.build_invocation(
+                "baseline", frozen_pcm, common
+            )
+            commands["streaming"][test_case.file_id] = module.build_invocation(
+                "streaming", frozen_pcm, common
+            )
+        return module.create_manifest(
+            self.root / "manifest.json",
+            inputs=inputs,
+            commands=commands,
+            local_models=self._model_inventory("C:/models", "c" * 64),
+            remote_models=self._model_inventory("/models", "c" * 64),
+            windows_repo={"commit": "1" * 40, "status_porcelain": ""},
+            remote_repo={"commit": "1" * 40, "status_porcelain": ""},
+            created_at="2026-09-17T00:00:00Z",
+            status="prepared",
+        )
+
+    def test_task_two_fixed_common_and_metric_argument_constants(self):
+        self.assertEqual(
+            module.COMMON_ARGUMENTS,
+            (
+                "--audio-format", "pcm", "--sample-rate", "16000", "--channels", "1",
+                "--sample-width", "2", "--asr-engine", "paraformer", "--num-clusters", "-1",
+                "--cluster-threshold", "0.6", "--segmentation-mode", "vad-pyannote",
+            ),
+        )
+        self.assertEqual(
+            module.METRIC_ARGUMENTS,
+            ("--collar-ms", "500", "--boundary-tolerance-ms", "500"),
+        )
+
+    def test_fixed_test_cases_are_exact_user_confirmed_unc_paths(self):
+        self.assertEqual(
+            module.TEST_CASES,
+            (
+                module.TestCase(
+                    file_id="23_asr_1782715267098",
+                    pcm=Path(r"\\10.88.0.243\xainas\ProMax\测试集\音频测试集\中文\内部会议\双人安静咨询\promax\23_asr_1782715267098.pcm"),
+                    label=Path(r"\\10.88.0.243\xainas\ProMax\测试集\音频测试集\中文\内部会议\双人安静咨询\promax\23_asr_1782715267098_label.txt"),
+                ),
+                module.TestCase(
+                    file_id="asr_1788402212076",
+                    pcm=Path(r"\\10.88.0.243\xainas\ProMax\测试集\音频测试集\中文\内部会议\信息流投放实习生面试\asr_1788402212076.pcm"),
+                    label=Path(r"\\10.88.0.243\xainas\ProMax\测试集\音频测试集\中文\内部会议\信息流投放实习生面试\asr_1788402212076_label.txt"),
+                ),
+            ),
+        )
+
+    def test_prepare_inputs_hashes_and_replaces_changed_frozen_files(self):
+        source_dir = self.root / "source"
+        source_dir.mkdir()
+        pcm = source_dir / "sample.pcm"
+        label = source_dir / "sample_label.txt"
+        pcm.write_bytes(b"first pcm")
+        label.write_text("sample_0_1 (alice) 你好\n", encoding="utf-8")
+        cases = (module.TestCase("sample", pcm, label),)
+
+        first = module.prepare_inputs(self.root / "output", cases=cases)
+        frozen_pcm = self.root / "output" / "01_input" / "pcm" / pcm.name
+        self.assertEqual(frozen_pcm.read_bytes(), b"first pcm")
+        self.assertEqual(first[0]["pcm"]["sha256"], module.sha256_file(pcm))
+
+        pcm.write_bytes(b"second pcm")
+        second = module.prepare_inputs(self.root / "output", cases=cases)
+        self.assertEqual(frozen_pcm.read_bytes(), b"second pcm")
+        self.assertEqual(second[0]["pcm"]["sha256"], module.sha256_file(pcm))
+        self.assertFalse(list(frozen_pcm.parent.glob("*.tmp")))
+
+    def test_parse_three_column_file_normalizes_speaker_and_rejects_missing_columns(self):
+        records = self.root / "records.txt"
+        records.write_text("sample_0_1000 (alice) 你好 世界\n", encoding="utf-8")
+        self.assertEqual(
+            module.parse_three_column_file(records),
+            [module.TimedText("sample_0_1000", "alice", "你好 世界")],
+        )
+        records.write_text("missing-speaker\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "expected id speaker"):
+            module.parse_three_column_file(records)
+
+    def test_label_and_predictions_generate_zh_wer_counts(self):
+        label = self.root / "sample_label.txt"
+        label.write_text("sample_0_1000 (alice) 你好，世界！\n", encoding="utf-8")
+        predicted = self.root / "sample_asr.txt"
+        predicted.write_text("sample_0_1000 spk_0 你好 世界\n", encoding="utf-8")
+        summary = module.compute_wer(label, predicted, language="zh")
+        self.assertEqual(summary["reference_tokens"], 4)
+        self.assertEqual(summary["errors"], 0)
+        self.assertEqual(summary["insertions"], 0)
+        self.assertEqual(summary["deletions"], 0)
+        self.assertEqual(summary["substitutions"], 0)
+        self.assertEqual(summary["wer"], 0.0)
+
+    def test_wer_sorts_by_start_time_and_writes_requested_artifacts(self):
+        label = self.root / "sample_label.txt"
+        label.write_text(
+            "sample_1000_1000 (alice) 世界\nsample_0_1000 (alice) 你好\n",
+            encoding="utf-8",
+        )
+        predicted = self.root / "sample_asr.txt"
+        predicted.write_text(
+            "sample_1000_1000 spk_0 世界\nsample_0_1000 spk_0 你好\n",
+            encoding="utf-8",
+        )
+        summary = module.compute_wer(
+            label,
+            predicted,
+            language="zh",
+            output_root=self.root / "output",
+            scheme="baseline",
+            file_id="sample",
+        )
+        metrics = self.root / "output" / "baseline" / "sample" / "metrics"
+        self.assertEqual(summary["reference_text"], "你 好 世 界")
+        self.assertTrue((metrics / "wer.json").is_file())
+        self.assertIn("reference_tokens", (metrics / "wer_detail.md").read_text(encoding="utf-8"))
+        self.assertEqual(json.loads((metrics / "wer.json").read_text(encoding="utf-8"))["errors"], 0)
+
+    def test_wer_reports_insertions_deletions_and_substitutions(self):
+        label = self.root / "sample_label.txt"
+        label.write_text("sample_0_1000 alice 甲乙丙\n", encoding="utf-8")
+        predicted = self.root / "sample_asr.txt"
+        predicted.write_text("sample_0_1000 spk_0 甲丁\n", encoding="utf-8")
+        summary = module.compute_wer(label, predicted, language="zh")
+        self.assertEqual(summary["errors"], 2)
+        self.assertEqual(summary["insertions"], 0)
+        self.assertEqual(summary["deletions"], 1)
+        self.assertEqual(summary["substitutions"], 1)
+        self.assertEqual(summary["reference_tokens"], 3)
+
+    def test_manifest_validates_fixed_cases_commands_models_and_metrics(self):
+        manifest = self._valid_manifest()
+        self.assertIsNone(module.validate_manifest(manifest))
+        saved = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved, manifest)
+
+    def test_manifest_rejects_nonabsolute_model_directory(self):
+        manifest = self._valid_manifest()
+        manifest["models"]["local"]["asr"]["directory"] = "relative/models/asr"
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            module.validate_manifest(manifest)
+
+    def test_manifest_rejects_same_role_model_hash_mismatch(self):
+        manifest = self._valid_manifest()
+        manifest["models"]["remote"]["vad"]["sha256"] = "f" * 64
+        with self.assertRaisesRegex(ValueError, "VAD.*SHA-256"):
+            module.validate_manifest(manifest)
+
+    def test_manifest_rejects_nonfixed_case_ids_and_audio_or_metric_changes(self):
+        manifest = self._valid_manifest()
+        manifest["test_cases"][0]["file_id"] = "unexpected"
+        with self.assertRaisesRegex(ValueError, "file IDs"):
+            module.validate_manifest(manifest)
+
+        manifest = self._valid_manifest()
+        manifest["commands"]["streaming"][module.TEST_CASES[0].file_id][3] = "wrong.pcm"
+        with self.assertRaisesRegex(ValueError, "audio"):
+            module.validate_manifest(manifest)
+
+        manifest = self._valid_manifest()
+        manifest["metrics_parameters"]["collar_ms"] = 100
+        with self.assertRaisesRegex(ValueError, "collar_ms"):
+            module.validate_manifest(manifest)
+
+    def test_task_two_cli_subcommands_prepare_validate_normalize_and_compute_wer(self):
+        self.assertEqual(
+            module.parse_args(["prepare", "--output-root", str(self.root / "output")]).command,
+            "prepare",
+        )
+        self.assertEqual(
+            module.parse_args(["validate-manifest", "--manifest", str(self.root / "manifest.json")]).command,
+            "validate-manifest",
+        )
+        self.assertEqual(
+            module.parse_args([
+                "normalize-results", "--result-json", str(self.root / "result.json"),
+                "--file-id", "sample", "--output-dir", str(self.root),
+            ]).command,
+            "normalize-results",
+        )
+        self.assertEqual(
+            module.parse_args([
+                "compute-wer", "--label", str(self.root / "label"),
+                "--predicted", str(self.root / "prediction"), "--scheme", "baseline",
+                "--file-id", "sample", "--output-root", str(self.root),
+            ]).command,
+            "compute-wer",
+        )
+        self.assertEqual(module.parse_args(["summarize"]).command, "summarize")
+
+
 if __name__ == "__main__":
     unittest.main()
