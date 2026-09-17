@@ -118,6 +118,16 @@ def validate_variant_fairness(
     baseline_options = _option_map(baseline_argv)
     streaming_options = _option_map(streaming_argv)
 
+    baseline_audio = baseline_options.get("--audio")
+    streaming_audio = streaming_options.get("--audio")
+    if baseline_audio is None or streaming_audio is None:
+        raise ValueError("baseline and streaming invocations must both set --audio")
+    if baseline_audio != streaming_audio:
+        raise ValueError(
+            "baseline and streaming --audio values must match: "
+            f"{baseline_audio!r} != {streaming_audio!r}"
+        )
+
     for option, expected_value in STREAMING_INVARIANTS.items():
         if option in baseline_options:
             raise ValueError(f"baseline invocation must not set {option}")

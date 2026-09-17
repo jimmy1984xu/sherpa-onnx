@@ -82,6 +82,11 @@ class InvocationTest(unittest.TestCase):
                 [*self.baseline, "--segmentation-chunk-ms", "32"], self.streaming
             )
 
+    def test_validate_variant_fairness_rejects_mismatched_audio(self):
+        different_audio = list(self.streaming)
+        different_audio[different_audio.index("--audio") + 1] = "second.pcm"
+        with self.assertRaisesRegex(ValueError, "audio"):
+            module.validate_variant_fairness(self.baseline, different_audio)
     def test_validate_variant_fairness_rejects_a_changed_common_option(self):
         changed_streaming = list(self.streaming)
         threshold_index = changed_streaming.index("--cluster-threshold") + 1
