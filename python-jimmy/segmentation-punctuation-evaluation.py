@@ -163,19 +163,34 @@ def common_option_map(argv: Sequence[str]) -> dict[str, str]:
     return {option: value for option, value in _option_map(argv).items() if option not in _SPECIAL_VARIANT_OPTIONS}
 
 
-def _cross_platform_basename(path: str) -> str:
-    """Return a path basename while recognizing both POSIX and Windows separators."""
-    return path.replace("\\", "/").rsplit("/", 1)[-1]
+def _normalize_cross_platform_path(path: Path | str) -> str:
+    """Normalize only path separators so local and remote script paths compare exactly."""
+    return str(path).replace("\\", "/")
 
 
-def validate_variant_fairness(baseline_argv: Sequence[str], streaming_argv: Sequence[str]) -> None:
-    """Verify only approved variant-specific differences, including official entrypoint basenames."""
+def _script_under_root(script_root: Path | str, filename: str) -> str:
+    """Construct one official entrypoint path under an explicitly trusted script root."""
+    normalized_root = _normalize_cross_platform_path(script_root).rstrip("/")
+    if not normalized_root:
+        normalized_root = "/" if _normalize_cross_platform_path(script_root).startswith("/") else ""
+    if not normalized_root:
+        raise ValueError("expected script root must be nonempty")
+    return f"{normalized_root}/{filename}"
+
+
+def validate_variant_fairness(
+    baseline_argv: Sequence[str],
+    streaming_argv: Sequence[str],
+    *,
+    expected_script_root: Path | str = SCRIPT_DIR,
+) -> None:
+    """Verify approved differences with entrypoints bound to an explicit trusted script root."""
     for variant, argv in (("baseline", baseline_argv), ("streaming", streaming_argv)):
-        expected_filename = ENTRY_SCRIPT_FILENAMES[variant]
+        expected_script = _script_under_root(expected_script_root, ENTRY_SCRIPT_FILENAMES[variant])
         actual_script = argv[1] if len(argv) >= 2 else None
-        if not isinstance(actual_script, str) or _cross_platform_basename(actual_script) != expected_filename:
+        if not isinstance(actual_script, str) or _normalize_cross_platform_path(actual_script) != expected_script:
             raise ValueError(
-                f"{variant} entry script must have basename {expected_filename!r}, got {actual_script!r}"
+                f"{variant} entry script must equal {expected_script!r}, got {actual_script!r}"
             )
 
     baseline_options = _option_map(baseline_argv)
@@ -274,11 +289,15 @@ def sha256_path(path: Path) -> str:
 
 
 def build_model_inventory(paths: ModelPaths) -> dict[str, dict[str, str]]:
-    """Inventory explicit model directories with their content SHA-256 values."""
-    return {
-        role: {"directory": str(getattr(paths, f"{role}_dir")), "sha256": sha256_path(getattr(paths, f"{role}_dir"))}
-        for role in MODEL_ROLES
-    }
+    """Inventory model directories, retaining raw strings while converting only for local hashing."""
+    inventory: dict[str, dict[str, str]] = {}
+    for role in MODEL_ROLES:
+        directory = getattr(paths, f"{role}_dir")
+        inventory[role] = {
+            "directory": str(directory),
+            "sha256": sha256_path(Path(directory)),
+        }
+    return inventory
 
 
 def _copy_file_atomically(source: Path, destination: Path) -> str:

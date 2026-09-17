@@ -83,28 +83,56 @@ class InvocationTest(unittest.TestCase):
         self.assertEqual(module.option_value(invocation, "--speaker-dir"), "/opt/models/speaker")
         self.assertEqual(module.option_value(invocation, "--segmentation-dir"), "/opt/models/segmentation")
 
-    def test_validate_variant_fairness_accepts_remote_official_entrypoint_paths(self):
+    def test_validate_variant_fairness_requires_explicit_remote_script_root(self):
+        remote_root = "/srv/sherpa-onnx/python-jimmy"
         baseline = [
             self.baseline[0],
-            "/srv/sherpa-onnx/python-jimmy/offline-long-audio-pipeline-asr-speaker.py",
+            f"{remote_root}/offline-long-audio-pipeline-asr-speaker.py",
             *self.baseline[2:],
         ]
         streaming = [
             self.streaming[0],
-            r"C:\remote\python-jimmy\offline-long-audio-pipeline-asr-speaker-segmentation.py",
-            *self.streaming[2:],
-        ]
-        self.assertIsNone(module.validate_variant_fairness(baseline, streaming))
-
-    def test_validate_variant_fairness_rejects_wrong_remote_entrypoint_basenames(self):
-        baseline = [self.baseline[0], "/srv/sherpa-onnx/wrong-baseline.py", *self.baseline[2:]]
-        streaming = [
-            self.streaming[0],
-            r"C:\remote\python-jimmy\wrong-streaming.py",
+            f"{remote_root}/offline-long-audio-pipeline-asr-speaker-segmentation.py",
             *self.streaming[2:],
         ]
         with self.assertRaisesRegex(ValueError, "entry script"):
             module.validate_variant_fairness(baseline, streaming)
+        self.assertIsNone(
+            module.validate_variant_fairness(
+                baseline, streaming, expected_script_root=remote_root
+            )
+        )
+
+    def test_validate_variant_fairness_rejects_untrusted_same_basename_paths(self):
+        trusted_root = "/srv/sherpa-onnx/python-jimmy"
+        untrusted_root = "/untrusted/python-jimmy"
+        baseline = [
+            self.baseline[0],
+            f"{untrusted_root}/offline-long-audio-pipeline-asr-speaker.py",
+            *self.baseline[2:],
+        ]
+        streaming = [
+            self.streaming[0],
+            f"{untrusted_root}/offline-long-audio-pipeline-asr-speaker-segmentation.py",
+            *self.streaming[2:],
+        ]
+        with self.assertRaisesRegex(ValueError, "entry script"):
+            module.validate_variant_fairness(
+                baseline, streaming, expected_script_root=trusted_root
+            )
+
+    def test_validate_variant_fairness_rejects_wrong_remote_entrypoint_basenames(self):
+        trusted_root = "/srv/sherpa-onnx/python-jimmy"
+        baseline = [self.baseline[0], f"{trusted_root}/wrong-baseline.py", *self.baseline[2:]]
+        streaming = [
+            self.streaming[0],
+            f"{trusted_root}/wrong-streaming.py",
+            *self.streaming[2:],
+        ]
+        with self.assertRaisesRegex(ValueError, "entry script"):
+            module.validate_variant_fairness(
+                baseline, streaming, expected_script_root=trusted_root
+            )
 
     def test_validate_variant_fairness_rejects_wrong_pipeline_entry_script(self):
         for variant, baseline, streaming in (
@@ -426,6 +454,27 @@ class TaskTwoTest(unittest.TestCase):
         Path(manifest["test_cases"][0]["pcm"]["path"]).write_bytes(b"tampered")
         with self.assertRaisesRegex(ValueError, "frozen PCM SHA-256"):
             module.main(["validate-manifest", "--manifest", str(manifest_path)])
+
+    def test_build_model_inventory_hashes_all_string_model_directories(self):
+        directories = {}
+        for role in module.MODEL_ROLES:
+            directory = self.root / "models" / role
+            directory.mkdir(parents=True)
+            (directory / "model.bin").write_bytes(f"{role}-model".encode())
+            directories[role] = directory
+
+        inventory = module.build_model_inventory(
+            module.ModelPaths(
+                asr_dir=str(directories["asr"]),
+                vad_dir=str(directories["vad"]),
+                speaker_dir=str(directories["speaker"]),
+                segmentation_dir=str(directories["segmentation"]),
+            )
+        )
+
+        for role, directory in directories.items():
+            self.assertEqual(inventory[role]["directory"], str(directory))
+            self.assertEqual(inventory[role]["sha256"], module.sha256_path(directory))
 
     def test_task_two_fixed_common_and_metric_argument_constants(self):
         self.assertEqual(
