@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -671,13 +672,17 @@ class TaskThreeTest(unittest.TestCase):
             writer.writerows(rows)
 
     @staticmethod
-    def _metrics_summary(*, der, hit_rate, evaluated=2, errors=0, speaker_change_count=2):
+    def _metrics_summary(
+        *, der, hit_rate, evaluated=2, errors=0, speaker_change_count=2, speaker_change_hits=None,
+    ):
+        if speaker_change_hits is None:
+            speaker_change_hits = speaker_change_count
         return {
             "counts": {"asr_files": evaluated + errors, "evaluated": evaluated, "errors": errors},
             "metrics": {
                 "der": der,
                 "speaker_change_hit_rate": hit_rate,
-                "speaker_change_hits": speaker_change_count,
+                "speaker_change_hits": speaker_change_hits,
                 "speaker_change_count": speaker_change_count,
             },
         }
@@ -809,13 +814,13 @@ class TaskThreeTest(unittest.TestCase):
         self._write_boundary_csv(streaming_csv, streaming_rows)
         scheme_results = {
             "baseline": {
-                "status": "metrics_completed", "summary": self._metrics_summary(der=0.10, hit_rate=0.80),
+                "status": "metrics_completed", "summary": self._metrics_summary(der=0.10, hit_rate=0.0, speaker_change_hits=0),
                 "per_file": self._completed_per_file_metrics(),
                 "metrics_dir": str(baseline_csv.parent), "boundary_details_path": str(baseline_csv),
                 "der_components": {"miss": 1.0, "false_alarm": 2.0, "confusion": 3.0, "total": 20.0},
             },
             "streaming": {
-                "status": "metrics_completed", "summary": self._metrics_summary(der=0.08, hit_rate=0.80),
+                "status": "metrics_completed", "summary": self._metrics_summary(der=0.08, hit_rate=0.5, speaker_change_hits=1),
                 "per_file": self._completed_per_file_metrics(),
                 "metrics_dir": str(streaming_csv.parent), "boundary_details_path": str(streaming_csv),
                 "der_components": {"miss": 1.0, "false_alarm": 1.0, "confusion": 2.0, "total": 20.0},
@@ -894,7 +899,9 @@ class TaskThreeTest(unittest.TestCase):
         scheme_results = {
             scheme: {
                 "status": "metrics_completed",
-                "summary": self._metrics_summary(der=0.1, hit_rate=0.8, speaker_change_count=len(rows)),
+                "summary": self._metrics_summary(
+                    der=0.1, hit_rate=0.0, speaker_change_count=len(rows), speaker_change_hits=0,
+                ),
                 "per_file": self._completed_per_file_metrics(),
                 "boundary_details_path": str(paths[scheme]),
             }
@@ -1177,6 +1184,143 @@ class TaskThreeTest(unittest.TestCase):
         ])
         self.assertEqual(args.command, "summarize")
         self.assertEqual(args.output_root, self.root)
+
+
+    def test_boundary_evidence_enforces_expansion_hit_count_and_rate(self):
+        cases = {
+            "expanded interval": ("expanded interval", lambda rows, metrics: rows[0].update({"扩展后起始毫秒": 4501})),
+            "matched prediction": (
+                "matched prediction boundary",
+                lambda rows, metrics: (
+                    rows[0].update({"匹配预测边界毫秒": 5501, "状态": "命中"}),
+                    metrics.update({"speaker_change_hits": 1, "speaker_change_hit_rate": 0.5}),
+                ),
+            ),
+            "hit count": (
+                "speaker_change_hits",
+                lambda rows, metrics: rows[0].update({"匹配预测边界毫秒": 5000, "状态": "命中"}),
+            ),
+            "hit rate": (
+                "speaker_change_hit_rate",
+                lambda rows, metrics: (
+                    rows[0].update({"匹配预测边界毫秒": 5000, "状态": "命中"}),
+                    metrics.update({"speaker_change_hits": 1, "speaker_change_hit_rate": 0.25}),
+                ),
+            ),
+        }
+        for name, (expected_reason, mutate) in cases.items():
+            with self.subTest(name=name):
+                labels, paths, rows, scheme_results = self._write_complete_boundary_evidence()
+                bad_rows = [dict(row) for row in rows]
+                metrics = scheme_results["baseline"]["summary"]["metrics"]
+                mutate(bad_rows, metrics)
+                self._write_boundary_csv(paths["baseline"], bad_rows)
+                comparison = module.write_comparison(self.root, scheme_results, labels)
+                self._assert_boundary_evidence_failure(comparison)
+                self.assertIn(expected_reason, comparison["boundary_differences_error"])
+
+    def test_wer_requires_nonnegative_consistent_detail_metrics(self):
+        first_case = module.TEST_CASES[0]
+        invalid_payloads = {
+            "negative": {"wer": -0.1},
+            "partial detail": {"wer": 0.0, "reference_tokens": 0},
+            "component sum": {
+                "wer": 0.3, "reference_tokens": 10, "errors": 3,
+                "insertions": 1, "deletions": 1, "substitutions": 2,
+            },
+            "wer formula": {
+                "wer": 0.2, "reference_tokens": 10, "errors": 3,
+                "insertions": 1, "deletions": 1, "substitutions": 1,
+            },
+        }
+        for name, payload in invalid_payloads.items():
+            with self.subTest(name=name):
+                labels, _, _, scheme_results = self._write_complete_boundary_evidence()
+                wer_path = self.root / "baseline" / first_case.file_id / "metrics" / "wer.json"
+                wer_path.write_text(json.dumps(payload), encoding="utf-8")
+                comparison = module.write_comparison(self.root, scheme_results, labels)
+                wer = comparison["schemes"]["baseline"]["wer_by_file"][first_case.file_id]
+                self.assertEqual(wer["status"], "invalid")
+                self.assertFalse(comparison["ranking_eligible"])
+                self.assertIn("WER is unavailable", comparison["ranking_reason"])
+
+    def test_reference_boundary_rebuild_matches_copied_metrics_sort_order(self):
+        labels = self.root / "01_input" / "labels"
+        labels.mkdir(parents=True)
+        rows = []
+        for case in module.TEST_CASES:
+            # Intentionally unordered, with identical starts, different ends and overlap.
+            (labels / case.label.name).write_text(
+                f"{case.file_id}_500_700 A 后续\n"
+                f"{case.file_id}_0_1000 A 长片段\n"
+                f"{case.file_id}_0_900 B 短片段\n",
+                encoding="utf-8",
+            )
+            rows.append({
+                "文件ID": case.file_id, "切换序号": 1, "参考前说话人": "B", "参考后说话人": "A",
+                "区间起始毫秒": 900, "区间结束毫秒": 0,
+                "扩展后起始毫秒": -500, "扩展后结束毫秒": 1400,
+                "匹配预测边界毫秒": "", "状态": "未命中",
+            })
+        expected_keys = {(case.file_id, 900, 0) for case in module.TEST_CASES}
+        self.assertEqual(set(module._reference_boundary_texts(labels)), expected_keys)
+        paths = {}
+        for scheme in module.SCHEMES:
+            path = self.root / "03_metrics" / scheme / "speaker_diarization_boundary_details.csv"
+            self._write_boundary_csv(path, rows)
+            paths[scheme] = path
+        self._write_completed_wer_artifacts()
+        scheme_results = {
+            scheme: {
+                "status": "metrics_completed",
+                "summary": self._metrics_summary(der=0.1, hit_rate=0.0, speaker_change_hits=0),
+                "per_file": self._completed_per_file_metrics(),
+                "boundary_details_path": str(paths[scheme]),
+            }
+            for scheme in module.SCHEMES
+        }
+        comparison = module.write_comparison(self.root, scheme_results, labels)
+        self.assertTrue(comparison["boundary_differences_available"])
+        self.assertTrue(comparison["ranking_eligible"])
+
+    def test_metrics_process_oserror_logs_failure_and_summarize_writes_artifacts(self):
+        source = self._write_fake_metrics_source()
+        tools_dir = self.root / "tools"
+        module.install_metrics_tool(source, tools_dir)
+        normalized = self.root / "normalized"
+        labels = self.root / "labels"
+        normalized.mkdir()
+        labels.mkdir()
+        with mock.patch.object(module.subprocess, "run", side_effect=OSError("spawn denied")):
+            result = module.run_speaker_metrics("baseline", tools_dir, normalized, labels, self.root / "metrics")
+        self.assertEqual(result["status"], "metrics_failed")
+        self.assertIn("spawn denied", (self.root / "metrics" / "speaker_metrics.exception.log").read_text(encoding="utf-8"))
+        self.assertTrue((self.root / "metrics" / "speaker_metrics.stdout.log").is_file())
+        self.assertTrue((self.root / "metrics" / "speaker_metrics.stderr.log").is_file())
+
+        manifest_builder = TaskTwoTest()
+        manifest_builder.root = self.root
+        manifest = manifest_builder._valid_manifest()
+        manifest_builder._materialize_frozen_inputs(manifest)
+        module._write_json(self.root / "manifest.json", manifest)
+        with mock.patch.object(module.subprocess, "run", side_effect=OSError("spawn denied")):
+            comparison = module.summarize_evaluation(self.root, metrics_source=source)
+        self.assertFalse(comparison["ranking_eligible"])
+        self.assertTrue((self.root / "05_comparison" / "comparison.json").is_file())
+        self.assertTrue((self.root / "05_comparison" / "boundary_differences.csv").is_file())
+        report = self.root / "报告.md"
+        self.assertTrue(report.is_file())
+        self.assertIn("未形成有效总体排名", report.read_text(encoding="utf-8"))
+
+    def test_atomic_artifact_writer_preserves_existing_file_when_replace_fails(self):
+        target = self.root / "05_comparison" / "comparison.json"
+        target.parent.mkdir(parents=True)
+        target.write_text("old artifact\n", encoding="utf-8")
+        with mock.patch.object(module.os, "replace", side_effect=OSError("replace denied")):
+            with self.assertRaisesRegex(OSError, "replace denied"):
+                module._atomic_write_text(target, "new artifact\n")
+        self.assertEqual(target.read_text(encoding="utf-8"), "old artifact\n")
+        self.assertEqual(list(target.parent.glob(f".{target.name}.*.tmp")), [])
 
 
 if __name__ == "__main__":

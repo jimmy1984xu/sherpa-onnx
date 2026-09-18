@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import importlib.util
 import json
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -658,12 +660,37 @@ BOUNDARY_DIFFERENCE_FIELDS = (
 )
 
 
-def _write_json(path: Path, payload: object) -> None:
-    """Atomically write a UTF-8 JSON artifact with deterministic formatting."""
+def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """Durably replace one text artifact without exposing a partial target file."""
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    try:
+        with temporary.open("w", encoding=encoding, newline="") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _write_json(path: Path, payload: object) -> None:
+    """Atomically write a UTF-8 JSON artifact with deterministic formatting."""
+    _atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+
+def _write_csv_atomic(path: Path, fieldnames: Sequence[str], rows: Sequence[Mapping[str, object]]) -> None:
+    """Atomically write a UTF-8-with-BOM CSV artifact for spreadsheet consumers."""
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    _atomic_write_text(path, stream.getvalue(), encoding="utf-8-sig")
 
 
 def install_metrics_tool(source: Path, tools_dir: Path) -> Path:
@@ -779,22 +806,21 @@ def run_speaker_metrics(
         "--boundary-tolerance-ms", str(METRIC_PARAMETERS["boundary_tolerance_ms"]),
         "--collar-ms", str(METRIC_PARAMETERS["collar_ms"]),
     ]
-    completed = subprocess.run(command, text=True, capture_output=True, check=False)
     stdout_path = metrics_dir / "speaker_metrics.stdout.log"
     stderr_path = metrics_dir / "speaker_metrics.stderr.log"
-    stdout_path.write_text(completed.stdout, encoding="utf-8")
-    stderr_path.write_text(completed.stderr, encoding="utf-8")
+    exception_path = metrics_dir / "speaker_metrics.exception.log"
     summary_path = metrics_dir / "speaker_diarization_summary.json"
     boundary_path = metrics_dir / "speaker_diarization_boundary_details.csv"
     per_file_path = metrics_dir / "speaker_diarization_per_file.json"
     result: dict[str, Any] = {
         "scheme": scheme,
-        "status": "metrics_failed" if completed.returncode else "metrics_missing_summary",
-        "returncode": completed.returncode,
+        "status": "metrics_missing_summary",
+        "returncode": None,
         "command": command,
         "metrics_dir": str(metrics_dir),
         "stdout_log": str(stdout_path),
         "stderr_log": str(stderr_path),
+        "exception_log": None,
         "summary_path": str(summary_path),
         "boundary_details_path": str(boundary_path),
         "per_file_path": str(per_file_path),
@@ -804,6 +830,30 @@ def run_speaker_metrics(
         "der_components_by_file": {},
         "der_components_error": None,
     }
+    try:
+        completed = subprocess.run(command, text=True, capture_output=True, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        stdout = getattr(error, "stdout", None)
+        stderr = getattr(error, "stderr", None)
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        _atomic_write_text(stdout_path, "" if stdout is None else str(stdout))
+        _atomic_write_text(stderr_path, "" if stderr is None else str(stderr))
+        _atomic_write_text(exception_path, f"{type(error).__name__}: {error}\n")
+        result.update({
+            "status": "metrics_failed",
+            "error": str(error),
+            "exception_log": str(exception_path),
+        })
+        return result
+    _atomic_write_text(stdout_path, completed.stdout or "")
+    _atomic_write_text(stderr_path, completed.stderr or "")
+    result.update({
+        "status": "metrics_failed" if completed.returncode else "metrics_missing_summary",
+        "returncode": completed.returncode,
+    })
     if completed.returncode:
         return result
     if not summary_path.is_file():
@@ -935,6 +985,8 @@ def _read_boundary_details(path: Path) -> dict[tuple[str, int, int], dict[str, o
                 raise ValueError(f"boundary details CSV has an empty file ID: {path}")
             start_ms = _int_csv_value(row, "区间起始毫秒", path)
             end_ms = _int_csv_value(row, "区间结束毫秒", path)
+            expanded_start_ms = _int_csv_value(row, "扩展后起始毫秒", path)
+            expanded_end_ms = _int_csv_value(row, "扩展后结束毫秒", path)
             key = (file_id, start_ms, end_ms)
             if key in details:
                 raise ValueError(f"duplicate reference boundary in {path}: {key}")
@@ -950,11 +1002,12 @@ def _read_boundary_details(path: Path) -> dict[tuple[str, int, int], dict[str, o
                 "file_id": file_id,
                 "start_ms": start_ms,
                 "end_ms": end_ms,
+                "interval_start_ms": start_ms,
+                "interval_end_ms": end_ms,
+                "expanded_start_ms": expanded_start_ms,
+                "expanded_end_ms": expanded_end_ms,
                 "matched_ms": matched_ms,
-                "tolerance_ms": max(
-                    abs(_int_csv_value(row, "扩展后起始毫秒", path) - min(start_ms, end_ms)),
-                    abs(_int_csv_value(row, "扩展后结束毫秒", path) - max(start_ms, end_ms)),
-                ),
+                "tolerance_ms": METRIC_PARAMETERS["boundary_tolerance_ms"],
             }
     return details
 
@@ -966,7 +1019,14 @@ def _reference_boundary_texts(labels_dir: Path) -> dict[tuple[str, int, int], tu
         label_path = Path(labels_dir) / case.label.name
         if not label_path.is_file():
             continue
-        records = sorted(parse_three_column_file(label_path), key=lambda record: (_record_start_ms(record), record.segment_id))
+        records = sorted(
+            parse_three_column_file(label_path),
+            key=lambda record: (
+                _record_start_ms(record),
+                _record_start_ms(record) + int(record.segment_id.rsplit("_", 1)[1]),
+                record.segment_id,
+            ),
+        )
         turns: list[dict[str, object]] = []
         for record in records:
             if record.speaker_id.lower() == "multi":
@@ -1040,8 +1100,20 @@ def _load_wer_by_file(output_root: Path, scheme: str) -> dict[str, dict[str, obj
         try:
             payload = _read_json_mapping(path, "WER result")
             wer = _as_metric_number(payload.get("wer"))
-            if wer is None:
-                raise ValueError("WER result must contain a finite numeric wer value")
+            if wer is None or wer < 0:
+                raise ValueError("WER result must contain a finite nonnegative numeric wer value")
+            detail_fields = ("reference_tokens", "errors", "insertions", "deletions", "substitutions")
+            if any(field in payload for field in detail_fields):
+                details = {field: _nonnegative_integer_metric(payload.get(field)) for field in detail_fields}
+                if any(value is None for value in details.values()):
+                    raise ValueError("WER detail metrics must be complete nonnegative integers")
+                errors = int(details["errors"])
+                component_errors = int(details["insertions"]) + int(details["deletions"]) + int(details["substitutions"])
+                if errors != component_errors:
+                    raise ValueError("WER errors must equal insertions + deletions + substitutions")
+                expected_wer = errors / max(int(details["reference_tokens"]), 1)
+                if not math.isclose(wer, expected_wer, rel_tol=1e-9, abs_tol=1e-12):
+                    raise ValueError("WER does not match errors / max(reference_tokens, 1)")
             values[case.file_id] = {
                 "status": "completed",
                 "path": str(path),
@@ -1112,6 +1184,20 @@ def _validate_boundary_details(
         details = _read_boundary_details(path)
     except (OSError, csv.Error, ValueError) as error:
         return None, f"boundary detail evidence is incomplete: boundary detail CSV is invalid: {error}"
+    tolerance_ms = METRIC_PARAMETERS["boundary_tolerance_ms"]
+    for detail in details.values():
+        start_ms = int(detail["interval_start_ms"])
+        end_ms = int(detail["interval_end_ms"])
+        expected_start = min(start_ms, end_ms) - tolerance_ms
+        expected_end = max(start_ms, end_ms) + tolerance_ms
+        if detail["expanded_start_ms"] != expected_start or detail["expanded_end_ms"] != expected_end:
+            return None, (
+                "boundary detail evidence is incomplete: expanded interval does not match "
+                f"the configured {tolerance_ms} ms tolerance"
+            )
+        matched_ms = detail["matched_ms"]
+        if matched_ms is not None and not (expected_start <= int(matched_ms) <= expected_end):
+            return None, "boundary detail evidence is incomplete: matched prediction boundary is outside its expanded interval"
     actual_keys = set(details)
     if actual_keys != expected_keys:
         missing = len(expected_keys - actual_keys)
@@ -1128,6 +1214,23 @@ def _validate_boundary_details(
             "boundary detail evidence is incomplete: summary speaker_change_count does not match "
             f"reference boundary count ({total_count!r} != {len(details)})"
         )
+    total_hits = _nonnegative_integer_metric(metrics.get("speaker_change_hits")) if isinstance(metrics, Mapping) else None
+    actual_hits = sum(1 for detail in details.values() if detail["matched_ms"] is not None)
+    if total_hits is None or total_hits != actual_hits:
+        return None, (
+            "boundary detail evidence is incomplete: summary speaker_change_hits does not match "
+            f"CSV hit rows ({total_hits!r} != {actual_hits})"
+        )
+    hit_rate = _as_metric_number(metrics.get("speaker_change_hit_rate")) if isinstance(metrics, Mapping) else None
+    if total_count > 0:
+        expected_hit_rate = actual_hits / total_count
+        if hit_rate is None or not math.isclose(hit_rate, expected_hit_rate, rel_tol=1e-9, abs_tol=1e-12):
+            return None, (
+                "boundary detail evidence is incomplete: summary speaker_change_hit_rate does not match "
+                f"CSV hits/count ({hit_rate!r} != {expected_hit_rate})"
+            )
+    elif hit_rate is not None:
+        return None, "boundary detail evidence is incomplete: summary speaker_change_hit_rate must be unavailable when count is zero"
     per_file = result.get("per_file")
     files = per_file.get("files") if isinstance(per_file, Mapping) else None
     if not isinstance(files, list):
@@ -1269,10 +1372,7 @@ def write_comparison(
     else:
         boundary_rows = []
     boundary_path = comparison_dir / "boundary_differences.csv"
-    with boundary_path.open("w", encoding="utf-8-sig", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=BOUNDARY_DIFFERENCE_FIELDS)
-        writer.writeheader()
-        writer.writerows(boundary_rows)
+    _write_csv_atomic(boundary_path, BOUNDARY_DIFFERENCE_FIELDS, boundary_rows)
 
     eligibility = [normalized[scheme]["ranking_eligible"] for scheme in SCHEMES]
     ranking_eligible = all(eligibility)
@@ -1466,13 +1566,12 @@ def write_report(
     for scheme in SCHEMES:
         result = schemes.get(scheme) if isinstance(schemes, Mapping) else None
         if isinstance(result, Mapping):
-            for key in ("stdout_log", "stderr_log", "summary_path", "boundary_details_path"):
+            for key in ("stdout_log", "stderr_log", "exception_log", "summary_path", "boundary_details_path"):
                 if result.get(key):
                     lines.append(f"- {scheme} {key}: {result[key]}")
             if result.get("der_components_error"):
                 lines.append(f"- {scheme} DER 分量限制：{result['der_components_error']}")
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _atomic_write_text(report_path, "\n".join(lines) + "\n")
     return report_path
 
 
