@@ -846,6 +846,109 @@ class TaskThreeTest(unittest.TestCase):
         self.assertIn("baseline-real.py", report_text)
         self.assertIn("false_alarm", report_text)
 
+    def _write_completed_wer_artifacts(self):
+        for scheme in module.SCHEMES:
+            for case in module.TEST_CASES:
+                wer_dir = self.root / scheme / case.file_id / "metrics"
+                wer_dir.mkdir(parents=True, exist_ok=True)
+                (wer_dir / "wer.json").write_text(json.dumps({"wer": 0.0}), encoding="utf-8")
+
+    def _write_empty_boundary_details(self, scheme):
+        path = self.root / "03_metrics" / scheme / "speaker_diarization_boundary_details.csv"
+        self._write_boundary_csv(path, [])
+        return path
+
+    @staticmethod
+    def _completed_per_file_metrics(*, first_der=0.11, first_hit_rate=0.21, second_der=0.12, second_hit_rate=0.22):
+        first_case, second_case = module.TEST_CASES
+        return {
+            "files": [
+                {"file_id": first_case.file_id, "error": None, "metrics": {"der": first_der, "speaker_change_hit_rate": first_hit_rate}},
+                {"file_id": second_case.file_id, "error": None, "metrics": {"der": second_der, "speaker_change_hit_rate": second_hit_rate}},
+            ]
+        }
+
+    def test_report_uses_per_file_der_and_hit_rate_and_keeps_aggregate_separate(self):
+        first_case, second_case = module.TEST_CASES
+        per_file = self._completed_per_file_metrics()
+        comparison = {
+            "ranking_eligible": False,
+            "ranking_reason": "test-only",
+            "boundary_differences_available": True,
+            "boundary_differences": [],
+            "failures": [],
+            "schemes": {
+                "baseline": {
+                    "summary": self._metrics_summary(der=0.90, hit_rate=0.80),
+                    "per_file": per_file,
+                    "wer_by_file": {
+                        first_case.file_id: {"wer": 0.01},
+                        second_case.file_id: {"wer": 0.02},
+                    },
+                    "der_components_by_file": {
+                        first_case.file_id: {"miss": 1.0, "false_alarm": 2.0, "confusion": 3.0},
+                        second_case.file_id: {"miss": 4.0, "false_alarm": 5.0, "confusion": 6.0},
+                    },
+                },
+                "streaming": {},
+            },
+        }
+        report = module.write_report(self.root, {"commands": {}, "models": {}}, comparison)
+        text = report.read_text(encoding="utf-8")
+        self.assertIn("## 方案汇总指标", text)
+        self.assertIn("| baseline | 0.9000 | 0.8000 |", text)
+        self.assertIn(f"| baseline | {first_case.file_id} | 0.0100 | 0.1100 |", text)
+        self.assertIn(f"| baseline | {second_case.file_id} | 0.0200 | 0.1200 |", text)
+        self.assertNotIn(f"| baseline | {first_case.file_id} | 0.0100 | 0.9000 |", text)
+
+    def test_non_finite_summary_metrics_prevent_ranking_and_no_difference_conclusion(self):
+        self._write_completed_wer_artifacts()
+        boundary_paths = {scheme: self._write_empty_boundary_details(scheme) for scheme in module.SCHEMES}
+        scheme_results = {
+            scheme: {
+                "status": "metrics_completed",
+                "summary": self._metrics_summary(der=float("nan"), hit_rate=0.8),
+                "per_file": self._completed_per_file_metrics(),
+                "boundary_details_path": str(boundary_paths[scheme]),
+            }
+            for scheme in module.SCHEMES
+        }
+        comparison = module.write_comparison(self.root, scheme_results, self.root / "01_input" / "labels")
+        self.assertFalse(comparison["ranking_eligible"])
+        self.assertIsNone(comparison["winner"])
+        self.assertIn("DER must be a finite numeric value", comparison["ranking_reason"])
+        report = module.write_report(self.root, {"commands": {}, "models": {}}, comparison)
+        report_text = report.read_text(encoding="utf-8")
+        self.assertIn("未形成有效总体排名", report_text)
+        self.assertNotIn("无明显差异", report_text)
+
+    def test_missing_boundary_details_is_a_failure_and_prevents_ranking(self):
+        self._write_completed_wer_artifacts()
+        baseline_path = self._write_empty_boundary_details("baseline")
+        missing_streaming_path = self.root / "03_metrics" / "streaming" / "speaker_diarization_boundary_details.csv"
+        scheme_results = {
+            "baseline": {
+                "status": "metrics_completed",
+                "summary": self._metrics_summary(der=0.1, hit_rate=0.8),
+                "per_file": self._completed_per_file_metrics(),
+                "boundary_details_path": str(baseline_path),
+            },
+            "streaming": {
+                "status": "metrics_completed",
+                "summary": self._metrics_summary(der=0.1, hit_rate=0.8),
+                "per_file": self._completed_per_file_metrics(),
+                "boundary_details_path": str(missing_streaming_path),
+            },
+        }
+        comparison = module.write_comparison(self.root, scheme_results, self.root / "01_input" / "labels")
+        self.assertFalse(comparison["ranking_eligible"])
+        self.assertFalse(comparison["boundary_differences_available"])
+        self.assertTrue(any("boundary detail CSV is missing" in item for item in comparison["failures"]))
+        report = module.write_report(self.root, {"commands": {}, "models": {}}, comparison)
+        report_text = report.read_text(encoding="utf-8")
+        self.assertIn("边界差异（不可用）", report_text)
+        self.assertIn("未形成有效总体排名", report_text)
+
     def test_comparison_refuses_ranking_when_metrics_evaluate_wrong_file_ids(self):
         labels = self.root / "01_input" / "labels"
         labels.mkdir(parents=True)
@@ -860,6 +963,7 @@ class TaskThreeTest(unittest.TestCase):
                 {"file_id": "unexpected_b", "error": None},
             ]
         }
+        boundary_paths = {scheme: self._write_empty_boundary_details(scheme) for scheme in module.SCHEMES}
         comparison = module.write_comparison(
             self.root,
             {
@@ -867,6 +971,7 @@ class TaskThreeTest(unittest.TestCase):
                     "status": "metrics_completed",
                     "summary": self._metrics_summary(der=0.1, hit_rate=0.8),
                     "per_file": wrong_per_file,
+                    "boundary_details_path": str(boundary_paths[scheme]),
                 }
                 for scheme in module.SCHEMES
             },

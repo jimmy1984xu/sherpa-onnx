@@ -7,6 +7,7 @@ import csv
 import hashlib
 import importlib.util
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -832,7 +833,8 @@ def run_speaker_metrics(
 def _as_metric_number(value: object) -> float | None:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return None
-    return float(value)
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) else None
 
 
 def select_winner(metrics: Mapping[str, Mapping[str, object]]) -> str | None:
@@ -1043,17 +1045,37 @@ def _find_runtime_metadata(output_root: Path) -> dict[str, dict[str, dict[str, o
     return found
 
 
+def _boundary_details_issue(result: Mapping[str, object]) -> str | None:
+    """Return a concrete failure reason when a scheme lacks its boundary artifact."""
+    value = result.get("boundary_details_path")
+    if not isinstance(value, str) or not value.strip():
+        return "speaker diarization boundary detail CSV is missing (path was not recorded)"
+    if not Path(value).is_file():
+        return f"speaker diarization boundary detail CSV is missing: {value}"
+    return None
+
+
 def _scheme_is_rankable(result: Mapping[str, object], wer_by_file: Mapping[str, Mapping[str, object]]) -> tuple[bool, str]:
     if result.get("status") != "metrics_completed":
         return False, f"{result.get('scheme', 'scheme')} speaker metrics status is {result.get('status')}"
     summary = result.get("summary")
     if not isinstance(summary, Mapping):
         return False, "speaker diarization summary is missing"
+    metrics = summary.get("metrics")
+    if not isinstance(metrics, Mapping):
+        return False, "speaker diarization summary metrics are missing"
+    if _as_metric_number(metrics.get("der")) is None:
+        return False, "speaker diarization summary DER must be a finite numeric value"
+    if _as_metric_number(metrics.get("speaker_change_hit_rate")) is None:
+        return False, "speaker diarization summary speaker_change_hit_rate must be a finite numeric value"
     counts = summary.get("counts")
     if not isinstance(counts, Mapping):
         return False, "speaker diarization summary counts are missing"
     if counts.get("evaluated") != len(TEST_CASES) or counts.get("errors") != 0:
         return False, "not all fixed audio cases were successfully evaluated"
+    boundary_issue = _boundary_details_issue(result)
+    if boundary_issue is not None:
+        return False, boundary_issue
     per_file = result.get("per_file")
     files = per_file.get("files") if isinstance(per_file, Mapping) else None
     if not isinstance(files, list):
@@ -1101,6 +1123,9 @@ def write_comparison(
         component_error = result.get("der_components_error")
         if isinstance(component_error, str) and component_error:
             failures.append(f"{scheme}: {component_error}")
+        boundary_issue = _boundary_details_issue(result)
+        if boundary_issue is not None:
+            failures.append(f"{scheme}: {boundary_issue}")
         summary = result.get("summary")
         if isinstance(summary, Mapping) and isinstance(summary.get("metrics"), Mapping):
             metric_values = summary["metrics"]
@@ -1110,9 +1135,17 @@ def write_comparison(
             }
         normalized[scheme] = result
 
-    baseline_boundary = Path(str(normalized["baseline"].get("boundary_details_path", "")))
-    streaming_boundary = Path(str(normalized["streaming"].get("boundary_details_path", "")))
-    boundary_rows = merge_boundary_differences(baseline_boundary, streaming_boundary, Path(labels_dir))
+    boundary_issues = {
+        scheme: _boundary_details_issue(normalized[scheme])
+        for scheme in SCHEMES
+    }
+    boundary_differences_available = not any(boundary_issues.values())
+    if boundary_differences_available:
+        baseline_boundary = Path(str(normalized["baseline"]["boundary_details_path"]))
+        streaming_boundary = Path(str(normalized["streaming"]["boundary_details_path"]))
+        boundary_rows = merge_boundary_differences(baseline_boundary, streaming_boundary, Path(labels_dir))
+    else:
+        boundary_rows = []
     boundary_path = comparison_dir / "boundary_differences.csv"
     with boundary_path.open("w", encoding="utf-8-sig", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=BOUNDARY_DIFFERENCE_FIELDS)
@@ -1133,6 +1166,10 @@ def write_comparison(
         "schemes": normalized,
         "boundary_differences": boundary_rows,
         "boundary_differences_path": str(boundary_path),
+        "boundary_differences_available": boundary_differences_available,
+        "boundary_differences_error": "；".join(
+            f"{scheme}: {issue}" for scheme, issue in boundary_issues.items() if issue is not None
+        ) or None,
         "runtime_metadata": _find_runtime_metadata(output_root),
         "ranking_eligible": ranking_eligible,
         "winner": winner,
@@ -1208,6 +1245,17 @@ def write_report(
         lines.append("```")
     else:
         lines.append("尚未回收实际远程命令；上方仅为受控命令模板，不能视为已执行记录。")
+    lines.extend(["", "## 方案汇总指标"])
+    lines.append("| 方案 | 汇总 DER | 汇总 speaker_change_hit_rate |")
+    lines.append("| --- | --- | --- |")
+    for scheme in SCHEMES:
+        result = schemes.get(scheme) if isinstance(schemes, Mapping) else None
+        summary = result.get("summary") if isinstance(result, Mapping) and isinstance(result.get("summary"), Mapping) else {}
+        aggregate_metrics = summary.get("metrics") if isinstance(summary, Mapping) and isinstance(summary.get("metrics"), Mapping) else {}
+        lines.append(
+            f"| {scheme} | {_display_metric(aggregate_metrics.get('der'))} | "
+            f"{_display_metric(aggregate_metrics.get('speaker_change_hit_rate'))} |"
+        )
     lines.extend(["", "## 每条音频指标"])
     lines.append("| 方案 | 音频 | WER | DER | miss | false_alarm | confusion | 命中率 | 音频时长 | 运行耗时 | RTF | segment 数 | speaker 分布 |")
     lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
@@ -1229,7 +1277,7 @@ def write_report(
         wer_by_file = result.get("wer_by_file") if isinstance(result.get("wer_by_file"), Mapping) else {}
         runtime_by_file = runtime_metadata.get(scheme) if isinstance(runtime_metadata, Mapping) else {}
         for case in TEST_CASES:
-            metrics = metrics_by_file.get(case.file_id, aggregate_metrics)
+            metrics = metrics_by_file.get(case.file_id, {})
             components = components_by_file.get(case.file_id, {}) if isinstance(components_by_file, Mapping) else {}
             wer = wer_by_file.get(case.file_id) if isinstance(wer_by_file, Mapping) else {}
             run = runtime_by_file.get(case.file_id) if isinstance(runtime_by_file, Mapping) else {}
@@ -1246,17 +1294,22 @@ def write_report(
                 f"{_display_metric(metrics.get('speaker_change_hit_rate'))} | {_markdown_cell(duration)} | "
                 f"{_markdown_cell(elapsed)} | {_markdown_cell(rtf)} | {_markdown_cell(segment_count)} | {_markdown_cell(speaker_distribution)} |"
             )
-    lines.extend(["", "## 边界差异（最多前 50 条）"])
-    boundary_rows = comparison.get("boundary_differences") if isinstance(comparison.get("boundary_differences"), list) else []
-    lines.extend(["| 文件 | 参考边界(ms) | baseline | streaming | 分类 | 前文本 | 后文本 |", "| --- | --- | --- | --- | --- | --- | --- |"])
-    for row in boundary_rows[:50]:
-        if not isinstance(row, Mapping):
-            continue
-        lines.append(
-            f"| {_markdown_cell(row.get('file_id', ''))} | {_markdown_cell(row.get('reference_boundary_ms', ''))} | "
-            f"{_markdown_cell(row.get('baseline_match_ms', ''))} | {_markdown_cell(row.get('streaming_match_ms', ''))} | "
-            f"{_markdown_cell(row.get('classification', ''))} | {_markdown_cell(row.get('before_text', ''))} | {_markdown_cell(row.get('after_text', ''))} |"
-        )
+    boundary_available = comparison.get("boundary_differences_available", True)
+    if boundary_available is False:
+        lines.extend(["", "## 边界差异（不可用）"])
+        lines.append(f"- 未生成边界差异表：{comparison.get('boundary_differences_error', 'boundary detail CSV 缺失')}。")
+    else:
+        lines.extend(["", "## 边界差异（最多前 50 条）"])
+        boundary_rows = comparison.get("boundary_differences") if isinstance(comparison.get("boundary_differences"), list) else []
+        lines.extend(["| 文件 | 参考边界(ms) | baseline | streaming | 分类 | 前文本 | 后文本 |", "| --- | --- | --- | --- | --- | --- | --- |"])
+        for row in boundary_rows[:50]:
+            if not isinstance(row, Mapping):
+                continue
+            lines.append(
+                f"| {_markdown_cell(row.get('file_id', ''))} | {_markdown_cell(row.get('reference_boundary_ms', ''))} | "
+                f"{_markdown_cell(row.get('baseline_match_ms', ''))} | {_markdown_cell(row.get('streaming_match_ms', ''))} | "
+                f"{_markdown_cell(row.get('classification', ''))} | {_markdown_cell(row.get('before_text', ''))} | {_markdown_cell(row.get('after_text', ''))} |"
+            )
     lines.extend(["", "## 结论"])
     if comparison.get("ranking_eligible"):
         winner = comparison.get("winner")
