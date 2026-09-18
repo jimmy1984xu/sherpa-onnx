@@ -694,7 +694,7 @@ def _write_csv_atomic(path: Path, fieldnames: Sequence[str], rows: Sequence[Mapp
 
 
 def install_metrics_tool(source: Path, tools_dir: Path) -> Path:
-    """Record the source SHA-256, then atomically copy the approved metrics script."""
+    """Install a hash-verified metrics tool before atomically publishing its receipt."""
     source = Path(source)
     tools_dir = Path(tools_dir)
     if source.name != METRICS_TOOL_FILENAME:
@@ -705,17 +705,26 @@ def install_metrics_tool(source: Path, tools_dir: Path) -> Path:
     destination = tools_dir / METRICS_TOOL_FILENAME
     receipt = tools_dir / "speaker_diarization_metrics.sha256.json"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(receipt, {
-        "source_path": str(source),
-        "sha256": digest,
-        "destination_path": str(destination),
-    })
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-    shutil.copyfile(source, temporary)
-    if sha256_file(temporary) != digest:
-        temporary.unlink(missing_ok=True)
-        raise ValueError("metrics tool SHA-256 changed while copying")
-    temporary.replace(destination)
+    try:
+        shutil.copyfile(source, temporary)
+        with temporary.open("rb+") as stream:
+            stream.flush()
+            os.fsync(stream.fileno())
+        if sha256_file(temporary) != digest:
+            raise ValueError("metrics tool SHA-256 changed while copying")
+        os.replace(temporary, destination)
+        _write_json(receipt, {
+            "source_path": str(source),
+            "sha256": digest,
+            "destination_path": str(destination),
+        })
+    except BaseException:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     return destination
 
 
@@ -1254,6 +1263,30 @@ def _validate_boundary_details(
     return details, None
 
 
+def _der_component_issue(der: float, components: object, location: str) -> str | None:
+    """Validate optional copied-tool DER evidence without recreating the scorer."""
+    if components is None:
+        return None
+    if not isinstance(components, Mapping):
+        return f"{location} DER components must be a mapping"
+    values: dict[str, float] = {}
+    for key in ("miss", "false_alarm", "confusion"):
+        numeric = _as_metric_number(components.get(key))
+        if numeric is None or numeric < 0:
+            return f"{location} DER component {key} must be a finite nonnegative numeric value"
+        values[key] = numeric
+    duration_key = next((key for key in ("total", "reference_duration", "reference_duration_seconds") if key in components), None)
+    if duration_key is None:
+        return None
+    total = _as_metric_number(components.get(duration_key))
+    if total is None or total <= 0:
+        return f"{location} DER component {duration_key} must be a finite positive numeric value"
+    expected_der = (values["miss"] + values["false_alarm"] + values["confusion"]) / total
+    if not math.isclose(der, expected_der, rel_tol=1e-9, abs_tol=1e-12):
+        return f"{location} DER does not match DER components / {duration_key}"
+    return None
+
+
 def _scheme_is_rankable(result: Mapping[str, object], wer_by_file: Mapping[str, Mapping[str, object]]) -> tuple[bool, str]:
     if result.get("status") != "metrics_completed":
         return False, f"{result.get('scheme', 'scheme')} speaker metrics status is {result.get('status')}"
@@ -1263,8 +1296,9 @@ def _scheme_is_rankable(result: Mapping[str, object], wer_by_file: Mapping[str, 
     metrics = summary.get("metrics")
     if not isinstance(metrics, Mapping):
         return False, "speaker diarization summary metrics are missing"
-    if _as_metric_number(metrics.get("der")) is None:
-        return False, "speaker diarization summary DER must be a finite numeric value"
+    summary_der = _as_metric_number(metrics.get("der"))
+    if summary_der is None or summary_der < 0:
+        return False, "speaker diarization summary DER must be a finite numeric value and be nonnegative"
     if _as_metric_number(metrics.get("speaker_change_hit_rate")) is None:
         return False, "speaker diarization summary speaker_change_hit_rate must be a finite numeric value"
     counts = summary.get("counts")
@@ -1277,13 +1311,38 @@ def _scheme_is_rankable(result: Mapping[str, object], wer_by_file: Mapping[str, 
     if not isinstance(files, list):
         return False, "speaker diarization per-file results are missing"
     evaluated_file_ids: list[str] = []
+    metrics_by_file: dict[str, Mapping[str, object]] = {}
     for item in files:
         if not isinstance(item, Mapping) or not isinstance(item.get("file_id"), str) or item.get("error") is not None:
             return False, "speaker diarization per-file results include an invalid or failed file"
-        evaluated_file_ids.append(item["file_id"])
+        file_id = item["file_id"]
+        evaluated_file_ids.append(file_id)
+        item_metrics = item.get("metrics")
+        if isinstance(item_metrics, Mapping):
+            metrics_by_file[file_id] = item_metrics
     expected_file_ids = [case.file_id for case in TEST_CASES]
     if len(evaluated_file_ids) != len(expected_file_ids) or set(evaluated_file_ids) != set(expected_file_ids):
         return False, "speaker diarization did not evaluate exactly the fixed audio file IDs"
+    component_issue = _der_component_issue(summary_der, result.get("der_components"), "speaker diarization summary")
+    if component_issue is not None:
+        return False, component_issue
+    per_file_components = result.get("der_components_by_file")
+    if per_file_components not in (None, {}):
+        if not isinstance(per_file_components, Mapping):
+            return False, "speaker diarization per-file DER components must be a mapping"
+    for file_id in expected_file_ids:
+        file_metrics = metrics_by_file.get(file_id)
+        file_der = _as_metric_number(file_metrics.get("der")) if isinstance(file_metrics, Mapping) else None
+        if file_der is None or file_der < 0:
+            return False, f"speaker diarization per-file DER must be a finite numeric value and be nonnegative for {file_id}"
+        if isinstance(per_file_components, Mapping) and per_file_components:
+            component_issue = _der_component_issue(
+                file_der,
+                per_file_components.get(file_id),
+                f"speaker diarization per-file {file_id}",
+            )
+            if component_issue is not None:
+                return False, component_issue
     missing_wer = [file_id for file_id, payload in wer_by_file.items() if payload.get("status") != "completed"]
     if missing_wer:
         return False, f"WER is unavailable for {', '.join(missing_wer)}"
@@ -1351,6 +1410,10 @@ def write_comparison(
         result["ranking_reason"] = reason
         if result.get("status") != "metrics_completed":
             failures.append(f"{scheme}: {result.get('status')}")
+        if isinstance(result.get("error"), str) and result["error"]:
+            failures.append(f"{scheme}: {result['error']}")
+        if isinstance(result.get("install_error_log"), str) and result["install_error_log"]:
+            failures.append(f"{scheme}: metrics tool install error log: {result['install_error_log']}")
         component_error = result.get("der_components_error")
         if isinstance(component_error, str) and component_error:
             failures.append(f"{scheme}: {component_error}")
@@ -1566,7 +1629,9 @@ def write_report(
     for scheme in SCHEMES:
         result = schemes.get(scheme) if isinstance(schemes, Mapping) else None
         if isinstance(result, Mapping):
-            for key in ("stdout_log", "stderr_log", "exception_log", "summary_path", "boundary_details_path"):
+            if result.get("error"):
+                lines.append(f"- {scheme} 错误：{result['error']}")
+            for key in ("stdout_log", "stderr_log", "exception_log", "install_error_log", "summary_path", "boundary_details_path"):
                 if result.get(key):
                     lines.append(f"- {scheme} {key}: {result[key]}")
             if result.get("der_components_error"):
@@ -1595,8 +1660,15 @@ def summarize_evaluation(
     try:
         install_metrics_tool(Path(metrics_source), tools_dir)
     except (OSError, ValueError) as error:
+        install_error_log = (tools_dir / "metrics_tool_install.error.log").resolve()
+        _atomic_write_text(install_error_log, f"{type(error).__name__}: {error}\n")
         for scheme in SCHEMES:
-            scheme_results[scheme] = {"scheme": scheme, "status": "metrics_failed", "error": str(error)}
+            scheme_results[scheme] = {
+                "scheme": scheme,
+                "status": "metrics_failed",
+                "error": str(error),
+                "install_error_log": str(install_error_log),
+            }
         comparison = write_comparison(output_root, scheme_results, labels_dir)
         write_report(output_root, manifest, comparison)
         return comparison

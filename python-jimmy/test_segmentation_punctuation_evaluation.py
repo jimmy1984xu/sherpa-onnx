@@ -738,6 +738,91 @@ class TaskThreeTest(unittest.TestCase):
         self.assertIsNone(row["baseline_match_ms"])
         self.assertEqual(row["streaming_match_ms"], 5100)
 
+    def test_der_summary_and_per_file_values_must_be_finite_and_nonnegative(self):
+        cases = {
+            "negative summary": lambda results: results["baseline"]["summary"]["metrics"].update({"der": -0.1}),
+            "negative per-file": lambda results: results["baseline"]["per_file"]["files"][0]["metrics"].update({"der": -0.1}),
+            "non-finite per-file": lambda results: results["baseline"]["per_file"]["files"][0]["metrics"].update({"der": float("nan")}),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name=name):
+                labels, _, _, scheme_results = self._write_complete_boundary_evidence()
+                mutate(scheme_results)
+                comparison = module.write_comparison(self.root, scheme_results, labels)
+                self.assertFalse(comparison["ranking_eligible"])
+                self.assertIsNone(comparison["winner"])
+                self.assertIn("DER must be a finite numeric value and be nonnegative", comparison["ranking_reason"])
+
+    def test_der_components_must_be_nonnegative_and_match_der_values(self):
+        cases = {
+            "negative aggregate component": lambda results: results["baseline"]["der_components"].update({"miss": -0.1}),
+            "negative per-file component": lambda results: results["baseline"]["der_components_by_file"][module.TEST_CASES[0].file_id].update({"confusion": -0.1}),
+            "aggregate formula mismatch": lambda results: results["baseline"]["der_components"].update({"false_alarm": 2.0}),
+            "per-file formula mismatch": lambda results: results["baseline"]["der_components_by_file"][module.TEST_CASES[0].file_id].update({"false_alarm": 0.75}),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name=name):
+                labels, _, _, scheme_results = self._write_complete_boundary_evidence()
+                scheme_results["baseline"]["summary"] = self._metrics_summary(
+                    der=0.1, hit_rate=0.0, speaker_change_count=2, speaker_change_hits=0,
+                )
+                scheme_results["baseline"]["per_file"] = self._completed_per_file_metrics(
+                    first_der=0.1, second_der=0.1,
+                )
+                scheme_results["baseline"]["der_components"] = {
+                    "miss": 1.0, "false_alarm": 1.0, "confusion": 0.0, "total": 20.0,
+                }
+                scheme_results["baseline"]["der_components_by_file"] = {
+                    case.file_id: {"miss": 0.5, "false_alarm": 0.5, "confusion": 0.0, "total": 10.0}
+                    for case in module.TEST_CASES
+                }
+                mutate(scheme_results)
+                comparison = module.write_comparison(self.root, scheme_results, labels)
+                self.assertFalse(comparison["ranking_eligible"])
+                self.assertIsNone(comparison["winner"])
+                self.assertIn("DER component", comparison["ranking_reason"])
+
+    def test_install_metrics_tool_copy_failure_leaves_no_receipt_or_partial_destination(self):
+        source = self._write_fake_metrics_source()
+        tools_dir = self.root / "tools"
+        with mock.patch.object(module.shutil, "copyfile", side_effect=OSError("copy denied")):
+            with self.assertRaisesRegex(OSError, "copy denied"):
+                module.install_metrics_tool(source, tools_dir)
+        self.assertFalse((tools_dir / module.METRICS_TOOL_FILENAME).exists())
+        self.assertFalse((tools_dir / "speaker_diarization_metrics.sha256.json").exists())
+        self.assertEqual(list(tools_dir.glob(".*.tmp")), [])
+
+    def test_summarize_missing_metrics_source_records_shared_absolute_install_error_log(self):
+        manifest_builder = TaskTwoTest()
+        manifest_builder.root = self.root
+        manifest = manifest_builder._valid_manifest()
+        manifest_builder._materialize_frozen_inputs(manifest)
+        module._write_json(self.root / "manifest.json", manifest)
+        missing_source = self.root / module.METRICS_TOOL_FILENAME
+
+        comparison = module.summarize_evaluation(self.root, metrics_source=missing_source)
+
+        install_log = (self.root / "tools" / "metrics_tool_install.error.log").resolve()
+        self.assertFalse(comparison["ranking_eligible"])
+        self.assertTrue((self.root / "05_comparison" / "comparison.json").is_file())
+        self.assertTrue((self.root / "05_comparison" / "boundary_differences.csv").is_file())
+        self.assertTrue((self.root / "报告.md").is_file())
+        self.assertTrue(install_log.is_file())
+        log_text = install_log.read_text(encoding="utf-8")
+        self.assertIn("FileNotFoundError", log_text)
+        self.assertIn("metrics source is missing", log_text)
+        for scheme in module.SCHEMES:
+            result = comparison["schemes"][scheme]
+            self.assertEqual(result["status"], "metrics_failed")
+            self.assertIn("metrics source is missing", result["error"])
+            self.assertEqual(result["install_error_log"], str(install_log))
+        failure_text = "\n".join(comparison["failures"])
+        self.assertIn("metrics source is missing", failure_text)
+        self.assertIn(str(install_log), failure_text)
+        report_text = (self.root / "报告.md").read_text(encoding="utf-8")
+        self.assertIn("metrics source is missing", report_text)
+        self.assertIn(str(install_log), report_text)
+
     def test_install_metrics_tool_records_hash_before_copy_and_refuses_wrong_name(self):
         source = self._write_fake_metrics_source()
         tools_dir = self.root / "tools"
@@ -817,13 +902,13 @@ class TaskThreeTest(unittest.TestCase):
                 "status": "metrics_completed", "summary": self._metrics_summary(der=0.10, hit_rate=0.0, speaker_change_hits=0),
                 "per_file": self._completed_per_file_metrics(),
                 "metrics_dir": str(baseline_csv.parent), "boundary_details_path": str(baseline_csv),
-                "der_components": {"miss": 1.0, "false_alarm": 2.0, "confusion": 3.0, "total": 20.0},
+                "der_components": {"miss": 1.0, "false_alarm": 1.0, "confusion": 0.0, "total": 20.0},
             },
             "streaming": {
                 "status": "metrics_completed", "summary": self._metrics_summary(der=0.08, hit_rate=0.5, speaker_change_hits=1),
                 "per_file": self._completed_per_file_metrics(),
                 "metrics_dir": str(streaming_csv.parent), "boundary_details_path": str(streaming_csv),
-                "der_components": {"miss": 1.0, "false_alarm": 1.0, "confusion": 2.0, "total": 20.0},
+                "der_components": {"miss": 1.0, "false_alarm": 0.5, "confusion": 0.1, "total": 20.0},
             },
         }
         for scheme in ("baseline", "streaming"):
