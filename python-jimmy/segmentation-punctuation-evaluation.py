@@ -895,16 +895,23 @@ def make_boundary_difference(
     }
 
 
-def _int_csv_value(row: Mapping[str, str], name: str, path: Path) -> int:
-    value = row.get(name, "").strip()
+def _csv_string_value(row: Mapping[str, str | None], name: str, path: Path) -> str:
+    value = row.get(name)
+    if not isinstance(value, str):
+        raise ValueError(f"{path} has a missing value for {name}")
+    return value.strip()
+
+
+def _int_csv_value(row: Mapping[str, str | None], name: str, path: Path) -> int:
+    value = _csv_string_value(row, name, path)
     try:
         return int(value)
     except ValueError as error:
         raise ValueError(f"{path} has invalid {name}: {value!r}") from error
 
 
-def _optional_int_csv_value(row: Mapping[str, str], name: str, path: Path) -> int | None:
-    value = row.get(name, "").strip()
+def _optional_int_csv_value(row: Mapping[str, str | None], name: str, path: Path) -> int | None:
+    value = _csv_string_value(row, name, path)
     return None if not value else _int_csv_value(row, name, path)
 
 
@@ -921,17 +928,29 @@ def _read_boundary_details(path: Path) -> dict[tuple[str, int, int], dict[str, o
             raise ValueError(f"boundary details CSV has unexpected columns: {path}")
         details: dict[tuple[str, int, int], dict[str, object]] = {}
         for row in reader:
-            file_id = row["文件ID"].strip()
+            if None in row:
+                raise ValueError(f"boundary details CSV has unexpected extra fields: {path}")
+            file_id = _csv_string_value(row, "文件ID", path)
+            if not file_id:
+                raise ValueError(f"boundary details CSV has an empty file ID: {path}")
             start_ms = _int_csv_value(row, "区间起始毫秒", path)
             end_ms = _int_csv_value(row, "区间结束毫秒", path)
             key = (file_id, start_ms, end_ms)
             if key in details:
                 raise ValueError(f"duplicate reference boundary in {path}: {key}")
+            matched_ms = _optional_int_csv_value(row, "匹配预测边界毫秒", path)
+            status = _csv_string_value(row, "状态", path)
+            if status == "命中" and matched_ms is None:
+                raise ValueError(f"boundary details CSV has a hit without a matched prediction boundary: {path}")
+            if status == "未命中" and matched_ms is not None:
+                raise ValueError(f"boundary details CSV has a miss with a matched prediction boundary: {path}")
+            if status not in {"命中", "未命中"}:
+                raise ValueError(f"boundary details CSV has invalid status {status!r}: {path}")
             details[key] = {
                 "file_id": file_id,
                 "start_ms": start_ms,
                 "end_ms": end_ms,
-                "matched_ms": _optional_int_csv_value(row, "匹配预测边界毫秒", path),
+                "matched_ms": matched_ms,
                 "tolerance_ms": max(
                     abs(_int_csv_value(row, "扩展后起始毫秒", path) - min(start_ms, end_ms)),
                     abs(_int_csv_value(row, "扩展后结束毫秒", path) - max(start_ms, end_ms)),
@@ -972,15 +991,11 @@ def _reference_boundary_texts(labels_dir: Path) -> dict[tuple[str, int, int], tu
     return texts
 
 
-def merge_boundary_differences(
-    baseline_boundary_path: Path,
-    streaming_boundary_path: Path,
-    labels_dir: Path,
+def _merge_boundary_detail_maps(
+    baseline: Mapping[tuple[str, int, int], Mapping[str, object]],
+    streaming: Mapping[tuple[str, int, int], Mapping[str, object]],
+    label_texts: Mapping[tuple[str, int, int], tuple[str, str]],
 ) -> list[dict[str, object]]:
-    """Merge two copied-tool boundary CSVs by file and reference interval."""
-    baseline = _read_boundary_details(Path(baseline_boundary_path))
-    streaming = _read_boundary_details(Path(streaming_boundary_path))
-    label_texts = _reference_boundary_texts(Path(labels_dir))
     differences: list[dict[str, object]] = []
     for key in sorted(set(baseline) | set(streaming)):
         file_id, start_ms, end_ms = key
@@ -1002,6 +1017,19 @@ def merge_boundary_differences(
     return differences
 
 
+def merge_boundary_differences(
+    baseline_boundary_path: Path,
+    streaming_boundary_path: Path,
+    labels_dir: Path,
+) -> list[dict[str, object]]:
+    """Merge two copied-tool boundary CSVs by file and reference interval."""
+    return _merge_boundary_detail_maps(
+        _read_boundary_details(Path(baseline_boundary_path)),
+        _read_boundary_details(Path(streaming_boundary_path)),
+        _reference_boundary_texts(Path(labels_dir)),
+    )
+
+
 def _load_wer_by_file(output_root: Path, scheme: str) -> dict[str, dict[str, object]]:
     values: dict[str, dict[str, object]] = {}
     for case in TEST_CASES:
@@ -1011,10 +1039,13 @@ def _load_wer_by_file(output_root: Path, scheme: str) -> dict[str, dict[str, obj
             continue
         try:
             payload = _read_json_mapping(path, "WER result")
+            wer = _as_metric_number(payload.get("wer"))
+            if wer is None:
+                raise ValueError("WER result must contain a finite numeric wer value")
             values[case.file_id] = {
                 "status": "completed",
                 "path": str(path),
-                "wer": _as_metric_number(payload.get("wer")),
+                "wer": wer,
                 "metrics": payload,
             }
         except ValueError as error:
@@ -1049,10 +1080,75 @@ def _boundary_details_issue(result: Mapping[str, object]) -> str | None:
     """Return a concrete failure reason when a scheme lacks its boundary artifact."""
     value = result.get("boundary_details_path")
     if not isinstance(value, str) or not value.strip():
-        return "speaker diarization boundary detail CSV is missing (path was not recorded)"
+        return "boundary detail CSV is missing (path was not recorded)"
     if not Path(value).is_file():
-        return f"speaker diarization boundary detail CSV is missing: {value}"
+        return f"boundary detail CSV is missing: {value}"
     return None
+
+
+def _nonnegative_integer_metric(value: object) -> int | None:
+    numeric = _as_metric_number(value)
+    if numeric is None or numeric < 0 or not numeric.is_integer():
+        return None
+    return int(numeric)
+
+
+def _reference_boundary_texts_for_validation(labels_dir: Path) -> dict[tuple[str, int, int], tuple[str, str]]:
+    missing = [case.label.name for case in TEST_CASES if not (Path(labels_dir) / case.label.name).is_file()]
+    if missing:
+        raise ValueError(f"reference label files are missing: {', '.join(missing)}")
+    return _reference_boundary_texts(Path(labels_dir))
+
+
+def _validate_boundary_details(
+    result: Mapping[str, object],
+    expected_keys: set[tuple[str, int, int]],
+) -> tuple[dict[tuple[str, int, int], dict[str, object]] | None, str | None]:
+    path_issue = _boundary_details_issue(result)
+    if path_issue is not None:
+        return None, f"boundary detail evidence is incomplete: {path_issue}"
+    path = Path(str(result["boundary_details_path"]))
+    try:
+        details = _read_boundary_details(path)
+    except (OSError, csv.Error, ValueError) as error:
+        return None, f"boundary detail evidence is incomplete: boundary detail CSV is invalid: {error}"
+    actual_keys = set(details)
+    if actual_keys != expected_keys:
+        missing = len(expected_keys - actual_keys)
+        unexpected = len(actual_keys - expected_keys)
+        return None, (
+            "boundary detail evidence is incomplete: reference boundary keys do not match labels "
+            f"(missing={missing}, unexpected={unexpected})"
+        )
+    summary = result.get("summary")
+    metrics = summary.get("metrics") if isinstance(summary, Mapping) else None
+    total_count = _nonnegative_integer_metric(metrics.get("speaker_change_count")) if isinstance(metrics, Mapping) else None
+    if total_count is None or total_count != len(details):
+        return None, (
+            "boundary detail evidence is incomplete: summary speaker_change_count does not match "
+            f"reference boundary count ({total_count!r} != {len(details)})"
+        )
+    per_file = result.get("per_file")
+    files = per_file.get("files") if isinstance(per_file, Mapping) else None
+    if not isinstance(files, list):
+        return None, "boundary detail evidence is incomplete: per-file speaker metrics are missing"
+    metrics_by_file = {
+        item.get("file_id"): item.get("metrics")
+        for item in files
+        if isinstance(item, Mapping) and isinstance(item.get("file_id"), str) and isinstance(item.get("metrics"), Mapping)
+    }
+    for case in TEST_CASES:
+        count = _nonnegative_integer_metric(
+            metrics_by_file.get(case.file_id, {}).get("speaker_change_count")
+            if isinstance(metrics_by_file.get(case.file_id), Mapping) else None
+        )
+        actual_count = sum(1 for key in details if key[0] == case.file_id)
+        if count is None or count != actual_count:
+            return None, (
+                "boundary detail evidence is incomplete: per-file speaker_change_count does not match "
+                f"reference boundary count for {case.file_id} ({count!r} != {actual_count})"
+            )
+    return details, None
 
 
 def _scheme_is_rankable(result: Mapping[str, object], wer_by_file: Mapping[str, Mapping[str, object]]) -> tuple[bool, str]:
@@ -1073,9 +1169,6 @@ def _scheme_is_rankable(result: Mapping[str, object], wer_by_file: Mapping[str, 
         return False, "speaker diarization summary counts are missing"
     if counts.get("evaluated") != len(TEST_CASES) or counts.get("errors") != 0:
         return False, "not all fixed audio cases were successfully evaluated"
-    boundary_issue = _boundary_details_issue(result)
-    if boundary_issue is not None:
-        return False, boundary_issue
     per_file = result.get("per_file")
     files = per_file.get("files") if isinstance(per_file, Mapping) else None
     if not isinstance(files, list):
@@ -1091,7 +1184,11 @@ def _scheme_is_rankable(result: Mapping[str, object], wer_by_file: Mapping[str, 
     missing_wer = [file_id for file_id, payload in wer_by_file.items() if payload.get("status") != "completed"]
     if missing_wer:
         return False, f"WER is unavailable for {', '.join(missing_wer)}"
-    return True, "all fixed audio cases have speaker metrics and WER"
+    validation = result.get("boundary_details_validation")
+    if not isinstance(validation, Mapping) or validation.get("available") is not True:
+        reason = validation.get("reason") if isinstance(validation, Mapping) else None
+        return False, str(reason or "boundary detail evidence is incomplete")
+    return True, "all fixed audio cases have speaker metrics, valid WER, and complete boundary evidence"
 
 
 def write_comparison(
@@ -1105,27 +1202,57 @@ def write_comparison(
     comparison_dir.mkdir(parents=True, exist_ok=True)
     normalized: dict[str, dict[str, Any]] = {}
     rank_inputs: dict[str, dict[str, object]] = {}
-    eligibility: list[bool] = []
-    reasons: list[str] = []
     failures: list[str] = []
     for scheme in SCHEMES:
         result = dict(scheme_results.get(scheme, {"scheme": scheme, "status": "metrics_missing"}))
         result.setdefault("scheme", scheme)
-        wer_by_file = _load_wer_by_file(output_root, scheme)
-        result["wer_by_file"] = wer_by_file
-        rankable, reason = _scheme_is_rankable(result, wer_by_file)
+        result["wer_by_file"] = _load_wer_by_file(output_root, scheme)
+        normalized[scheme] = result
+
+    try:
+        label_texts = _reference_boundary_texts_for_validation(Path(labels_dir))
+        expected_keys = set(label_texts)
+        label_issue: str | None = None
+    except (OSError, ValueError) as error:
+        label_texts = {}
+        expected_keys = set()
+        label_issue = f"boundary detail evidence is incomplete: reference labels are invalid: {error}"
+
+    details_by_scheme: dict[str, dict[tuple[str, int, int], dict[str, object]]] = {}
+    boundary_issues: dict[str, str | None] = {}
+    for scheme in SCHEMES:
+        path_issue = _boundary_details_issue(normalized[scheme])
+        if path_issue is not None:
+            details, issue = None, f"boundary detail evidence is incomplete: {path_issue}"
+        elif label_issue is not None:
+            details, issue = None, label_issue
+        else:
+            details, issue = _validate_boundary_details(normalized[scheme], expected_keys)
+        if details is not None:
+            details_by_scheme[scheme] = details
+        boundary_issues[scheme] = issue
+
+    if not any(boundary_issues.values()):
+        baseline_keys = set(details_by_scheme["baseline"])
+        streaming_keys = set(details_by_scheme["streaming"])
+        if baseline_keys != streaming_keys:
+            issue = "boundary detail evidence is incomplete: baseline and streaming reference boundary keys differ"
+            boundary_issues = {scheme: issue for scheme in SCHEMES}
+
+    for scheme in SCHEMES:
+        result = normalized[scheme]
+        issue = boundary_issues[scheme]
+        result["boundary_details_validation"] = {"available": issue is None, "reason": issue}
+        rankable, reason = _scheme_is_rankable(result, result["wer_by_file"])
         result["ranking_eligible"] = rankable
         result["ranking_reason"] = reason
-        eligibility.append(rankable)
-        reasons.append(f"{scheme}: {reason}")
         if result.get("status") != "metrics_completed":
             failures.append(f"{scheme}: {result.get('status')}")
         component_error = result.get("der_components_error")
         if isinstance(component_error, str) and component_error:
             failures.append(f"{scheme}: {component_error}")
-        boundary_issue = _boundary_details_issue(result)
-        if boundary_issue is not None:
-            failures.append(f"{scheme}: {boundary_issue}")
+        if issue is not None:
+            failures.append(f"{scheme}: {issue}")
         summary = result.get("summary")
         if isinstance(summary, Mapping) and isinstance(summary.get("metrics"), Mapping):
             metric_values = summary["metrics"]
@@ -1133,17 +1260,12 @@ def write_comparison(
                 "hit_rate": metric_values.get("speaker_change_hit_rate"),
                 "der": metric_values.get("der"),
             }
-        normalized[scheme] = result
 
-    boundary_issues = {
-        scheme: _boundary_details_issue(normalized[scheme])
-        for scheme in SCHEMES
-    }
     boundary_differences_available = not any(boundary_issues.values())
     if boundary_differences_available:
-        baseline_boundary = Path(str(normalized["baseline"]["boundary_details_path"]))
-        streaming_boundary = Path(str(normalized["streaming"]["boundary_details_path"]))
-        boundary_rows = merge_boundary_differences(baseline_boundary, streaming_boundary, Path(labels_dir))
+        boundary_rows = _merge_boundary_detail_maps(
+            details_by_scheme["baseline"], details_by_scheme["streaming"], label_texts,
+        )
     else:
         boundary_rows = []
     boundary_path = comparison_dir / "boundary_differences.csv"
@@ -1152,8 +1274,10 @@ def write_comparison(
         writer.writeheader()
         writer.writerows(boundary_rows)
 
+    eligibility = [normalized[scheme]["ranking_eligible"] for scheme in SCHEMES]
     ranking_eligible = all(eligibility)
     winner = select_winner(rank_inputs) if ranking_eligible else None
+    reasons = [f"{scheme}: {normalized[scheme]['ranking_reason']}" for scheme in SCHEMES]
     if not ranking_eligible:
         ranking_reason = "；".join(reasons)
     elif winner is None:

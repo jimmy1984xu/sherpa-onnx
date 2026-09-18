@@ -671,14 +671,14 @@ class TaskThreeTest(unittest.TestCase):
             writer.writerows(rows)
 
     @staticmethod
-    def _metrics_summary(*, der, hit_rate, evaluated=2, errors=0):
+    def _metrics_summary(*, der, hit_rate, evaluated=2, errors=0, speaker_change_count=2):
         return {
             "counts": {"asr_files": evaluated + errors, "evaluated": evaluated, "errors": errors},
             "metrics": {
                 "der": der,
                 "speaker_change_hit_rate": hit_rate,
-                "speaker_change_hits": 8,
-                "speaker_change_count": 10,
+                "speaker_change_hits": speaker_change_count,
+                "speaker_change_count": speaker_change_count,
             },
         }
 
@@ -794,27 +794,29 @@ class TaskThreeTest(unittest.TestCase):
         metrics_root = self.root / "03_metrics"
         baseline_csv = metrics_root / "baseline" / "speaker_diarization_boundary_details.csv"
         streaming_csv = metrics_root / "streaming" / "speaker_diarization_boundary_details.csv"
-        row = {
-            "文件ID": first_case.file_id, "切换序号": 1, "参考前说话人": "A", "参考后说话人": "B",
-            "区间起始毫秒": 5000, "区间结束毫秒": 5000,
-            "扩展后起始毫秒": 4500, "扩展后结束毫秒": 5500,
-            "匹配预测边界毫秒": "", "状态": "未命中",
-        }
-        self._write_boundary_csv(baseline_csv, [row])
-        streaming_row = dict(row)
-        streaming_row["匹配预测边界毫秒"] = 5100
-        streaming_row["状态"] = "命中"
-        self._write_boundary_csv(streaming_csv, [streaming_row])
+        rows = []
+        for case in (first_case, second_case):
+            rows.append({
+                "文件ID": case.file_id, "切换序号": 1, "参考前说话人": "A", "参考后说话人": "B",
+                "区间起始毫秒": 5000, "区间结束毫秒": 5000,
+                "扩展后起始毫秒": 4500, "扩展后结束毫秒": 5500,
+                "匹配预测边界毫秒": "", "状态": "未命中",
+            })
+        self._write_boundary_csv(baseline_csv, rows)
+        streaming_rows = [dict(row) for row in rows]
+        streaming_rows[0]["匹配预测边界毫秒"] = 5100
+        streaming_rows[0]["状态"] = "命中"
+        self._write_boundary_csv(streaming_csv, streaming_rows)
         scheme_results = {
             "baseline": {
                 "status": "metrics_completed", "summary": self._metrics_summary(der=0.10, hit_rate=0.80),
-                "per_file": {"files": [{"file_id": case.file_id, "error": None} for case in (first_case, second_case)]},
+                "per_file": self._completed_per_file_metrics(),
                 "metrics_dir": str(baseline_csv.parent), "boundary_details_path": str(baseline_csv),
                 "der_components": {"miss": 1.0, "false_alarm": 2.0, "confusion": 3.0, "total": 20.0},
             },
             "streaming": {
                 "status": "metrics_completed", "summary": self._metrics_summary(der=0.08, hit_rate=0.80),
-                "per_file": {"files": [{"file_id": case.file_id, "error": None} for case in (first_case, second_case)]},
+                "per_file": self._completed_per_file_metrics(),
                 "metrics_dir": str(streaming_csv.parent), "boundary_details_path": str(streaming_csv),
                 "der_components": {"miss": 1.0, "false_alarm": 1.0, "confusion": 2.0, "total": 20.0},
             },
@@ -859,14 +861,142 @@ class TaskThreeTest(unittest.TestCase):
         return path
 
     @staticmethod
-    def _completed_per_file_metrics(*, first_der=0.11, first_hit_rate=0.21, second_der=0.12, second_hit_rate=0.22):
+    def _completed_per_file_metrics(*, first_der=0.11, first_hit_rate=0.21, second_der=0.12, second_hit_rate=0.22, first_count=1, second_count=1):
         first_case, second_case = module.TEST_CASES
         return {
             "files": [
-                {"file_id": first_case.file_id, "error": None, "metrics": {"der": first_der, "speaker_change_hit_rate": first_hit_rate}},
-                {"file_id": second_case.file_id, "error": None, "metrics": {"der": second_der, "speaker_change_hit_rate": second_hit_rate}},
+                {"file_id": first_case.file_id, "error": None, "metrics": {"der": first_der, "speaker_change_hit_rate": first_hit_rate, "speaker_change_count": first_count}},
+                {"file_id": second_case.file_id, "error": None, "metrics": {"der": second_der, "speaker_change_hit_rate": second_hit_rate, "speaker_change_count": second_count}},
             ]
         }
+
+    def _write_complete_boundary_evidence(self):
+        labels = self.root / "01_input" / "labels"
+        labels.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for case in module.TEST_CASES:
+            (labels / case.label.name).write_text(
+                f"{case.file_id}_0_5000 A 甲\n{case.file_id}_5000_5000 B 乙\n",
+                encoding="utf-8",
+            )
+            rows.append({
+                "文件ID": case.file_id, "切换序号": 1, "参考前说话人": "A", "参考后说话人": "B",
+                "区间起始毫秒": 5000, "区间结束毫秒": 5000,
+                "扩展后起始毫秒": 4500, "扩展后结束毫秒": 5500,
+                "匹配预测边界毫秒": "", "状态": "未命中",
+            })
+        paths = {}
+        for scheme in module.SCHEMES:
+            path = self.root / "03_metrics" / scheme / "speaker_diarization_boundary_details.csv"
+            self._write_boundary_csv(path, rows)
+            paths[scheme] = path
+        self._write_completed_wer_artifacts()
+        scheme_results = {
+            scheme: {
+                "status": "metrics_completed",
+                "summary": self._metrics_summary(der=0.1, hit_rate=0.8, speaker_change_count=len(rows)),
+                "per_file": self._completed_per_file_metrics(),
+                "boundary_details_path": str(paths[scheme]),
+            }
+            for scheme in module.SCHEMES
+        }
+        return labels, paths, rows, scheme_results
+
+    def _assert_boundary_evidence_failure(self, comparison):
+        self.assertFalse(comparison["ranking_eligible"])
+        self.assertFalse(comparison["boundary_differences_available"])
+        self.assertEqual(comparison["boundary_differences"], [])
+        self.assertTrue(comparison["boundary_differences_error"])
+        self.assertIsNone(comparison["winner"])
+
+    def test_invalid_wer_values_are_invalid_and_prevent_ranking(self):
+        first_case = module.TEST_CASES[0]
+        invalid_payloads = {
+            "missing": {},
+            "non_numeric": {"wer": "0.1"},
+            "nan": {"wer": float("nan")},
+            "infinity": {"wer": float("inf")},
+            "bool": {"wer": True},
+        }
+        for name, payload in invalid_payloads.items():
+            with self.subTest(name=name):
+                labels, _, _, scheme_results = self._write_complete_boundary_evidence()
+                wer_path = self.root / "baseline" / first_case.file_id / "metrics" / "wer.json"
+                wer_path.write_text(json.dumps(payload), encoding="utf-8")
+                comparison = module.write_comparison(self.root, scheme_results, labels)
+                wer = comparison["schemes"]["baseline"]["wer_by_file"][first_case.file_id]
+                self.assertEqual(wer["status"], "invalid")
+                self.assertFalse(comparison["ranking_eligible"])
+                self.assertIn("WER is unavailable", comparison["ranking_reason"])
+                report = module.write_report(self.root, {"commands": {}, "models": {}}, comparison)
+                report_text = report.read_text(encoding="utf-8")
+                self.assertIn("未形成有效总体排名", report_text)
+                self.assertNotIn("all fixed audio cases have speaker metrics and WER", report_text)
+
+    def test_malformed_boundary_csv_is_recorded_without_crashing_summarize(self):
+        malformed = ("missing column", "truncated row", "invalid integer", "duplicate reference boundary")
+        for kind in malformed:
+            with self.subTest(kind=kind):
+                labels, paths, rows, scheme_results = self._write_complete_boundary_evidence()
+                if kind == "missing column":
+                    paths["streaming"].write_text("文件ID,状态\nexample,命中\n", encoding="utf-8-sig")
+                elif kind == "truncated row":
+                    paths["streaming"].write_text(
+                        "文件ID,切换序号,参考前说话人,参考后说话人,区间起始毫秒,区间结束毫秒,扩展后起始毫秒,扩展后结束毫秒,匹配预测边界毫秒,状态\n"
+                        f"{module.TEST_CASES[0].file_id},1,A,B,5000\n",
+                        encoding="utf-8-sig",
+                    )
+                elif kind == "invalid integer":
+                    bad_rows = [dict(row) for row in rows]
+                    bad_rows[0]["区间起始毫秒"] = "not-an-integer"
+                    self._write_boundary_csv(paths["streaming"], bad_rows)
+                else:
+                    self._write_boundary_csv(paths["streaming"], rows + [dict(rows[0])])
+                comparison = module.write_comparison(self.root, scheme_results, labels)
+                self._assert_boundary_evidence_failure(comparison)
+                self.assertIn("boundary detail CSV is invalid", comparison["boundary_differences_error"])
+                self.assertFalse(comparison["schemes"]["streaming"]["boundary_details_validation"]["available"])
+                comparison_path = self.root / "05_comparison" / "comparison.json"
+                self.assertTrue(comparison_path.is_file())
+                persisted = json.loads(comparison_path.read_text(encoding="utf-8"))
+                self.assertFalse(persisted["schemes"]["streaming"]["boundary_details_validation"]["available"])
+                report = module.write_report(self.root, {"commands": {}, "models": {}}, comparison)
+                self.assertTrue(report.is_file())
+                report_text = report.read_text(encoding="utf-8")
+                self.assertIn("边界差异（不可用）", report_text)
+                self.assertIn("未形成有效总体排名", report_text)
+
+    def test_incomplete_or_inconsistent_boundary_evidence_prevents_ranking(self):
+        cases = ("empty", "missing row", "unknown file", "different keys", "hit without match", "miss with match", "count mismatch")
+        for kind in cases:
+            with self.subTest(kind=kind):
+                labels, paths, rows, scheme_results = self._write_complete_boundary_evidence()
+                if kind == "empty":
+                    self._write_boundary_csv(paths["baseline"], [])
+                elif kind == "missing row":
+                    self._write_boundary_csv(paths["baseline"], rows[:1])
+                elif kind == "unknown file":
+                    bad_rows = [dict(row) for row in rows]
+                    bad_rows[0]["文件ID"] = "unknown-file"
+                    self._write_boundary_csv(paths["baseline"], bad_rows)
+                elif kind == "different keys":
+                    bad_rows = [dict(row) for row in rows]
+                    bad_rows[0]["区间起始毫秒"] = 4999
+                    bad_rows[0]["区间结束毫秒"] = 4999
+                    self._write_boundary_csv(paths["streaming"], bad_rows)
+                elif kind == "hit without match":
+                    bad_rows = [dict(row) for row in rows]
+                    bad_rows[0]["状态"] = "命中"
+                    self._write_boundary_csv(paths["baseline"], bad_rows)
+                elif kind == "miss with match":
+                    bad_rows = [dict(row) for row in rows]
+                    bad_rows[0]["匹配预测边界毫秒"] = 5000
+                    self._write_boundary_csv(paths["baseline"], bad_rows)
+                else:
+                    scheme_results["baseline"]["summary"] = self._metrics_summary(der=0.1, hit_rate=0.8, speaker_change_count=3)
+                comparison = module.write_comparison(self.root, scheme_results, labels)
+                self._assert_boundary_evidence_failure(comparison)
+                self.assertIn("evidence is incomplete", comparison["boundary_differences_error"])
 
     def test_report_uses_per_file_der_and_hit_rate_and_keeps_aggregate_separate(self):
         first_case, second_case = module.TEST_CASES
