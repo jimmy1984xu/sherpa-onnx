@@ -257,6 +257,11 @@ class SpeakerSegmentationFusion::Impl {
       for (int32_t c = 0; c != kNumPowersetClasses; ++c) {
         acc.probability_sum[c] += aligned[c];
       }
+      // Preserve the established coverage-average semantics for speaker_count.
+      // The fused powerset argmax below is intentionally only the local-track
+      // identity/mask decision; it must not turn a 1-vs-2 coverage tie into a
+      // single-speaker count merely because ties choose the lower class index.
+      acc.count_sum += PopCount3(aligned_masks[i]);
       ++acc.count_coverage;
     }
 
@@ -289,7 +294,10 @@ class SpeakerSegmentationFusion::Impl {
                       static_cast<float>(acc.count_coverage);
       }
       const int32_t best_class = BestClass(averaged);
-      result.speaker_count = PopCount3(kPowersetMasks[best_class]);
+      result.speaker_count = std::max(
+          0, std::min(2, static_cast<int32_t>(std::round(
+                             static_cast<float>(acc.count_sum) /
+                             static_cast<float>(acc.count_coverage)))));
       result.local_speaker_mask = kPowersetMasks[best_class];
       result.local_speaker_mask_confidence = averaged[best_class];
       result.single_speaker_changed_before =
@@ -309,6 +317,7 @@ class SpeakerSegmentationFusion::Impl {
  private:
   struct FrameAccumulator {
     std::array<float, kNumPowersetClasses> probability_sum{};
+    int32_t count_sum = 0;
     int32_t count_coverage = 0;
   };
 
