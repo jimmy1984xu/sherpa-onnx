@@ -470,6 +470,25 @@ class TimelineResolutionTest(unittest.TestCase):
         self.assertEqual(segments[0].overlap_regions, [(1200, 1700)])
         self.assertEqual(stats.true_overlap_count, 0)
 
+    def test_records_uninterrupted_clean_spans_without_crossing_overlap(self):
+        waveform = np.zeros(16000 * 7, dtype=np.float32)
+        vad = [SpeechSegment(1, 0, 7000, waveform[:112000])]
+        activity = [
+            SpeakerCountSpan(0, 3500, 1, (1, 0, 0)),
+            SpeakerCountSpan(3500, 4000, 2, (1, 1, 0)),
+            SpeakerCountSpan(4000, 7000, 1, (1, 0, 0)),
+        ]
+
+        segments, _ = resolve_final_segments(vad, activity, waveform, 16000)
+
+        self.assertEqual(
+            [(segment.start_ms, segment.end_ms) for segment in segments],
+            [(0, 3500), (3500, 7000)],
+        )
+        self.assertEqual(segments[0].clean_spans, [(0, 3500)])
+        self.assertEqual(segments[1].overlap_regions, [(3500, 4000)])
+        self.assertEqual(segments[1].clean_spans, [(4000, 7000)])
+
     def test_vad_only_keeps_speech_regions_as_single_speaker_segments(self):
         waveform = np.zeros(16000, dtype=np.float32)
         vad = [

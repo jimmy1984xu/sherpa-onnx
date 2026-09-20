@@ -62,6 +62,35 @@ def format_pyannote_mask_rle(
     return "".join(f"[{duration_ms},{class_index}]" for duration_ms, class_index in pieces)
 
 
+def _clean_single_speaker_spans(
+    activity: Sequence[SpeakerCountSpan], start_ms: int, end_ms: int
+) -> list[tuple[int, int]]:
+    """Return continuous raw single-speaker intervals inside one ASR segment.
+
+    This deliberately uses pre-smoothing activity: smoothing can bridge a
+    short silence, while clean-cluster embeddings must never join pieces across
+    silence, overlap, or another local speaker.
+    """
+    clean: list[tuple[int, int, tuple[int, int, int] | None]] = []
+    for span in sorted(activity, key=lambda item: (item.start_ms, item.end_ms)):
+        if span.active_speaker_count != 1:
+            continue
+        left = max(start_ms, span.start_ms)
+        right = min(end_ms, span.end_ms)
+        if right <= left:
+            continue
+        if (
+            clean
+            and clean[-1][2] == span.speaker_mask
+            and left <= clean[-1][1]
+        ):
+            previous_start, previous_end, previous_mask = clean[-1]
+            clean[-1] = (previous_start, max(previous_end, right), previous_mask)
+        else:
+            clean.append((left, right, span.speaker_mask))
+    return [(left, right) for left, right, _ in clean]
+
+
 def _track_key(span: SpeakerCountSpan) -> tuple[int, int, int] | None:
     mask = span.speaker_mask
     if mask is None or sum(mask) == 0:
@@ -581,6 +610,13 @@ def resolve_final_segments(
                     cut_right="vad" if interval.end_ms == vad_segment.end_ms else "pyannote",
                     pyannote_mask=format_pyannote_mask_rle(
                         activity, interval.start_ms, interval.end_ms
+                    ),
+                    clean_spans=(
+                        _clean_single_speaker_spans(
+                            activity, interval.start_ms, interval.end_ms
+                        )
+                        if interval.composition == SINGLE_SPEAKER
+                        else []
                     ),
                 )
             )
