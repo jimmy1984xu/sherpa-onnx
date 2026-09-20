@@ -56,6 +56,29 @@ class SpeakerSegmentationPipelineTimelineTest(unittest.TestCase):
         )
         self.assertEqual(segments[1].overlap_regions, [(2000, 3000)])
 
+    def test_clean_span_metadata_coalesces_only_the_dominant_fused_mask(self):
+        runner = _load_runner()
+        spans = [
+            {"start": 0.0, "end": 1.0, "speaker_count": 1, "flag": 1,
+             "local_speaker_mask": 2, "local_speaker_mask_confidence": 0.9},
+            {"start": 1.0, "end": 2.0, "speaker_count": 1, "flag": 1,
+             "local_speaker_mask": 2, "local_speaker_mask_confidence": 0.9},
+            {"start": 2.0, "end": 2.1, "speaker_count": 2, "flag": 1,
+             "local_speaker_mask": 6, "local_speaker_mask_confidence": 0.9},
+            {"start": 2.1, "end": 3.1, "speaker_count": 1, "flag": 1,
+             "local_speaker_mask": 2, "local_speaker_mask_confidence": 0.9},
+            {"start": 3.1, "end": 3.6, "speaker_count": 1, "flag": 1,
+             "local_speaker_mask": 4, "local_speaker_mask_confidence": 0.99},
+        ]
+
+        clean_spans, local_mask, confidence = runner._raw_segment_mask_metadata(
+            spans, 0, 3600
+        )
+
+        self.assertEqual(clean_spans, [(0, 2000), (2100, 3100)])
+        self.assertEqual(local_mask, 2)
+        self.assertAlmostEqual(confidence, 0.9)
+
     def test_absorbs_count_zero_tail_inside_vad_speech(self):
         runner = _load_runner()
         spans = [

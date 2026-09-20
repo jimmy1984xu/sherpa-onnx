@@ -258,8 +258,14 @@ def _overlap_regions_from_count_spans(
 def _raw_segment_mask_metadata(
     spans: Sequence[Mapping[str, Any] | object], start_ms: int, end_ms: int
 ) -> tuple[list[tuple[int, int]], int, float]:
-    """Return clean portions plus the dominant fused local mask for one ASR turn."""
-    clean: list[tuple[int, int]] = []
+    """Return continuous clean spans of the dominant fused local mask for one ASR turn.
+
+    Streaming segmentation produces neighbouring spans at its chunk cadence. A
+    clean embedding span must therefore merge adjacent spans only when they
+    retain the same local identity, and must never cross a silence, overlap, or
+    different local mask.
+    """
+    spans_by_mask: dict[int, list[tuple[int, int]]] = {}
     weighted: dict[int, tuple[int, float]] = {}
     for span in _normalise_spans(spans):
         if int(span["speaker_count"]) != 1:
@@ -272,16 +278,21 @@ def _raw_segment_mask_metadata(
         right = min(end_ms, int(round(float(span["end"]) * 1000.0)))
         if right <= left:
             continue
-        clean.append((left, right))
+        spans_by_mask.setdefault(mask, []).append((left, right))
         duration = right - left
         previous_duration, previous_confidence_sum = weighted.get(mask, (0, 0.0))
         weighted[mask] = (previous_duration + duration, previous_confidence_sum + duration * confidence)
     if not weighted:
-        return clean, 0, 0.0
+        return [], 0, 0.0
+
     mask, (duration, confidence_sum) = max(weighted.items(), key=lambda item: item[1][0])
+    clean: list[tuple[int, int]] = []
+    for left, right in spans_by_mask[mask]:
+        if clean and left <= clean[-1][1]:
+            clean[-1] = (clean[-1][0], max(clean[-1][1], right))
+        else:
+            clean.append((left, right))
     return clean, mask, confidence_sum / duration if duration else 0.0
-
-
 def resolve_vad_segments_with_speaker_segmentation(
     vad_segments: Sequence[SpeechSegment],
     spans: Sequence[Mapping[str, Any] | object],
