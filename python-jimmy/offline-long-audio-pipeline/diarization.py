@@ -101,6 +101,7 @@ def smooth_activity_spans(
                         previous.active_speaker_count,
                         previous.speaker_mask,
                         previous.class_index,
+                        min(previous.local_speaker_mask_confidence, span.local_speaker_mask_confidence),
                     )
                 else:
                     merged.append(span)

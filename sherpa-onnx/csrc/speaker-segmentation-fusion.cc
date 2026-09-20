@@ -5,9 +5,11 @@
 #include "sherpa-onnx/csrc/speaker-segmentation-fusion.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -20,6 +22,58 @@ namespace {
 int32_t PopCount3(uint8_t mask) {
   return static_cast<int32_t>((mask & 1) + ((mask >> 1) & 1) +
                               ((mask >> 2) & 1));
+}
+
+constexpr int32_t kNumPowersetClasses = 7;
+constexpr std::array<uint8_t, kNumPowersetClasses> kPowersetMasks = {
+    0b000, 0b001, 0b010, 0b100, 0b011, 0b101, 0b110};
+
+int32_t ClassForMask(uint8_t mask) {
+  mask &= 0b111;
+  for (int32_t i = 0; i != kNumPowersetClasses; ++i) {
+    if (kPowersetMasks[i] == mask) {
+      return i;
+    }
+  }
+  throw std::invalid_argument("Unsupported powerset mask");
+}
+
+int32_t BestClass(const std::array<float, kNumPowersetClasses> &values) {
+  int32_t best = 0;
+  for (int32_t i = 1; i != kNumPowersetClasses; ++i) {
+    if (values[i] > values[best]) {
+      best = i;
+    }
+  }
+  return best;
+}
+
+uint8_t ApplyPermutation(uint8_t mask, const std::array<int32_t, 3> &mapping) {
+  uint8_t ans = 0;
+  for (int32_t bit = 0; bit != 3; ++bit) {
+    if ((mask >> bit) & 1) {
+      ans |= static_cast<uint8_t>(1 << mapping[bit]);
+    }
+  }
+  return ans;
+}
+
+std::array<float, kNumPowersetClasses> RemapProbabilities(
+    const float *raw, const std::array<int32_t, 3> &mapping) {
+  std::array<float, kNumPowersetClasses> ans{};
+  for (int32_t c = 0; c != kNumPowersetClasses; ++c) {
+    const int32_t mapped_class = ClassForMask(ApplyPermutation(kPowersetMasks[c], mapping));
+    ans[mapped_class] += raw[c];
+  }
+  return ans;
+}
+
+float ActivityAgreement(uint8_t reference, uint8_t candidate) {
+  const int32_t shared_active = PopCount3(reference & candidate);
+  const int32_t disagreement = PopCount3(reference ^ candidate);
+  const int32_t shared_inactive = 3 - PopCount3(reference | candidate);
+  return 3.0F * shared_active + 0.25F * shared_inactive -
+         2.0F * disagreement;
 }
 
 int32_t DurationToFrames(float seconds,
@@ -142,27 +196,75 @@ class SpeakerSegmentationFusion::Impl {
   }
 
   void AddWindow(int64_t start_frame, const std::vector<uint8_t> &raw_masks) {
+    std::vector<float> probabilities(raw_masks.size() * kNumPowersetClasses,
+                                     0.0F);
+    for (size_t i = 0; i != raw_masks.size(); ++i) {
+      probabilities[i * kNumPowersetClasses + ClassForMask(raw_masks[i])] =
+          1.0F;
+    }
+    AddWindowProbabilities(start_frame, probabilities);
+  }
+
+  void AddWindowProbabilities(int64_t start_frame,
+                              const std::vector<float> &probabilities) {
     if (start_frame < 0) {
       throw std::invalid_argument("Speaker segmentation window start frame "
                                   "must not be negative");
     }
-    if (raw_masks.empty()) {
+    if (probabilities.empty()) {
       return;
     }
+    if (probabilities.size() % kNumPowersetClasses != 0) {
+      throw std::invalid_argument("Speaker segmentation probabilities must be "
+                                  "frame-major 7-class values");
+    }
+    const size_t num_frames = probabilities.size() / kNumPowersetClasses;
+    std::vector<float> normalized_probabilities = probabilities;
+    for (size_t i = 0; i != num_frames; ++i) {
+      float sum = 0.0F;
+      float *row = normalized_probabilities.data() +
+                   i * kNumPowersetClasses;
+      for (int32_t c = 0; c != kNumPowersetClasses; ++c) {
+        const float probability = row[c];
+        if (!std::isfinite(probability) || probability < 0) {
+          throw std::invalid_argument("Speaker segmentation probabilities "
+                                      "must be finite and non-negative");
+        }
+        sum += probability;
+      }
+      if (!std::isfinite(sum) || sum <= 0.0F) {
+        throw std::invalid_argument(
+            "Each speaker segmentation probability frame must have "
+            "positive mass");
+      }
+      for (int32_t c = 0; c != kNumPowersetClasses; ++c) {
+        row[c] /= sum;
+      }
+    }
 
-    for (size_t i = 0; i != raw_masks.size(); ++i) {
+    const std::array<int32_t, 3> permutation =
+        BestTrackPermutation(start_frame, normalized_probabilities);
+    std::vector<uint8_t> aligned_masks(num_frames);
+    for (size_t i = 0; i != num_frames; ++i) {
+      const float *raw = normalized_probabilities.data() +
+                         i * kNumPowersetClasses;
+      const std::array<float, kNumPowersetClasses> aligned =
+          RemapProbabilities(raw, permutation);
+      const int32_t best_class = BestClass(aligned);
+      aligned_masks[i] = kPowersetMasks[best_class];
       const int64_t frame = start_frame + static_cast<int64_t>(i);
       FrameAccumulator &acc = frames_[frame];
-      acc.count_sum += std::min(PopCount3(raw_masks[i]), 2);
+      for (int32_t c = 0; c != kNumPowersetClasses; ++c) {
+        acc.probability_sum[c] += aligned[c];
+      }
       ++acc.count_coverage;
     }
 
     const int32_t window_id = next_window_id_++;
     const std::vector<uint8_t> masks =
-        StabilizeMasks(raw_masks, min_on_frames_, min_off_frames_);
+        StabilizeMasks(aligned_masks, min_on_frames_, min_off_frames_);
     for (int64_t local : ExtractChangeFrames(masks)) {
-      candidates_.push_back(
-          ChangeCandidate{start_frame + local, window_id});
+      candidates_.push_back(ChangeCandidate{start_frame + local, window_id});
     }
   }
 
@@ -181,10 +283,15 @@ class SpeakerSegmentationFusion::Impl {
       const FrameAccumulator &acc = iter->second;
       FinalizedSpeakerFrame result;
       result.frame_index = frame;
-      result.speaker_count = std::max(
-          0, std::min(2, static_cast<int32_t>(std::round(
-                             static_cast<float>(acc.count_sum) /
-                             static_cast<float>(acc.count_coverage)))));
+      std::array<float, kNumPowersetClasses> averaged{};
+      for (int32_t c = 0; c != kNumPowersetClasses; ++c) {
+        averaged[c] = acc.probability_sum[c] /
+                      static_cast<float>(acc.count_coverage);
+      }
+      const int32_t best_class = BestClass(averaged);
+      result.speaker_count = PopCount3(kPowersetMasks[best_class]);
+      result.local_speaker_mask = kPowersetMasks[best_class];
+      result.local_speaker_mask_confidence = averaged[best_class];
       result.single_speaker_changed_before =
           change_frames.find(frame) != change_frames.end();
       ans.push_back(result);
@@ -201,9 +308,50 @@ class SpeakerSegmentationFusion::Impl {
 
  private:
   struct FrameAccumulator {
-    int32_t count_sum = 0;
+    std::array<float, kNumPowersetClasses> probability_sum{};
     int32_t count_coverage = 0;
   };
+
+  std::array<int32_t, 3> BestTrackPermutation(
+      int64_t start_frame, const std::vector<float> &probabilities) const {
+    static constexpr std::array<std::array<int32_t, 3>, 6> kPermutations = {
+        std::array<int32_t, 3>{0, 1, 2}, std::array<int32_t, 3>{0, 2, 1},
+        std::array<int32_t, 3>{1, 0, 2}, std::array<int32_t, 3>{1, 2, 0},
+        std::array<int32_t, 3>{2, 0, 1}, std::array<int32_t, 3>{2, 1, 0}};
+    std::array<int32_t, 3> best = kPermutations[0];
+    float best_score = -std::numeric_limits<float>::infinity();
+    const size_t num_frames = probabilities.size() / kNumPowersetClasses;
+    for (const auto &candidate : kPermutations) {
+      float score = 0.0F;
+      bool has_overlap = false;
+      for (size_t i = 0; i != num_frames; ++i) {
+        const auto iter = frames_.find(start_frame + static_cast<int64_t>(i));
+        if (iter == frames_.end() || iter->second.count_coverage == 0) {
+          continue;
+        }
+        has_overlap = true;
+        std::array<float, kNumPowersetClasses> reference{};
+        for (int32_t c = 0; c != kNumPowersetClasses; ++c) {
+          reference[c] = iter->second.probability_sum[c] /
+                         static_cast<float>(iter->second.count_coverage);
+        }
+        const float *raw = probabilities.data() + i * kNumPowersetClasses;
+        const std::array<float, kNumPowersetClasses> remapped =
+            RemapProbabilities(raw, candidate);
+        const int32_t reference_class = BestClass(reference);
+        const int32_t candidate_class = BestClass(remapped);
+        score += ActivityAgreement(kPowersetMasks[reference_class],
+                                   kPowersetMasks[candidate_class]) *
+                 reference[reference_class] * remapped[candidate_class];
+      }
+      if (has_overlap && score > best_score) {
+        best_score = score;
+        best = candidate;
+      }
+    }
+    return best;
+  }
+
 
   struct ChangeCandidate {
     int64_t frame = 0;
@@ -382,6 +530,11 @@ SpeakerSegmentationFusion::~SpeakerSegmentationFusion() = default;
 void SpeakerSegmentationFusion::AddWindow(
     int64_t start_frame, const std::vector<uint8_t> &raw_masks) {
   impl_->AddWindow(start_frame, raw_masks);
+}
+
+void SpeakerSegmentationFusion::AddWindowProbabilities(
+    int64_t start_frame, const std::vector<float> &probabilities) {
+  impl_->AddWindowProbabilities(start_frame, probabilities);
 }
 
 std::vector<FinalizedSpeakerFrame> SpeakerSegmentationFusion::FinalizeBefore(

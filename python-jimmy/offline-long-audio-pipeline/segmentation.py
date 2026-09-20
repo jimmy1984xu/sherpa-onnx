@@ -49,6 +49,7 @@ class SpeakerCountSpan:
     active_speaker_count: int
     speaker_mask: tuple[int, int, int] | None = None
     class_index: int | None = None
+    local_speaker_mask_confidence: float = 0.0
 
 
 @dataclass(frozen=True)

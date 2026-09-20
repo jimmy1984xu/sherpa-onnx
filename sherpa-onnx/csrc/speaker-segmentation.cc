@@ -71,6 +71,16 @@ uint8_t PowersetClassToMask(int32_t class_index) {
   return kMasks[class_index];
 }
 
+int32_t PowersetMaskToClass(uint8_t mask) {
+  for (int32_t i = 0; i != 7; ++i) {
+    if (PowersetClassToMask(i) == (mask & 0b111)) {
+      return i;
+    }
+  }
+  SHERPA_ONNX_LOGE("Unsupported powerset mask: %d", static_cast<int32_t>(mask));
+  SHERPA_ONNX_EXIT(-1);
+}
+
 }  // namespace
 
 bool SpeakerSegmentationConfig::Validate() const {
@@ -257,9 +267,16 @@ class SpeakerSegmentation::Impl {
     return window;
   }
 
-  std::vector<uint8_t> RunForward(const std::vector<float> &window) const {
+  std::vector<float> RunForward(const std::vector<float> &window) const {
     if (test_forward_) {
-      return test_forward_(window);
+      const std::vector<uint8_t> masks = test_forward_(window);
+      std::vector<float> probabilities(masks.size() * meta_data_.num_classes,
+                                       0.0F);
+      for (size_t i = 0; i != masks.size(); ++i) {
+        probabilities[i * meta_data_.num_classes + PowersetMaskToClass(masks[i])] =
+            1.0F;
+      }
+      return probabilities;
     }
 
     auto memory_info =
@@ -278,28 +295,35 @@ class SpeakerSegmentation::Impl {
 
     const int32_t num_frames = static_cast<int32_t>(output_shape[1]);
     const float *scores = output.GetTensorData<float>();
-    std::vector<uint8_t> masks(num_frames);
+    std::vector<float> probabilities(num_frames * meta_data_.num_classes);
     for (int32_t frame = 0; frame != num_frames; ++frame) {
-      int32_t best_class = 0;
       const float *row = scores + frame * meta_data_.num_classes;
+      float max_score = row[0];
       for (int32_t c = 1; c != meta_data_.num_classes; ++c) {
-        if (row[c] > row[best_class]) {
-          best_class = c;
-        }
+        max_score = std::max(max_score, row[c]);
       }
-      masks[frame] = PowersetClassToMask(best_class);
+      float sum = 0.0F;
+      float *dst = probabilities.data() + frame * meta_data_.num_classes;
+      for (int32_t c = 0; c != meta_data_.num_classes; ++c) {
+        dst[c] = std::exp(row[c] - max_score);
+        sum += dst[c];
+      }
+      for (int32_t c = 0; c != meta_data_.num_classes; ++c) {
+        dst[c] /= sum;
+      }
     }
-    return masks;
+    return probabilities;
   }
 
   void ProcessWindow(int64_t start_sample, bool pad_right) {
-    const auto masks = RunForward(GetWindow(start_sample, pad_right));
-    if (masks.empty()) {
+    const auto probabilities = RunForward(GetWindow(start_sample, pad_right));
+    if (probabilities.empty()) {
       SHERPA_ONNX_LOGE("Segmentation model returned no frames");
       SHERPA_ONNX_EXIT(-1);
     }
 
-    fusion_->AddWindow(FrameIndexForSample(start_sample, meta_data_), masks);
+    fusion_->AddWindowProbabilities(
+        FrameIndexForSample(start_sample, meta_data_), probabilities);
 
     const int64_t finalize_sample =
         std::min(start_sample + meta_data_.window_shift, received_samples_);
@@ -317,14 +341,22 @@ class SpeakerSegmentation::Impl {
 
     int64_t run_start = published_until_sample_;
     int32_t speaker_count = frames.front().speaker_count;
+    uint8_t local_speaker_mask = frames.front().local_speaker_mask;
+    float local_speaker_mask_confidence =
+        frames.front().local_speaker_mask_confidence;
     if (!spans_.empty()) {
       speaker_count = spans_.back().speaker_count;
+      local_speaker_mask = spans_.back().local_speaker_mask;
+      local_speaker_mask_confidence =
+          spans_.back().local_speaker_mask_confidence;
     }
     for (size_t i = 0; i != frames.size(); ++i) {
       const bool count_changed = frames[i].speaker_count != speaker_count;
+      const bool mask_changed =
+          frames[i].local_speaker_mask != local_speaker_mask;
       const bool single_speaker_changed =
           frames[i].single_speaker_changed_before;
-      if (!count_changed && !single_speaker_changed) {
+      if (!count_changed && !mask_changed && !single_speaker_changed) {
         continue;
       }
 
@@ -340,23 +372,28 @@ class SpeakerSegmentation::Impl {
         flag |= kSpeakerSegmentationSingleSpeakerChanged;
       }
       if (boundary <= run_start && !spans_.empty()) {
-        // The change sits on an already published checkpoint. Attach the flag
-        // to the span that ends there; do not emit a zero-length span.
         spans_.back().flag |= flag;
       } else {
-        AppendSpan(run_start, boundary, speaker_count, flag);
+        AppendSpan(run_start, boundary, speaker_count, flag,
+                   local_speaker_mask, local_speaker_mask_confidence);
         run_start = boundary;
       }
       speaker_count = frames[i].speaker_count;
+      local_speaker_mask = frames[i].local_speaker_mask;
+      local_speaker_mask_confidence =
+          frames[i].local_speaker_mask_confidence;
     }
 
     AppendSpan(run_start, end_sample, speaker_count,
-               kSpeakerSegmentationContinue);
+               kSpeakerSegmentationContinue, local_speaker_mask,
+               local_speaker_mask_confidence);
     published_until_sample_ = end_sample;
   }
 
   void AppendSpan(int64_t start_sample, int64_t end_sample,
-                  int32_t speaker_count, int32_t flag) {
+                  int32_t speaker_count, int32_t flag,
+                  uint8_t local_speaker_mask,
+                  float local_speaker_mask_confidence) {
     if (end_sample <= start_sample) {
       return;
     }
@@ -366,6 +403,9 @@ class SpeakerSegmentation::Impl {
     span.end = static_cast<float>(end_sample) / meta_data_.sample_rate;
     span.speaker_count = std::max(0, std::min(2, speaker_count));
     span.flag = flag;
+    span.local_speaker_mask = local_speaker_mask & 0b111;
+    span.local_speaker_mask_confidence = std::max(
+        0.0F, std::min(1.0F, local_speaker_mask_confidence));
     spans_.push_back(span);
   }
 

@@ -73,6 +73,69 @@ class SpeakerTest(unittest.TestCase):
         self.assertEqual(received[0].shape, (2, 3))
 
 
+class CleanSpanAndLocalMaskAssignmentTest(unittest.TestCase):
+    @staticmethod
+    def _segment(index, start_ms, end_ms, *, mask, confidence, clean_spans=()):
+        return SpeechSegment(
+            index,
+            start_ms,
+            end_ms,
+            np.zeros((end_ms - start_ms) * 16, dtype=np.float32),
+            speaker_composition="single_speaker",
+            local_speaker_mask=mask,
+            local_speaker_mask_confidence=confidence,
+            clean_spans=list(clean_spans),
+        )
+
+    def test_only_one_continuous_clean_span_of_at_least_three_seconds_clusters(self):
+        split_clean = self._segment(
+            1, 0, 5000, mask=1, confidence=0.99, clean_spans=((0, 2000), (3000, 5000))
+        )
+        exact_clean = self._segment(
+            2, 5000, 8000, mask=2, confidence=0.99, clean_spans=((5000, 8000),)
+        )
+        clusterer = RecordingClusterer([7])
+
+        errors, assigned, unknown = assign_speaker_ids_with_centroids(
+            SequenceExtractor([[1.0, 0.0], [0.0, 1.0]]),
+            [split_clean, exact_clean],
+            cluster_threshold=0.5,
+            num_clusters=-1,
+            assignment_similarity_threshold=0.5,
+            clusterer_factory=ControlledSpeakerAssignmentTest._factory(clusterer),
+        )
+
+        self.assertEqual((errors, assigned, unknown), (0, 0, 1))
+        self.assertEqual(clusterer.received.shape, (1, 2))
+        self.assertEqual(exact_clean.speaker_id, "speaker_00")
+        self.assertEqual(exact_clean.speaker_assignment_source, "clean_cluster")
+        self.assertEqual(split_clean.speaker_id, "unknown")
+
+    def test_short_turn_inherits_a_clean_cluster_through_same_fused_mask(self):
+        clean = self._segment(
+            1, 0, 5000, mask=1, confidence=0.99, clean_spans=((0, 5000),)
+        )
+        short = self._segment(2, 8000, 9000, mask=1, confidence=0.95)
+        clusterer = RecordingClusterer([4])
+
+        errors, assigned, unknown = assign_speaker_ids_with_centroids(
+            # Deliberately make the short embedding unlike the clean centroid:
+            # mask continuity, not global embedding, must decide this turn.
+            SequenceExtractor([[1.0, 0.0], [0.0, 1.0]]),
+            [clean, short],
+            cluster_threshold=0.5,
+            num_clusters=-1,
+            assignment_similarity_threshold=0.95,
+            clusterer_factory=ControlledSpeakerAssignmentTest._factory(clusterer),
+        )
+
+        self.assertEqual((errors, assigned, unknown), (0, 1, 0))
+        self.assertEqual([clean.speaker_id, short.speaker_id], ["speaker_00", "speaker_00"])
+        self.assertEqual(clean.speaker_assignment_source, "clean_cluster")
+        self.assertEqual(short.speaker_assignment_source, "local_mask_inherit")
+        self.assertIsNone(short.cluster_assignment_similarity)
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -148,6 +211,7 @@ class ControlledSpeakerAssignmentTest(unittest.TestCase):
             end_ms,
             np.zeros((end_ms - start_ms) * 16, dtype=np.float32),
             speaker_composition=composition,
+            clean_spans=[(start_ms, end_ms)] if composition == "single_speaker" else [],
         )
 
     @staticmethod
@@ -157,10 +221,10 @@ class ControlledSpeakerAssignmentTest(unittest.TestCase):
         return factory
 
     def test_clusters_only_long_single_speaker_segments_and_backfills_excluded(self):
-        eligible_a = self._segment(1, 0, 1500, "single_speaker")
-        eligible_b = self._segment(2, 1500, 3000, "single_speaker")
-        short = self._segment(3, 3000, 3500, "single_speaker")
-        overlap = self._segment(4, 3500, 5000, "overlapped_speakers")
+        eligible_a = self._segment(1, 0, 3000, "single_speaker")
+        eligible_b = self._segment(2, 3000, 6000, "single_speaker")
+        short = self._segment(3, 6000, 6500, "single_speaker")
+        overlap = self._segment(4, 6500, 8000, "overlapped_speakers")
         clusterer = RecordingClusterer([4, 4])
 
         errors, assigned_excluded, unknown_excluded = assign_speaker_ids_with_centroids(
@@ -207,8 +271,8 @@ class ControlledSpeakerAssignmentTest(unittest.TestCase):
         self.assertIsNone(overlap.cluster_assignment_similarity)
 
     def test_embedding_failure_does_not_stop_later_eligible_clustering(self):
-        failed = self._segment(1, 0, 1500, "single_speaker")
-        good = self._segment(2, 1500, 3000, "single_speaker")
+        failed = self._segment(1, 0, 3000, "single_speaker")
+        good = self._segment(2, 3000, 6000, "single_speaker")
         clusterer = RecordingClusterer([9])
 
         errors, assigned_excluded, unknown_excluded = assign_speaker_ids_with_centroids(
@@ -227,8 +291,8 @@ class ControlledSpeakerAssignmentTest(unittest.TestCase):
         self.assertEqual(clusterer.received.shape, (1, 2))
 
     def test_explicit_cluster_count_cannot_exceed_successful_eligible_embeddings(self):
-        eligible = self._segment(1, 0, 1500, "single_speaker")
-        failed = self._segment(2, 1500, 3000, "single_speaker")
+        eligible = self._segment(1, 0, 3000, "single_speaker")
+        failed = self._segment(2, 3000, 6000, "single_speaker")
 
         with self.assertRaisesRegex(
             ValueError, "num_clusters=2 exceeds successful eligible embeddings=1"
@@ -243,9 +307,9 @@ class ControlledSpeakerAssignmentTest(unittest.TestCase):
 
 
     def test_invalid_asr_segments_skip_embedding_and_keep_dash_speaker(self):
-        invalid = self._segment(1, 0, 1500, "single_speaker")
+        invalid = self._segment(1, 0, 3000, "single_speaker")
         invalid.asr_valid = 0
-        good = self._segment(2, 1500, 3000, "single_speaker")
+        good = self._segment(2, 3000, 6000, "single_speaker")
         clusterer = RecordingClusterer([1])
 
         errors, assigned_excluded, unknown_excluded = assign_speaker_ids_with_centroids(

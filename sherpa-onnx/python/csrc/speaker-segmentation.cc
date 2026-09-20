@@ -40,17 +40,24 @@ void PybindSpeakerSegmentation(py::module *m) {
       })
       .def_property_readonly("flag", [](const PySpan &self) {
         return self.flag;
-      });
+      })
+      .def_property_readonly("local_speaker_mask", [](const PySpan &self) {
+        return self.local_speaker_mask;
+      })
+      .def_property_readonly("local_speaker_mask_confidence",
+                             [](const PySpan &self) {
+                               return self.local_speaker_mask_confidence;
+                             });
 
   using PyClass = SpeakerSegmentation;
   py::class_<PyClass>(*m, "SpeakerSegmentation",
                       R"(
 An object-level streaming pyannote speaker-segmentation runner.
 
-It returns finalized, non-overlapping spans with only speaker_count and an
-identity-free right-boundary flag. It does not compute embeddings, cluster
-speakers, or expose local speaker IDs. Calling front when empty() is True is
-an error. The returned span is a value copy.
+It returns finalized, non-overlapping spans with speaker_count, a fused
+session-local three-bit speaker mask, its fused confidence, and an
+identity-free right-boundary flag. The mask is not a global speaker ID.
+Calling front when empty() is True is an error. The returned span is a value copy.
                       )")
       .def(py::init<const PyConfig &>(), py::arg("config"),
            py::call_guard<py::gil_scoped_release>())

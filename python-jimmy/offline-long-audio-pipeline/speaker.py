@@ -8,10 +8,12 @@ from typing import Any
 import numpy as np
 import sherpa_onnx
 
-from vad import POST_OVERLAP_PAD_MS, SpeechSegment
+from vad import CLEAN_SPAN_MIN_DURATION_MS, POST_OVERLAP_PAD_MS, SpeechSegment
 
 SAMPLE_RATE = 16000
 DEFAULT_MAX_EMBEDDING_SAMPLES = 10 * SAMPLE_RATE
+DEFAULT_LOCAL_MASK_CONFIDENCE_THRESHOLD = 0.70
+DEFAULT_LOCAL_MASK_MAX_GAP_MS = 3000
 
 
 def stable_speaker_ids(cluster_ids: Sequence[int]) -> list[str]:
@@ -76,6 +78,75 @@ def samples_for_embedding(
     if cropped.size == 0:
         return np.zeros(0, dtype=np.float32)
     return np.ascontiguousarray(cropped, dtype=np.float32)
+
+
+
+def samples_for_clean_embedding(
+    segment: SpeechSegment, sample_rate: int = SAMPLE_RATE
+) -> np.ndarray:
+    """Return the longest continuous clean span for a cluster embedding.
+
+    This intentionally differs from ``samples_for_embedding``. Clean-cluster
+    input must be one uninterrupted single-speaker interval of at least three
+    seconds, not a concatenation of pieces on opposite sides of overlap.
+    """
+    if sample_rate <= 0:
+        raise ValueError("Embedding sample rate must be positive")
+    clean_span = segment.longest_clean_span
+    if clean_span is None:
+        return np.zeros(0, dtype=np.float32)
+    start_ms, end_ms = clean_span
+    if end_ms - start_ms < CLEAN_SPAN_MIN_DURATION_MS:
+        return np.zeros(0, dtype=np.float32)
+    samples = np.ascontiguousarray(np.asarray(segment.samples, dtype=np.float32))
+    start = int(round((start_ms - segment.start_ms) * sample_rate / 1000.0))
+    end = int(round((end_ms - segment.start_ms) * sample_rate / 1000.0))
+    start = max(0, min(samples.size, start))
+    end = max(start, min(samples.size, end))
+    return np.ascontiguousarray(samples[start:end], dtype=np.float32)
+
+
+def _mask_can_link(segment: SpeechSegment, threshold: float) -> bool:
+    return (
+        segment.local_speaker_mask in (1, 2, 4)
+        and segment.local_speaker_mask_confidence >= threshold
+    )
+
+
+def _gap_ms(left: SpeechSegment, right: SpeechSegment) -> int:
+    return max(0, max(left.start_ms, right.start_ms) - min(left.end_ms, right.end_ms))
+
+
+def _inherit_local_mask_speaker_ids(
+    segments: Sequence[SpeechSegment], *, confidence_threshold: float, max_gap_ms: int
+) -> int:
+    """Bidirectionally propagate known IDs over short, high-confidence mask links."""
+    inherited = 0
+    changed = True
+    while changed:
+        changed = False
+        for target in segments:
+            if target.asr_valid == 0 or target.speaker_id != "unknown":
+                continue
+            if not _mask_can_link(target, confidence_threshold):
+                continue
+            candidates = [
+                source
+                for source in segments
+                if source.speaker_id not in ("unknown", "-")
+                and _mask_can_link(source, confidence_threshold)
+                and source.local_speaker_mask == target.local_speaker_mask
+                and _gap_ms(source, target) <= max_gap_ms
+            ]
+            if not candidates:
+                continue
+            source = min(candidates, key=lambda item: (_gap_ms(item, target), item.start_ms))
+            target.speaker_id = source.speaker_id
+            target.speaker_assignment_source = "local_mask_inherit"
+            target.cluster_assignment_similarity = None
+            inherited += 1
+            changed = True
+    return inherited
 
 
 def _adjacent_similarity(
@@ -258,15 +329,20 @@ def assign_speaker_ids_with_centroids(
         segment.cluster_assignment_similarity = None
         segment.embedding = None
         segment.embedding_error = None
+        segment.speaker_assignment_source = "unknown"
         if segment.asr_valid == 0:
             segment.speaker_id = "-"
+            segment.speaker_assignment_source = "asr_invalid"
             continue
         segment.speaker_id = "unknown"
         try:
+            embedding_samples = (
+                samples_for_clean_embedding(segment)
+                if segment.is_cluster_eligible
+                else samples_for_embedding(segment)
+            )
             embedding = l2_normalize(
-                _extract_embedding(
-                    extractor, samples_for_embedding(segment), max_embedding_samples
-                )
+                _extract_embedding(extractor, embedding_samples, max_embedding_samples)
             )
             if embedding is None:
                 raise RuntimeError("zero-norm embedding")
@@ -309,23 +385,33 @@ def assign_speaker_ids_with_centroids(
         for index, stable_id in zip(eligible_indices, stable_ids):
             segment = segments[index]
             segment.speaker_id = stable_id
+            segment.speaker_assignment_source = "clean_cluster"
             segment.cluster_assignment_similarity = cosine(
                 segment.embedding, centroids.get(stable_id)
             )
 
+    local_mask_assigned = _inherit_local_mask_speaker_ids(
+        segments,
+        confidence_threshold=DEFAULT_LOCAL_MASK_CONFIDENCE_THRESHOLD,
+        max_gap_ms=DEFAULT_LOCAL_MASK_MAX_GAP_MS,
+    )
     centroid_assigned_excluded = 0
     unknown_excluded = 0
     for segment in segments:
-        if segment.asr_valid == 0:
+        if segment.asr_valid == 0 or segment.speaker_id != "unknown":
             continue
         if segment.is_cluster_eligible or segment.embedding is None:
+            if not segment.is_cluster_eligible:
+                unknown_excluded += 1
             continue
         stable_id, score = max_similarity(segment.embedding, centroids)
         segment.cluster_assignment_similarity = score
         if stable_id is not None and score is not None and score >= assignment_similarity_threshold:
             segment.speaker_id = stable_id
+            segment.speaker_assignment_source = "centroid_match"
             centroid_assigned_excluded += 1
         else:
+            segment.speaker_assignment_source = "unknown"
             unknown_excluded += 1
 
-    return embedding_errors, centroid_assigned_excluded, unknown_excluded
+    return embedding_errors, local_mask_assigned + centroid_assigned_excluded, unknown_excluded

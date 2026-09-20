@@ -241,5 +241,14 @@ class StreamingApiAdapterTest(unittest.TestCase):
         self.assertEqual([len(chunk) for chunk in accepted], [512, 488])
         self.assertEqual(
             spans,
-            [{"start": 0.0, "end": 0.0625, "speaker_count": 1, "flag": 4}],
+            [
+                {
+                    "start": 0.0,
+                    "end": 0.0625,
+                    "speaker_count": 1,
+                    "flag": 4,
+                    "local_speaker_mask": 0,
+                    "local_speaker_mask_confidence": 0.0,
+                }
+            ],
         )

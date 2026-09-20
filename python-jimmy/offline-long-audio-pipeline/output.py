@@ -79,6 +79,13 @@ def _segment_payload(segment: SpeechSegment) -> dict[str, Any]:
             for start_ms, end_ms in segment.overlap_regions
         ],
         "pyannote_mask": segment.pyannote_mask,
+        "clean_spans": [
+            {"start_ms": start_ms, "end_ms": end_ms}
+            for start_ms, end_ms in segment.clean_spans
+        ],
+        "local_speaker_mask": segment.local_speaker_mask,
+        "local_speaker_mask_confidence": segment.local_speaker_mask_confidence,
+        "speaker_assignment_source": segment.speaker_assignment_source,
     }
 
 

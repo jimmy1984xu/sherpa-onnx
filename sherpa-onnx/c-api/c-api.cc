@@ -3331,6 +3331,9 @@ const SherpaOnnxSpeakerSegmentationSpan *SherpaOnnxSpeakerSegmentationFront(
   segmenter->front.end = span.end;
   segmenter->front.speaker_count = span.speaker_count;
   segmenter->front.flag = span.flag;
+  segmenter->front.local_speaker_mask = span.local_speaker_mask;
+  segmenter->front.local_speaker_mask_confidence =
+      span.local_speaker_mask_confidence;
   return &segmenter->front;
 }
 

@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 POST_OVERLAP_PAD_MS = 1000
+CLEAN_SPAN_MIN_DURATION_MS = 3000
 
 
 @dataclass
@@ -34,6 +35,13 @@ class SpeechSegment:
     cut_left: str = "vad"
     cut_right: str = "vad"
     pyannote_mask: str = ""
+    # Continuous, single-speaker, non-overlap intervals used as the only
+    # source material that may create a global embedding cluster.
+    clean_spans: list[tuple[int, int]] = field(default_factory=list)
+    # Fused three-bit session-local pyannote mask. It is not a global ID.
+    local_speaker_mask: int = 0
+    local_speaker_mask_confidence: float = 0.0
+    speaker_assignment_source: str = "unknown"
 
     @property
     def duration_ms(self) -> int:
@@ -63,11 +71,29 @@ class SpeechSegment:
         return max(0, self.duration_ms - skipped_ms)
 
     @property
+    def longest_clean_span(self) -> tuple[int, int] | None:
+        """Return the longest continuous, in-segment clean interval.
+
+        Adjacent or separated intervals are deliberately not concatenated: an
+        overlap/unknown gap must never be hidden by joining two clean pieces.
+        """
+        candidates = [
+            (max(self.start_ms, start_ms), min(self.end_ms, end_ms))
+            for start_ms, end_ms in self.clean_spans
+            if min(self.end_ms, end_ms) > max(self.start_ms, start_ms)
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item[1] - item[0])
+
+    @property
     def is_cluster_eligible(self) -> bool:
+        clean_span = self.longest_clean_span
         return (
             self.asr_valid == 1
             and self.speaker_composition == "single_speaker"
-            and self.exclusive_speech_duration_ms >= 1000
+            and clean_span is not None
+            and clean_span[1] - clean_span[0] >= CLEAN_SPAN_MIN_DURATION_MS
         )
 
     @property

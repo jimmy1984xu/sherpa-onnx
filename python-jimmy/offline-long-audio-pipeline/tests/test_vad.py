@@ -50,16 +50,22 @@ class VadCollectionTest(unittest.TestCase):
         self.assertEqual([(segment.start_ms, segment.end_ms) for segment in segments], [(20, 120), (250, 300)])
         self.assertEqual([segment.duration_ms for segment in segments], [100, 50])
 
-    def test_duration_class_and_cluster_eligibility_are_independent_of_composition(self):
+    def test_cluster_eligibility_requires_one_continuous_clean_span_of_three_seconds(self):
         short_single = SpeechSegment(1, 0, 999, np.zeros(15984), speaker_composition="single_speaker")
-        long_overlap = SpeechSegment(2, 1000, 2500, np.zeros(24000), speaker_composition="overlapped_speakers")
-        long_single = SpeechSegment(3, 2500, 3500, np.zeros(16000), speaker_composition="single_speaker")
+        long_overlap = SpeechSegment(2, 1000, 5000, np.zeros(64000), speaker_composition="overlapped_speakers")
+        short_clean = SpeechSegment(
+            3, 5000, 7500, np.zeros(40000), speaker_composition="single_speaker", clean_spans=[(5000, 7500)]
+        )
+        exact_clean = SpeechSegment(
+            4, 7500, 10500, np.zeros(48000), speaker_composition="single_speaker", clean_spans=[(7500, 10500)]
+        )
 
         self.assertEqual(short_single.duration_class, "short")
         self.assertFalse(short_single.is_cluster_eligible)
         self.assertEqual(long_overlap.duration_class, "long")
         self.assertFalse(long_overlap.is_cluster_eligible)
-        self.assertTrue(long_single.is_cluster_eligible)
+        self.assertFalse(short_clean.is_cluster_eligible)
+        self.assertTrue(exact_clean.is_cluster_eligible)
 
     def test_cluster_eligibility_uses_duration_excluding_absorbed_overlap(self):
         host = SpeechSegment(
@@ -80,8 +86,10 @@ class VadCollectionTest(unittest.TestCase):
             np.zeros((14720 - 2910) * 16),
             speaker_composition="single_speaker",
             overlap_regions=[(12944, 13803)],
+            clean_spans=[(2910, 12944)],
         )
         self.assertTrue(host.is_cluster_eligible)
+        self.assertEqual(host.longest_clean_span, (2910, 12944))
         self.assertEqual(host.exclusive_speech_duration_ms, 10034)
 
     def test_invalid_asr_segments_are_not_cluster_eligible(self):

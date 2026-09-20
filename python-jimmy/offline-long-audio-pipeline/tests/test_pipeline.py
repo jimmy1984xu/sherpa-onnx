@@ -99,9 +99,11 @@ class PipelineTest(unittest.TestCase):
             "single_speaker": 1, "overlapped_speakers": 1, "unknown_activity": 0,
         })
         self.assertEqual(captured_metadata["duration_class_counts"], {"long": 1, "short": 1})
-        self.assertEqual(captured_metadata["cluster_eligible_segment_count"], 1)
-        self.assertEqual(captured_metadata["excluded_segment_count"], 1)
-        self.assertEqual(captured_metadata["final_clustered_speaker_count"], 1)
+        # The synthetic single-speaker turn is only one second long, so the
+        # clean-only clustering contract intentionally excludes it.
+        self.assertEqual(captured_metadata["cluster_eligible_segment_count"], 0)
+        self.assertEqual(captured_metadata["excluded_segment_count"], 2)
+        self.assertEqual(captured_metadata["final_clustered_speaker_count"], 0)
         self.assertEqual(captured_metadata["centroid_assigned_excluded_segment_count"], 0)
         self.assertEqual(captured_metadata["unknown_excluded_segment_count"], 1)
         self.assertEqual(captured_metadata["true_overlap_count"], 1)

@@ -84,12 +84,16 @@ def _span_record(span: Mapping[str, Any] | Any) -> dict[str, Any]:
             "end": span["end"],
             "speaker_count": span["speaker_count"],
             "flag": span["flag"],
+            "local_speaker_mask": span.get("local_speaker_mask", 0),
+            "local_speaker_mask_confidence": span.get("local_speaker_mask_confidence", 0.0),
         }
     return {
         "start": span.start,
         "end": span.end,
         "speaker_count": span.speaker_count,
         "flag": span.flag,
+        "local_speaker_mask": getattr(span, "local_speaker_mask", 0),
+        "local_speaker_mask_confidence": getattr(span, "local_speaker_mask_confidence", 0.0),
     }
 
 
@@ -110,6 +114,8 @@ def normalize_spans(
 
         speaker_count = record["speaker_count"]
         flag = record["flag"]
+        local_speaker_mask = record.get("local_speaker_mask", 0)
+        local_speaker_mask_confidence = record.get("local_speaker_mask_confidence", 0.0)
         if not math.isfinite(start) or not math.isfinite(end):
             raise ValueError(f"span {index} start/end must be finite")
         if end < start:
@@ -120,6 +126,14 @@ def normalize_spans(
             raise ValueError(f"span {index} speaker_count must be an integer in [0, 2]")
         if type(flag) is not int or flag < 0 or flag & ~_VALID_FLAG_MASK:
             raise ValueError(f"span {index} has an unknown flag bit: {flag!r}")
+        if type(local_speaker_mask) is not int or not 0 <= local_speaker_mask <= 0b111:
+            raise ValueError(f"span {index} local_speaker_mask must use the low three bits")
+        try:
+            local_speaker_mask_confidence = float(local_speaker_mask_confidence)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"span {index} local_speaker_mask_confidence must be numeric") from error
+        if not math.isfinite(local_speaker_mask_confidence) or not 0.0 <= local_speaker_mask_confidence <= 1.0:
+            raise ValueError(f"span {index} local_speaker_mask_confidence must be in [0, 1]")
 
         records.append(
             {
@@ -127,6 +141,8 @@ def normalize_spans(
                 "end": end,
                 "speaker_count": speaker_count,
                 "flag": flag,
+                "local_speaker_mask": local_speaker_mask,
+                "local_speaker_mask_confidence": local_speaker_mask_confidence,
             }
         )
         previous_end = end

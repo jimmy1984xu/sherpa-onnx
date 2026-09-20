@@ -69,6 +69,10 @@ class OutputTest(unittest.TestCase):
                     "cluster_assignment_similarity": 0.875,
                     "overlap_regions": [],
                     "pyannote_mask": "[100,1][200,4]",
+                    "clean_spans": [],
+                    "local_speaker_mask": 0,
+                    "local_speaker_mask_confidence": 0.0,
+                    "speaker_assignment_source": "unknown",
                 }
             ],
         )

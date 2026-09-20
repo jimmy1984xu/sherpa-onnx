@@ -87,6 +87,53 @@ TEST(SpeakerSegmentationFusion, MinDurationOffDoesNotRewriteCounts) {
   EXPECT_TRUE(frames[5].single_speaker_changed_before);
 }
 
+
+TEST(SpeakerSegmentationFusion, AlignsPermutedTracksAndReportsFusedMask) {
+  SpeakerSegmentationFusion fuser(MakeFusionConfig());
+  fuser.AddWindow(/*start_frame=*/0, {0b001, 0b001, 0b001, 0b001});
+  // The second window calls the same speaker its local track B. Its two-frame
+  // overlap must align B with the canonical local track A.
+  fuser.AddWindow(/*start_frame=*/2, {0b010, 0b010, 0b010, 0b010});
+
+  auto frames = fuser.FinalizeBefore(/*frame_exclusive=*/6);
+
+  ASSERT_EQ(frames.size(), 6);
+  for (const auto &frame : frames) {
+    EXPECT_EQ(frame.speaker_count, 1);
+    EXPECT_EQ(frame.local_speaker_mask, 0b001);
+    EXPECT_FLOAT_EQ(frame.local_speaker_mask_confidence, 1.0F);
+  }
+}
+
+TEST(SpeakerSegmentationFusion, AveragesPowersetProbabilitiesForMaskConfidence) {
+  SpeakerSegmentationFusion fuser(MakeFusionConfig());
+  fuser.AddWindowProbabilities(
+      /*start_frame=*/0,
+      {// silence, 001, 010, 100, 011, 101, 110
+       0.20F, 0.80F, 0.00F, 0.00F, 0.00F, 0.00F, 0.00F});
+  fuser.AddWindowProbabilities(
+      /*start_frame=*/0,
+      {// silence, 001, 010, 100, 011, 101, 110
+       0.40F, 0.60F, 0.00F, 0.00F, 0.00F, 0.00F, 0.00F});
+
+  const auto frames = fuser.FinalizeBefore(/*frame_exclusive=*/1);
+
+  ASSERT_EQ(frames.size(), 1);
+  EXPECT_EQ(frames[0].local_speaker_mask, 0b001);
+  EXPECT_FLOAT_EQ(frames[0].local_speaker_mask_confidence, 0.70F);
+}
+
+TEST(SpeakerSegmentationFusion, RejectsZeroMassProbabilityFrame) {
+  SpeakerSegmentationFusion fuser(MakeFusionConfig());
+
+  EXPECT_THROW(
+      fuser.AddWindowProbabilities(
+          /*start_frame=*/0,
+          {0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F}),
+      std::invalid_argument);
+}
+
+
 std::vector<uint8_t> RepeatMask(uint8_t mask, int32_t n) {
   return std::vector<uint8_t>(static_cast<size_t>(n), mask);
 }

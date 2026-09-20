@@ -38,6 +38,12 @@ struct SpeakerSegmentationSpan {
   float end;
   int32_t speaker_count;
   int32_t flag;
+
+  // Fused session-local pyannote track activity. The low three bits are
+  // valid; this is deliberately not a global speaker ID.
+  uint8_t local_speaker_mask;
+  // Fused winning powerset probability for local_speaker_mask, in [0, 1].
+  float local_speaker_mask_confidence;
 };
 
 // This callback is a test seam for the object-level streaming and fusion

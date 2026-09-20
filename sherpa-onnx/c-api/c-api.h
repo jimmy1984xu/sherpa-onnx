@@ -3881,6 +3881,13 @@ typedef struct SherpaOnnxSpeakerSegmentationSpan {
   int32_t speaker_count;
   /** Bitwise OR of SherpaOnnxSpeakerSegmentationSpanFlag values. */
   int32_t flag;
+  /**
+   * Fused session-local canonical pyannote activity mask. Only the low three
+   * bits are valid; it is not a global speaker ID.
+   */
+  uint8_t local_speaker_mask;
+  /** Fused winning powerset probability for local_speaker_mask in [0, 1]. */
+  float local_speaker_mask_confidence;
 } SherpaOnnxSpeakerSegmentationSpan;
 
 /** @brief Opaque streaming speaker-segmentation handle. */

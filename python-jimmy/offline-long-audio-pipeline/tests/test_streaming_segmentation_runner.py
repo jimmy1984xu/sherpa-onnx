@@ -9,6 +9,9 @@ class SpeakerSegmentationApiTest(unittest.TestCase):
     def test_public_symbols_and_span_shape(self):
         import sherpa_onnx
 
+        if not hasattr(sherpa_onnx, "SpeakerSegmentationConfig"):
+            self.skipTest("requires a sherpa_onnx binding built with speaker segmentation")
+
         for name in (
             "SpeakerSegmentationConfig",
             "SpeakerSegmentation",
@@ -64,7 +67,14 @@ class StreamingSegmentationReportTest(unittest.TestCase):
             self.assertEqual(len(jsonl.read_text(encoding="utf-8").splitlines()), 3)
             self.assertEqual(
                 set(json.loads(jsonl.read_text(encoding="utf-8").splitlines()[0])),
-                {"start", "end", "speaker_count", "flag"},
+                {
+                    "start",
+                    "end",
+                    "speaker_count",
+                    "flag",
+                    "local_speaker_mask",
+                    "local_speaker_mask_confidence",
+                },
             )
             written_summary = json.loads(summary_path.read_text(encoding="utf-8"))
             self.assertEqual(
@@ -90,8 +100,22 @@ class StreamingSegmentationReportTest(unittest.TestCase):
             self.assertEqual(
                 runs,
                 [
-                    {"start": 0.0, "end": 2.0, "speaker_count": 1, "flag": 2},
-                    {"start": 2.0, "end": 3.0, "speaker_count": 2, "flag": 4},
+                    {
+                        "start": 0.0,
+                        "end": 2.0,
+                        "speaker_count": 1,
+                        "flag": 2,
+                        "local_speaker_mask": 0,
+                        "local_speaker_mask_confidence": 0.0,
+                    },
+                    {
+                        "start": 2.0,
+                        "end": 3.0,
+                        "speaker_count": 2,
+                        "flag": 4,
+                        "local_speaker_mask": 0,
+                        "local_speaker_mask_confidence": 0.0,
+                    },
                 ],
             )
 
@@ -113,7 +137,17 @@ class StreamingSegmentationReportTest(unittest.TestCase):
             {"start": 0.0, "end": 1.0, "speaker_count": 1, "flag": 0},
             {"start": 1.0, "end": 2.0, "speaker_count": 2, "flag": 5},
         ]
-        self.assertEqual(helper.normalize_spans(spans), spans)
+        self.assertEqual(
+            helper.normalize_spans(spans),
+            [
+                {
+                    **span,
+                    "local_speaker_mask": 0,
+                    "local_speaker_mask_confidence": 0.0,
+                }
+                for span in spans
+            ],
+        )
 
     def test_counts_terminal_combined_single_speaker_change(self):
         helper = _load_streaming_segmentation_helper()

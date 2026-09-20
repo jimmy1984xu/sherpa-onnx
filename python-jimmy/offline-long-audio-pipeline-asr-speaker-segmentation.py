@@ -65,6 +65,12 @@ def _span_value(span: Mapping[str, Any] | object, name: str) -> Any:
     return span[name] if isinstance(span, Mapping) else getattr(span, name)
 
 
+def _optional_span_value(span: Mapping[str, Any] | object, name: str, default: Any) -> Any:
+    if isinstance(span, Mapping):
+        return span.get(name, default)
+    return getattr(span, name, default)
+
+
 def _normalise_spans(spans: Sequence[Mapping[str, Any] | object]) -> list[dict[str, float | int]]:
     result = [
         {
@@ -72,6 +78,10 @@ def _normalise_spans(spans: Sequence[Mapping[str, Any] | object]) -> list[dict[s
             "end": float(_span_value(span, "end")),
             "speaker_count": int(_span_value(span, "speaker_count")),
             "flag": int(_span_value(span, "flag")),
+            "local_speaker_mask": int(_optional_span_value(span, "local_speaker_mask", 0)),
+            "local_speaker_mask_confidence": float(
+                _optional_span_value(span, "local_speaker_mask_confidence", 0.0)
+            ),
         }
         for span in spans
     ]
@@ -81,7 +91,9 @@ def _normalise_spans(spans: Sequence[Mapping[str, Any] | object]) -> list[dict[s
         start = float(span["start"])
         end = float(span["end"])
         count = int(span["speaker_count"])
-        if not 0 <= count <= 2 or end <= start:
+        mask = int(span["local_speaker_mask"])
+        confidence = float(span["local_speaker_mask_confidence"])
+        if not 0 <= count <= 2 or end <= start or not 0 <= mask <= 0b111 or not 0.0 <= confidence <= 1.0:
             raise ValueError(f"Invalid speaker-segmentation span at index {index}")
         if index and start < previous_end - 1e-6:
             raise ValueError("Speaker-segmentation spans must not overlap")
@@ -99,6 +111,10 @@ def _drain_speaker_segmentation(segmenter: object) -> list[dict[str, float | int
                 "end": float(span.end),
                 "speaker_count": int(span.speaker_count),
                 "flag": int(span.flag),
+                "local_speaker_mask": int(getattr(span, "local_speaker_mask", 0)),
+                "local_speaker_mask_confidence": float(
+                    getattr(span, "local_speaker_mask_confidence", 0.0)
+                ),
             }
         )
         segmenter.pop()
@@ -187,7 +203,11 @@ def _adapt_spans_to_baseline_activity(
         if end_ms <= start_ms:
             continue
 
-        if speaker_count == 0:
+        local_mask = int(span.get("local_speaker_mask", 0))
+        confidence = float(span.get("local_speaker_mask_confidence", 0.0))
+        if local_mask and sum((local_mask >> bit) & 1 for bit in range(3)) == speaker_count:
+            speaker_mask = tuple((local_mask >> bit) & 1 for bit in range(3))
+        elif speaker_count == 0:
             speaker_mask = None
         elif speaker_count == 1:
             speaker_mask = one_hot_masks[single_track_index]
@@ -206,6 +226,7 @@ def _adapt_spans_to_baseline_activity(
                 end_ms=end_ms,
                 active_speaker_count=speaker_count,
                 speaker_mask=speaker_mask,
+                local_speaker_mask_confidence=confidence,
             )
         )
         if int(span["flag"]) & SINGLE_SPEAKER_CHANGED:
@@ -234,6 +255,33 @@ def _overlap_regions_from_count_spans(
     return merged
 
 
+def _raw_segment_mask_metadata(
+    spans: Sequence[Mapping[str, Any] | object], start_ms: int, end_ms: int
+) -> tuple[list[tuple[int, int]], int, float]:
+    """Return clean portions plus the dominant fused local mask for one ASR turn."""
+    clean: list[tuple[int, int]] = []
+    weighted: dict[int, tuple[int, float]] = {}
+    for span in _normalise_spans(spans):
+        if int(span["speaker_count"]) != 1:
+            continue
+        mask = int(span["local_speaker_mask"])
+        confidence = float(span["local_speaker_mask_confidence"])
+        if mask not in (1, 2, 4):
+            continue
+        left = max(start_ms, int(round(float(span["start"]) * 1000.0)))
+        right = min(end_ms, int(round(float(span["end"]) * 1000.0)))
+        if right <= left:
+            continue
+        clean.append((left, right))
+        duration = right - left
+        previous_duration, previous_confidence_sum = weighted.get(mask, (0, 0.0))
+        weighted[mask] = (previous_duration + duration, previous_confidence_sum + duration * confidence)
+    if not weighted:
+        return clean, 0, 0.0
+    mask, (duration, confidence_sum) = max(weighted.items(), key=lambda item: item[1][0])
+    return clean, mask, confidence_sum / duration if duration else 0.0
+
+
 def resolve_vad_segments_with_speaker_segmentation(
     vad_segments: Sequence[SpeechSegment],
     spans: Sequence[Mapping[str, Any] | object],
@@ -257,15 +305,23 @@ def resolve_vad_segments_with_speaker_segmentation(
     # baseline resolver folds it into a single-speaker ASR sentence.  Recover
     # its exact raw region here so callers retain overlap information without
     # exposing temporary local masks or emitting a short ASR request.
-    return [
-        replace(
-            segment,
-            overlap_regions=_overlap_regions_from_count_spans(
-                spans, segment.start_ms, segment.end_ms
-            ),
+    enriched: list[SpeechSegment] = []
+    for segment in segments:
+        clean_spans, local_mask, confidence = _raw_segment_mask_metadata(
+            spans, segment.start_ms, segment.end_ms
         )
-        for segment in segments
-    ]
+        enriched.append(
+            replace(
+                segment,
+                overlap_regions=_overlap_regions_from_count_spans(
+                    spans, segment.start_ms, segment.end_ms
+                ),
+                clean_spans=clean_spans,
+                local_speaker_mask=local_mask,
+                local_speaker_mask_confidence=confidence,
+            )
+        )
+    return enriched
 
 
 def _normalise_reference_text(text: str) -> str:
