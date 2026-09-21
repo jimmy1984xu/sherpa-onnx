@@ -147,7 +147,8 @@ class SpeakerSegmentationPipelineTimelineTest(unittest.TestCase):
                       "whisper_lang_prob": null,
                       "text_confidence": null,
                       "asr_candidates": {},
-                      "asr_valid": 1
+                      "asr_valid": 1,
+                      "clean_spans": "[100478,101000] [101200,103008]"
                     },
                     {
                       "segment_id": "0002_103008_104008",
@@ -168,11 +169,15 @@ class SpeakerSegmentationPipelineTimelineTest(unittest.TestCase):
             )
 
             runner._compact_result_json(run_dir)
-            result = __import__("json").loads((run_dir / "result.json").read_text(encoding="utf-8"))
+            result_text = (run_dir / "result.json").read_text(encoding="utf-8")
+            result = __import__("json").loads(result_text)
 
         first, second = result["segments"]
+        self.assertIn('"cut": ["vad", "pyannote"]', result_text)
+        self.assertNotIn('"cut": [\n', result_text)
         self.assertEqual(first["segment_id"], "23_asr_1782715267098_100478_2530")
         self.assertEqual(first["cut"], ["vad", "pyannote"])
+        self.assertEqual(first["clean_spans"], "[100478,101000][101200,103008]")
         for field in (
             "cut_left", "cut_right", "asr_language", "whisper_language",
             "whisper_lang_prob", "text_confidence", "asr_candidates", "asr_valid",

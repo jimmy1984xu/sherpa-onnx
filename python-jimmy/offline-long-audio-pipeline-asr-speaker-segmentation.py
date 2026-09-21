@@ -354,6 +354,27 @@ def _edit_distance(reference: str, hypothesis: str) -> int:
     return row[-1]
 
 
+_INLINE_CUT_PATTERN = re.compile(
+    r'^(?P<indent>[ \t]*)"cut": \[\n'
+    r'(?P=indent)[ \t]{2}(?P<left>"(?:\\.|[^"\\])*"),\n'
+    r'(?P=indent)[ \t]{2}(?P<right>"(?:\\.|[^"\\])*")\n'
+    r'(?P=indent)\],$',
+    flags=re.MULTILINE,
+)
+
+
+def _format_compact_result_json(payload: Mapping[str, Any]) -> str:
+    """Keep the two cut sources compact while retaining indented JSON elsewhere."""
+    formatted = json.dumps(payload, ensure_ascii=False, indent=2)
+    return _INLINE_CUT_PATTERN.sub(
+        lambda match: (
+            f'{match.group("indent")}"cut": '
+            f'[{match.group("left")}, {match.group("right")}],'
+        ),
+        formatted,
+    ) + "\n"
+
+
 def _compact_result_json(run_dir: Path) -> None:
     """Rewrite the streaming pipeline result into its concise public schema."""
     path = run_dir / "result.json"
@@ -408,6 +429,9 @@ def _compact_result_json(run_dir: Path) -> None:
             segment["asr_valid"] = 0
         else:
             segment.pop("asr_valid", None)
+        clean_spans = segment.get("clean_spans")
+        if isinstance(clean_spans, str):
+            segment["clean_spans"] = re.sub(r"\]\s+\[", "][", clean_spans)
 
         compact_segment: dict[str, Any] = {}
         for name, value in segment.items():
@@ -420,9 +444,7 @@ def _compact_result_json(run_dir: Path) -> None:
 
     payload["segments"] = compact_segments
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    temporary.write_text(_format_compact_result_json(payload), encoding="utf-8")
     temporary.replace(path)
 
 
