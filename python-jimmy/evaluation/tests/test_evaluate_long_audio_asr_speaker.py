@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -230,6 +231,21 @@ class RunnerIntegrationTest(unittest.TestCase):
             self.assertEqual(status["tasks"]["wer"]["status"], "skipped")
             self.assertEqual(status["tasks"]["speaker"]["status"], "skipped")
             self.assertTrue((output / "result.txt").is_file())
+
+
+class CliContractTest(unittest.TestCase):
+    def test_help_exposes_public_evaluation_arguments(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(EVALUATION_DIR / "evaluate_long_audio_asr_speaker.py"), "--help"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--results-dir", completed.stdout)
+        self.assertIn("--labels-dir", completed.stdout)
+        self.assertIn("--label", completed.stdout)
+        self.assertIn("--output-dir", completed.stdout)
 
 
 if __name__ == "__main__":
