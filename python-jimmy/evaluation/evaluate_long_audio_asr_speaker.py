@@ -243,6 +243,190 @@ def write_internal_asr_files(records: list[ResultRecord], inputs_dir: Path) -> d
     return paths
 
 
+
+def build_whole_audio_wer_inputs(
+    records: list[ResultRecord], labels: dict[str, LabelRecord]
+) -> tuple[list[str], list[str]]:
+    label_lines: list[str] = []
+    hypothesis_lines: list[str] = []
+    for record in sorted(records, key=lambda item: item.file_id):
+        label = labels.get(record.file_id)
+        if label is None:
+            continue
+        reference_text = "".join(segment.asr_text for segment in label.segments)
+        hypothesis_text = "".join(segment.asr_text for segment in record.segments)
+        label_lines.append(f"{record.file_id} {reference_text}".rstrip())
+        hypothesis_lines.append(f"{record.file_id} {hypothesis_text}".rstrip())
+    return label_lines, hypothesis_lines
+
+
+def interval_overlap_ms(
+    left_start_ms: int, left_end_ms: int, right_start_ms: int, right_end_ms: int
+) -> int:
+    return max(0, min(left_end_ms, right_end_ms) - max(left_start_ms, right_start_ms))
+
+
+def _tokenize_for_wer(text: str, language: str) -> list[str]:
+    from evaluation import text_normalization
+
+    normalized = text_normalization(text, language)
+    return normalized.split() if normalized else []
+
+
+def compute_text_error_counts(reference: str, hypothesis: str, language: str) -> dict[str, int | float | None]:
+    reference_tokens = _tokenize_for_wer(reference, language)
+    hypothesis_tokens = _tokenize_for_wer(hypothesis, language)
+    rows = len(reference_tokens) + 1
+    cols = len(hypothesis_tokens) + 1
+    # value: total errors, substitutions, deletions, insertions
+    matrix: list[list[tuple[int, int, int, int]]] = [
+        [(0, 0, 0, 0) for _ in range(cols)] for _ in range(rows)
+    ]
+    for index in range(1, rows):
+        matrix[index][0] = (index, 0, index, 0)
+    for index in range(1, cols):
+        matrix[0][index] = (index, 0, 0, index)
+    for ref_index in range(1, rows):
+        for hyp_index in range(1, cols):
+            if reference_tokens[ref_index - 1] == hypothesis_tokens[hyp_index - 1]:
+                matrix[ref_index][hyp_index] = matrix[ref_index - 1][hyp_index - 1]
+                continue
+            substitution = matrix[ref_index - 1][hyp_index - 1]
+            deletion = matrix[ref_index - 1][hyp_index]
+            insertion = matrix[ref_index][hyp_index - 1]
+            candidates = (
+                (substitution[0] + 1, substitution[1] + 1, substitution[2], substitution[3]),
+                (deletion[0] + 1, deletion[1], deletion[2] + 1, deletion[3]),
+                (insertion[0] + 1, insertion[1], insertion[2], insertion[3] + 1),
+            )
+            matrix[ref_index][hyp_index] = min(candidates)
+    errors, substitutions, deletions, insertions = matrix[-1][-1]
+    return {
+        "reference_tokens": len(reference_tokens),
+        "hypothesis_tokens": len(hypothesis_tokens),
+        "errors": errors,
+        "substitutions": substitutions,
+        "deletions": deletions,
+        "insertions": insertions,
+        "segment_wer_percent": None
+        if not reference_tokens
+        else round(100.0 * errors / len(reference_tokens), 4),
+    }
+
+
+def _mapping_type(candidate_count: int, reverse_counts: list[int]) -> str:
+    if candidate_count == 1 and reverse_counts == [1]:
+        return "one_to_one"
+    if candidate_count == 1:
+        return "one_to_many"
+    if all(count == 1 for count in reverse_counts):
+        return "many_to_one"
+    return "many_to_many"
+
+
+def _detail_row_base(
+    reference: Optional[TimedSegment], hypothesis_segments: list[TimedSegment]
+) -> dict:
+    hypothesis_text = "".join(segment.asr_text for segment in hypothesis_segments)
+    overlaps = [
+        interval_overlap_ms(
+            reference.start_ms, reference.end_ms, segment.start_ms, segment.end_ms
+        )
+        for segment in hypothesis_segments
+    ] if reference else []
+    return {
+        "file_id": reference.file_id if reference else hypothesis_segments[0].file_id,
+        "reference_segment_id": "" if reference is None else reference.segment_id,
+        "reference_start_ms": "" if reference is None else reference.start_ms,
+        "reference_end_ms": "" if reference is None else reference.end_ms,
+        "reference_duration_ms": "" if reference is None else reference.duration_ms,
+        "reference_speaker_id": "" if reference is None else reference.speaker_id,
+        "reference_text": "" if reference is None else reference.asr_text,
+        "hypothesis_segment_ids": ";".join(segment.segment_id for segment in hypothesis_segments),
+        "hypothesis_start_ms": "" if not hypothesis_segments else min(segment.start_ms for segment in hypothesis_segments),
+        "hypothesis_end_ms": "" if not hypothesis_segments else max(segment.end_ms for segment in hypothesis_segments),
+        "hypothesis_speaker_ids": ";".join(segment.speaker_id for segment in hypothesis_segments),
+        "hypothesis_text": hypothesis_text,
+        "overlap_ms": sum(overlaps),
+        "reference_coverage_percent": None
+        if reference is None
+        else round(100.0 * min(reference.duration_ms, sum(overlaps)) / reference.duration_ms, 4),
+    }
+
+
+def build_segment_detail_rows(
+    reference_segments: list[TimedSegment],
+    hypothesis_segments: list[TimedSegment],
+    language: str,
+) -> list[dict]:
+    references = sorted(reference_segments, key=lambda item: (item.start_ms, item.end_ms, item.segment_id))
+    hypotheses = sorted(hypothesis_segments, key=lambda item: (item.start_ms, item.end_ms, item.segment_id))
+    single_references = [item for item in references if item.speaker_id.lower() != "multi"]
+    reverse_counts = {
+        hypothesis.segment_id: sum(
+            interval_overlap_ms(reference.start_ms, reference.end_ms, hypothesis.start_ms, hypothesis.end_ms) > 0
+            for reference in single_references
+        )
+        for hypothesis in hypotheses
+    }
+    rows: list[dict] = []
+    matched_hypothesis_ids: set[str] = set()
+    for reference in references:
+        matches = [
+            hypothesis
+            for hypothesis in hypotheses
+            if interval_overlap_ms(reference.start_ms, reference.end_ms, hypothesis.start_ms, hypothesis.end_ms) > 0
+        ]
+        matched_hypothesis_ids.update(segment.segment_id for segment in matches)
+        row = _detail_row_base(reference, matches)
+        if reference.speaker_id.lower() == "multi":
+            row.update(
+                {
+                    "match_status": "overlap_not_scored",
+                    "mapping_type": "not_scored",
+                    "reference_tokens": None,
+                    "hypothesis_tokens": None,
+                    "errors": None,
+                    "substitutions": None,
+                    "deletions": None,
+                    "insertions": None,
+                    "segment_wer_percent": None,
+                }
+            )
+        elif not matches:
+            row.update({"match_status": "unmatched_reference", "mapping_type": "none"})
+            row.update(compute_text_error_counts(reference.asr_text, "", language))
+        else:
+            row.update(
+                {
+                    "match_status": "matched",
+                    "mapping_type": _mapping_type(
+                        len(matches), [reverse_counts[item.segment_id] for item in matches]
+                    ),
+                }
+            )
+            row.update(compute_text_error_counts(reference.asr_text, row["hypothesis_text"], language))
+        rows.append(row)
+    for hypothesis in hypotheses:
+        if hypothesis.segment_id in matched_hypothesis_ids:
+            continue
+        row = _detail_row_base(None, [hypothesis])
+        row.update(
+            {
+                "match_status": "unmatched_prediction",
+                "mapping_type": "none",
+                "reference_tokens": 0,
+                "hypothesis_tokens": len(_tokenize_for_wer(hypothesis.asr_text, language)),
+                "errors": None,
+                "substitutions": None,
+                "deletions": None,
+                "insertions": None,
+                "segment_wer_percent": None,
+            }
+        )
+        rows.append(row)
+    return rows
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-dir", type=Path, required=True, help="pipeline run directory or recursive root")

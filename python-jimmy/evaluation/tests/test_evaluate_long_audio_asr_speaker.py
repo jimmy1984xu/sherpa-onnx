@@ -84,5 +84,45 @@ class ResultAndLabelParsingTest(unittest.TestCase):
                 runner.resolve_labels(records, None, explicit)
 
 
+class SegmentMappingTest(unittest.TestCase):
+    def _segment(
+        self,
+        segment_id: str,
+        speaker_id: str,
+        text: str,
+    ) -> runner.TimedSegment:
+        file_id, start_ms, duration_ms = runner.parse_segment_id(segment_id)
+        return runner.TimedSegment(file_id, segment_id, start_ms, duration_ms, speaker_id, text)
+
+    def test_whole_audio_wer_inputs_and_overlap_aware_mapping(self) -> None:
+        predictions = [
+            self._segment("audio_0_1000", "speaker_00", "\u7532"),
+            self._segment("audio_1000_1000", "speaker_01", "\u4e59\u4e19"),
+            self._segment("audio_3000_1000", "speaker_02", "\u4e01"),
+        ]
+        references = [
+            self._segment("audio_0_500", "alice", "\u7532"),
+            self._segment("audio_500_500", "multi", "\u91cd\u53e0"),
+            self._segment("audio_1000_500", "bob", "\u4e59"),
+            self._segment("audio_1500_500", "bob", "\u4e19"),
+            self._segment("audio_2200_300", "alice", "\u620a"),
+        ]
+        record = runner.ResultRecord(Path("run/result.json"), "audio.pcm", "audio", predictions)
+        labels = {"audio": runner.LabelRecord(Path("audio_label.txt"), "audio", references)}
+        label_lines, hyp_lines = runner.build_whole_audio_wer_inputs([record], labels)
+        self.assertEqual(label_lines, ["audio \u7532\u91cd\u53e0\u4e59\u4e19\u620a"])
+        self.assertEqual(hyp_lines, ["audio \u7532\u4e59\u4e19\u4e01"])
+
+        rows = runner.build_segment_detail_rows(references, predictions, "ZH")
+        self.assertEqual(rows[0]["match_status"], "matched")
+        self.assertEqual(rows[0]["mapping_type"], "one_to_one")
+        self.assertEqual(rows[1]["match_status"], "overlap_not_scored")
+        self.assertIsNone(rows[1]["segment_wer_percent"])
+        self.assertEqual(rows[2]["mapping_type"], "one_to_many")
+        self.assertEqual(rows[3]["mapping_type"], "one_to_many")
+        self.assertEqual(rows[4]["match_status"], "unmatched_reference")
+        self.assertEqual(rows[-1]["match_status"], "unmatched_prediction")
+
+
 if __name__ == "__main__":
     unittest.main()
