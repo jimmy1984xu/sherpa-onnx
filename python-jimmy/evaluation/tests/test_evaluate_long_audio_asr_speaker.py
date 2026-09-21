@@ -124,5 +124,113 @@ class SegmentMappingTest(unittest.TestCase):
         self.assertEqual(rows[-1]["match_status"], "unmatched_prediction")
 
 
+class RunnerIntegrationTest(unittest.TestCase):
+    def test_cli_writes_standardized_evaluation_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run = root / "run"
+            labels = root / "labels"
+            output = root / "evaluation"
+            run.mkdir()
+            labels.mkdir()
+            (run / "result.json").write_text(
+                json.dumps(
+                    {
+                        "audio_name": "meeting.pcm",
+                        "segments": [
+                            {
+                                "segment_id": "meeting_0_1000",
+                                "duration_ms": 1000,
+                                "speaker_id": "speaker_00",
+                                "asr_text": "\u4f60\u597d",
+                            },
+                            {
+                                "segment_id": "meeting_1000_1000",
+                                "duration_ms": 1000,
+                                "speaker_id": "speaker_01",
+                                "asr_text": "\u4e16\u754c",
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (labels / "meeting_label.txt").write_text(
+                "meeting_0_1000 (alice) \u4f60\u597d\n"
+                "meeting_1000_1000 (bob) \u4e16\u754c\n",
+                encoding="utf-8",
+            )
+            exit_code = runner.main(
+                [
+                    "--results-dir", str(run),
+                    "--labels-dir", str(labels),
+                    "--output-dir", str(output),
+                    "--language", "ZH",
+                    "--boundary-tolerance-ms", "500",
+                    "--collar-ms", "0",
+                ]
+            )
+            self.assertEqual(exit_code, 0)
+            self.assertTrue((output / "result.txt").is_file())
+            self.assertTrue((output / "asr" / "wer_detail.txt").is_file())
+            self.assertTrue((output / "asr" / "wer_summary.json").is_file())
+            self.assertTrue((output / "speaker" / "speaker_diarization_summary.json").is_file())
+            self.assertTrue((output / "speaker" / "speaker_diarization_boundary_details.csv").is_file())
+            self.assertTrue((output / "asr_segment_diff.xlsx").is_file())
+            self.assertTrue((output / "evaluation_manifest.json").is_file())
+            self.assertTrue((output / "evaluation_report.md").is_file())
+            status = json.loads((output / "evaluation_status.json").read_text(encoding="utf-8"))
+            self.assertEqual(status["tasks"]["wer"]["status"], "success")
+            self.assertEqual(status["tasks"]["speaker"]["status"], "success")
+            self.assertEqual(status["tasks"]["excel"]["status"], "success")
+            from openpyxl import load_workbook
+
+            workbook = load_workbook(output / "asr_segment_diff.xlsx", read_only=True)
+            try:
+                self.assertEqual(workbook.sheetnames, ["summary", "segment_details"])
+            finally:
+                workbook.close()
+
+    def test_missing_label_writes_normalized_result_and_skips_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run = root / "run"
+            labels = root / "labels"
+            output = root / "evaluation"
+            run.mkdir()
+            labels.mkdir()
+            (run / "result.json").write_text(
+                json.dumps(
+                    {
+                        "audio_name": "unlabeled.pcm",
+                        "segments": [
+                            {
+                                "segment_id": "unlabeled_0_1000",
+                                "duration_ms": 1000,
+                                "speaker_id": "speaker_00",
+                                "asr_text": "text",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                runner.main(
+                    [
+                        "--results-dir", str(run),
+                        "--labels-dir", str(labels),
+                        "--output-dir", str(output),
+                    ]
+                ),
+                0,
+            )
+            status = json.loads((output / "evaluation_status.json").read_text(encoding="utf-8"))
+            self.assertEqual(status["tasks"]["wer"]["status"], "skipped")
+            self.assertEqual(status["tasks"]["speaker"]["status"], "skipped")
+            self.assertTrue((output / "result.txt").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()
