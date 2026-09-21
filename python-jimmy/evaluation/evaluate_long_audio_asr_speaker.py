@@ -266,173 +266,6 @@ def build_whole_audio_wer_inputs(
     return label_lines, hypothesis_lines
 
 
-def interval_overlap_ms(
-    left_start_ms: int, left_end_ms: int, right_start_ms: int, right_end_ms: int
-) -> int:
-    return max(0, min(left_end_ms, right_end_ms) - max(left_start_ms, right_start_ms))
-
-
-def _tokenize_for_wer(text: str, language: str) -> list[str]:
-    from evaluation import text_normalization
-
-    normalized = text_normalization(text, language)
-    return normalized.split() if normalized else []
-
-
-def compute_text_error_counts(reference: str, hypothesis: str, language: str) -> dict[str, int | float | None]:
-    reference_tokens = _tokenize_for_wer(reference, language)
-    hypothesis_tokens = _tokenize_for_wer(hypothesis, language)
-    rows = len(reference_tokens) + 1
-    cols = len(hypothesis_tokens) + 1
-    # value: total errors, substitutions, deletions, insertions
-    matrix: list[list[tuple[int, int, int, int]]] = [
-        [(0, 0, 0, 0) for _ in range(cols)] for _ in range(rows)
-    ]
-    for index in range(1, rows):
-        matrix[index][0] = (index, 0, index, 0)
-    for index in range(1, cols):
-        matrix[0][index] = (index, 0, 0, index)
-    for ref_index in range(1, rows):
-        for hyp_index in range(1, cols):
-            if reference_tokens[ref_index - 1] == hypothesis_tokens[hyp_index - 1]:
-                matrix[ref_index][hyp_index] = matrix[ref_index - 1][hyp_index - 1]
-                continue
-            substitution = matrix[ref_index - 1][hyp_index - 1]
-            deletion = matrix[ref_index - 1][hyp_index]
-            insertion = matrix[ref_index][hyp_index - 1]
-            candidates = (
-                (substitution[0] + 1, substitution[1] + 1, substitution[2], substitution[3]),
-                (deletion[0] + 1, deletion[1], deletion[2] + 1, deletion[3]),
-                (insertion[0] + 1, insertion[1], insertion[2], insertion[3] + 1),
-            )
-            matrix[ref_index][hyp_index] = min(candidates)
-    errors, substitutions, deletions, insertions = matrix[-1][-1]
-    return {
-        "reference_tokens": len(reference_tokens),
-        "hypothesis_tokens": len(hypothesis_tokens),
-        "errors": errors,
-        "substitutions": substitutions,
-        "deletions": deletions,
-        "insertions": insertions,
-        "segment_wer_percent": None
-        if not reference_tokens
-        else round(100.0 * errors / len(reference_tokens), 4),
-    }
-
-
-def _mapping_type(candidate_count: int, reverse_counts: list[int]) -> str:
-    if candidate_count == 1 and reverse_counts == [1]:
-        return "one_to_one"
-    if candidate_count == 1:
-        return "one_to_many"
-    if all(count == 1 for count in reverse_counts):
-        return "many_to_one"
-    return "many_to_many"
-
-
-def _detail_row_base(
-    reference: Optional[TimedSegment], hypothesis_segments: list[TimedSegment]
-) -> dict:
-    hypothesis_text = "".join(segment.asr_text for segment in hypothesis_segments)
-    overlaps = [
-        interval_overlap_ms(
-            reference.start_ms, reference.end_ms, segment.start_ms, segment.end_ms
-        )
-        for segment in hypothesis_segments
-    ] if reference else []
-    return {
-        "file_id": reference.file_id if reference else hypothesis_segments[0].file_id,
-        "reference_segment_id": "" if reference is None else reference.segment_id,
-        "reference_start_ms": "" if reference is None else reference.start_ms,
-        "reference_end_ms": "" if reference is None else reference.end_ms,
-        "reference_duration_ms": "" if reference is None else reference.duration_ms,
-        "reference_speaker_id": "" if reference is None else reference.speaker_id,
-        "reference_text": "" if reference is None else reference.asr_text,
-        "hypothesis_segment_ids": ";".join(segment.segment_id for segment in hypothesis_segments),
-        "hypothesis_start_ms": "" if not hypothesis_segments else min(segment.start_ms for segment in hypothesis_segments),
-        "hypothesis_end_ms": "" if not hypothesis_segments else max(segment.end_ms for segment in hypothesis_segments),
-        "hypothesis_speaker_ids": ";".join(segment.speaker_id for segment in hypothesis_segments),
-        "hypothesis_text": hypothesis_text,
-        "overlap_ms": sum(overlaps),
-        "reference_coverage_percent": None
-        if reference is None
-        else round(100.0 * min(reference.duration_ms, sum(overlaps)) / reference.duration_ms, 4),
-    }
-
-
-def build_segment_detail_rows(
-    reference_segments: list[TimedSegment],
-    hypothesis_segments: list[TimedSegment],
-    language: str,
-) -> list[dict]:
-    references = sorted(reference_segments, key=lambda item: (item.start_ms, item.end_ms, item.segment_id))
-    hypotheses = sorted(hypothesis_segments, key=lambda item: (item.start_ms, item.end_ms, item.segment_id))
-    single_references = [item for item in references if item.speaker_id.lower() != "multi"]
-    reverse_counts = {
-        hypothesis.segment_id: sum(
-            interval_overlap_ms(reference.start_ms, reference.end_ms, hypothesis.start_ms, hypothesis.end_ms) > 0
-            for reference in single_references
-        )
-        for hypothesis in hypotheses
-    }
-    rows: list[dict] = []
-    matched_hypothesis_ids: set[str] = set()
-    for reference in references:
-        matches = [
-            hypothesis
-            for hypothesis in hypotheses
-            if interval_overlap_ms(reference.start_ms, reference.end_ms, hypothesis.start_ms, hypothesis.end_ms) > 0
-        ]
-        matched_hypothesis_ids.update(segment.segment_id for segment in matches)
-        row = _detail_row_base(reference, matches)
-        if reference.speaker_id.lower() == "multi":
-            row.update(
-                {
-                    "match_status": "overlap_not_scored",
-                    "mapping_type": "not_scored",
-                    "reference_tokens": None,
-                    "hypothesis_tokens": None,
-                    "errors": None,
-                    "substitutions": None,
-                    "deletions": None,
-                    "insertions": None,
-                    "segment_wer_percent": None,
-                }
-            )
-        elif not matches:
-            row.update({"match_status": "unmatched_reference", "mapping_type": "none"})
-            row.update(compute_text_error_counts(reference.asr_text, "", language))
-        else:
-            row.update(
-                {
-                    "match_status": "matched",
-                    "mapping_type": _mapping_type(
-                        len(matches), [reverse_counts[item.segment_id] for item in matches]
-                    ),
-                }
-            )
-            row.update(compute_text_error_counts(reference.asr_text, row["hypothesis_text"], language))
-        rows.append(row)
-    for hypothesis in hypotheses:
-        if hypothesis.segment_id in matched_hypothesis_ids:
-            continue
-        row = _detail_row_base(None, [hypothesis])
-        row.update(
-            {
-                "match_status": "unmatched_prediction",
-                "mapping_type": "none",
-                "reference_tokens": 0,
-                "hypothesis_tokens": len(_tokenize_for_wer(hypothesis.asr_text, language)),
-                "errors": None,
-                "substitutions": None,
-                "deletions": None,
-                "insertions": None,
-                "segment_wer_percent": None,
-            }
-        )
-        rows.append(row)
-    return rows
-
 def _agent_sdk_file_id(references: list[TimedSegment], predictions: list[TimedSegment]) -> str:
     for segment in [*references, *predictions]:
         return segment.file_id
@@ -460,6 +293,8 @@ def build_agent_sdk_segment_detail_rows(
 def write_agent_sdk_segment_detail_workbook(path: Path, rows: Iterable[object]) -> None:
     """Write the standard Agent SDK six-column XLSX without openpyxl."""
     _write_agent_sdk_segment_detail_workbook(path, rows)
+
+
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -598,93 +433,6 @@ def summarize_wer_detail(path: Path) -> dict:
     }
 
 
-def summarize_segment_rows(rows: list[dict]) -> dict:
-    scored = [
-        row for row in rows
-        if row["match_status"] in {"matched", "unmatched_reference"}
-        and row["reference_tokens"] is not None
-    ]
-    reference_tokens = sum(int(row["reference_tokens"]) for row in scored)
-    errors = sum(int(row["errors"]) for row in scored)
-    status_counts: dict[str, int] = {}
-    for row in rows:
-        status = str(row["match_status"])
-        status_counts[status] = status_counts.get(status, 0) + 1
-    return {
-        "detail_rows": len(rows),
-        "scored_single_speaker_rows": len(scored),
-        "single_speaker_segment_wer_percent": None
-        if reference_tokens == 0
-        else round(100.0 * errors / reference_tokens, 4),
-        "single_speaker_reference_tokens": reference_tokens,
-        "single_speaker_errors": errors,
-        "match_status_counts": status_counts,
-    }
-
-
-def write_segment_diff_workbook(
-    path: Path, summary: dict, detail_rows: list[dict]
-) -> None:
-    try:
-        from openpyxl import Workbook
-        from openpyxl.styles import Font
-    except ImportError as error:
-        raise RuntimeError("openpyxl is required to write asr_segment_diff.xlsx") from error
-    path.parent.mkdir(parents=True, exist_ok=True)
-    workbook = Workbook()
-    summary_sheet = workbook.active
-    summary_sheet.title = "summary"
-    summary_sheet.append(["metric", "value"])
-    for cell in summary_sheet[1]:
-        cell.font = Font(bold=True)
-    for key, value in summary.items():
-        if isinstance(value, (dict, list)):
-            value = json.dumps(value, ensure_ascii=False)
-        summary_sheet.append([key, value])
-    summary_sheet.freeze_panes = "A2"
-    summary_sheet.column_dimensions["A"].width = 38
-    summary_sheet.column_dimensions["B"].width = 80
-
-    detail_sheet = workbook.create_sheet("segment_details")
-    fields = [
-        "file_id",
-        "reference_segment_id",
-        "reference_start_ms",
-        "reference_end_ms",
-        "reference_duration_ms",
-        "reference_speaker_id",
-        "reference_text",
-        "hypothesis_segment_ids",
-        "hypothesis_start_ms",
-        "hypothesis_end_ms",
-        "hypothesis_speaker_ids",
-        "hypothesis_text",
-        "overlap_ms",
-        "reference_coverage_percent",
-        "match_status",
-        "mapping_type",
-        "reference_tokens",
-        "hypothesis_tokens",
-        "errors",
-        "substitutions",
-        "deletions",
-        "insertions",
-        "segment_wer_percent",
-    ]
-    detail_sheet.append(fields)
-    for cell in detail_sheet[1]:
-        cell.font = Font(bold=True)
-    for row in detail_rows:
-        detail_sheet.append([row.get(field) for field in fields])
-    detail_sheet.freeze_panes = "A2"
-    detail_sheet.auto_filter.ref = detail_sheet.dimensions
-    for column_index, field in enumerate(fields, 1):
-        detail_sheet.column_dimensions[chr(64 + column_index)].width = max(12, min(42, len(field) + 4))
-    for column in ("G", "L"):
-        detail_sheet.column_dimensions[column].width = 50
-    workbook.save(path)
-
-
 def _read_json_if_present(path: Path) -> Optional[dict]:
     if not path.is_file():
         return None
@@ -692,8 +440,14 @@ def _read_json_if_present(path: Path) -> Optional[dict]:
     return payload if isinstance(payload, dict) else None
 
 
-def write_report(path: Path, manifest: dict, status: dict, wer_summary: Optional[dict],
-                 speaker_summary: Optional[dict], segment_summary: dict) -> None:
+def write_report(
+    path: Path,
+    manifest: dict,
+    status: dict,
+    wer_summary: Optional[dict],
+    speaker_summary: Optional[dict],
+    workbook_paths: list[Path],
+) -> None:
     lines = [
         "# Long-audio ASR and speaker evaluation report",
         "",
@@ -723,7 +477,6 @@ def write_report(path: Path, manifest: dict, status: dict, wer_summary: Optional
                 f"- Whole-audio WER: {wer_summary['wer_percent']}",
                 f"- Reference tokens: {wer_summary['reference_tokens']}",
                 f"- Errors: {wer_summary['errors']} (S={wer_summary['substitutions']}, D={wer_summary['deletions']}, I={wer_summary['insertions']})",
-                f"- Single-speaker segment diagnostic WER: {segment_summary['single_speaker_segment_wer_percent']}",
             ]
         )
     lines.extend(["", "## Speaker", ""])
@@ -748,9 +501,10 @@ def write_report(path: Path, manifest: dict, status: dict, wer_summary: Optional
         "asr/wer_summary.json",
         "speaker/speaker_diarization_summary.json",
         "speaker/speaker_diarization_boundary_details.csv",
-        "asr_segment_diff.xlsx",
     ):
         lines.append(f"- `{relative_path}`")
+    for workbook_path in workbook_paths:
+        lines.append(f"- `{workbook_path.name}` (Agent SDK six-column time-aligned ASR detail)")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -818,12 +572,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             artifacts=[result_txt, args.output_dir / "evaluation_manifest.json"],
         )
     }
-    detail_rows: list[dict] = []
-    for record in evaluation_records:
-        detail_rows.extend(
-            build_segment_detail_rows(labels[record.file_id].segments, record.segments, args.language)
-        )
-    segment_summary = summarize_segment_rows(detail_rows)
     wer_summary: Optional[dict] = None
     speaker_summary: Optional[dict] = None
 
@@ -899,23 +647,26 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
         tasks["speaker"] = speaker_task
 
-    workbook_path = args.output_dir / "asr_segment_diff.xlsx"
-    excel_summary = {
-        "audio_count": len(records),
-        "matched_label_count": len(labels),
-        "whole_audio_wer_percent": None if wer_summary is None else wer_summary["wer_percent"],
-        "der": None if speaker_summary is None else speaker_summary.get("metrics", {}).get("der"),
-        "speaker_change_hit_rate": None
-        if speaker_summary is None
-        else speaker_summary.get("metrics", {}).get("speaker_change_hit_rate"),
-        **segment_summary,
-    }
-    try:
-        write_segment_diff_workbook(workbook_path, excel_summary, detail_rows)
-        tasks["excel"] = _task("success", artifacts=[workbook_path])
-    except (ImportError, OSError, RuntimeError) as error:
-        tasks["excel"] = _task("failed", error=str(error))
+    workbook_paths: list[Path] = []
+    if not evaluation_records:
+        tasks["excel"] = _task("skipped", error="no matched labels")
+    else:
+        try:
+            for record in evaluation_records:
+                rows = build_agent_sdk_segment_detail_rows(
+                    labels[record.file_id].segments,
+                    record.segments,
+                    args.language,
+                )
+                workbook_path = args.output_dir / f"{record.file_id}_segment_asr_detail.xlsx"
+                write_agent_sdk_segment_detail_workbook(workbook_path, rows)
+                workbook_paths.append(workbook_path)
+            tasks["excel"] = _task("success", artifacts=workbook_paths)
+        except OSError as error:
+            tasks["excel"] = _task("failed", error=str(error))
 
+    manifest["outputs"]["asr_detail_workbooks"] = [str(path) for path in workbook_paths]
+    _write_json(args.output_dir / "evaluation_manifest.json", manifest)
     status = {
         "schema_version": 1,
         "overall_status": "failed" if any(task["status"] == "failed" for task in tasks.values()) else "success",
@@ -924,7 +675,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     status_path = args.output_dir / "evaluation_status.json"
     _write_json(status_path, status)
     report_path = args.output_dir / "evaluation_report.md"
-    write_report(report_path, manifest, status, wer_summary, speaker_summary, segment_summary)
+    write_report(report_path, manifest, status, wer_summary, speaker_summary, workbook_paths)
     print(f"normalized {len(records)} audio result(s) into {args.output_dir}")
     print(f"matched {len(labels)} label file(s)")
     print(f"status: {status_path}")

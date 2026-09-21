@@ -116,16 +116,6 @@ class SegmentMappingTest(unittest.TestCase):
         self.assertEqual(label_lines, ["audio \u7532\u91cd\u53e0\u4e59\u4e19\u620a"])
         self.assertEqual(hyp_lines, ["audio \u7532\u4e59\u4e19\u4e01"])
 
-        rows = runner.build_segment_detail_rows(references, predictions, "ZH")
-        self.assertEqual(rows[0]["match_status"], "matched")
-        self.assertEqual(rows[0]["mapping_type"], "one_to_one")
-        self.assertEqual(rows[1]["match_status"], "overlap_not_scored")
-        self.assertIsNone(rows[1]["segment_wer_percent"])
-        self.assertEqual(rows[2]["mapping_type"], "one_to_many")
-        self.assertEqual(rows[3]["mapping_type"], "one_to_many")
-        self.assertEqual(rows[4]["match_status"], "unmatched_reference")
-        self.assertEqual(rows[-1]["match_status"], "unmatched_prediction")
-
 
 
 class AgentSdkSegmentDetailTest(unittest.TestCase):
@@ -242,20 +232,29 @@ class RunnerIntegrationTest(unittest.TestCase):
             self.assertTrue((output / "asr" / "wer_summary.json").is_file())
             self.assertTrue((output / "speaker" / "speaker_diarization_summary.json").is_file())
             self.assertTrue((output / "speaker" / "speaker_diarization_boundary_details.csv").is_file())
-            self.assertTrue((output / "asr_segment_diff.xlsx").is_file())
+            detail_workbook = output / "meeting_segment_asr_detail.xlsx"
+            self.assertTrue(detail_workbook.is_file())
+            self.assertFalse((output / "asr_segment_diff.xlsx").exists())
             self.assertTrue((output / "evaluation_manifest.json").is_file())
             self.assertTrue((output / "evaluation_report.md").is_file())
             status = json.loads((output / "evaluation_status.json").read_text(encoding="utf-8"))
             self.assertEqual(status["tasks"]["wer"]["status"], "success")
             self.assertEqual(status["tasks"]["speaker"]["status"], "success")
             self.assertEqual(status["tasks"]["excel"]["status"], "success")
-            from openpyxl import load_workbook
-
-            workbook = load_workbook(output / "asr_segment_diff.xlsx", read_only=True)
-            try:
-                self.assertEqual(workbook.sheetnames, ["summary", "segment_details"])
-            finally:
-                workbook.close()
+            self.assertEqual(status["tasks"]["excel"]["artifacts"], [str(detail_workbook)])
+            manifest = json.loads((output / "evaluation_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outputs"]["asr_detail_workbooks"], [str(detail_workbook)])
+            self.assertIn(
+                "meeting_segment_asr_detail.xlsx",
+                (output / "evaluation_report.md").read_text(encoding="utf-8"),
+            )
+            with zipfile.ZipFile(detail_workbook) as archive:
+                sheet = ElementTree.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+                values = [node.text or "" for node in sheet.iter() if node.tag.endswith("}t")]
+            self.assertEqual(
+                ["标注片段ID", "标注ASR文本", "识别片段ID", "识别ASR文本", "对齐状态", "差异文本"],
+                values[:6],
+            )
 
     def test_missing_label_writes_normalized_result_and_skips_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -294,6 +293,8 @@ class RunnerIntegrationTest(unittest.TestCase):
             status = json.loads((output / "evaluation_status.json").read_text(encoding="utf-8"))
             self.assertEqual(status["tasks"]["wer"]["status"], "skipped")
             self.assertEqual(status["tasks"]["speaker"]["status"], "skipped")
+            self.assertEqual(status["tasks"]["excel"]["status"], "skipped")
+            self.assertFalse((output / "unlabeled_segment_asr_detail.xlsx").exists())
             self.assertTrue((output / "result.txt").is_file())
 
 
@@ -314,5 +315,3 @@ class CliContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

@@ -7,11 +7,11 @@ change, invoke, or add evaluation responsibilities to either pipeline script.
 ## Install
 
 ```bash
-python -m pip install kaldialign openpyxl pyannote.core pyannote.metrics
+python -m pip install kaldialign pyannote.core pyannote.metrics
 ```
 
 `evaluation.py` has a pure-Python edit-distance fallback when `kaldialign` is
-not available. `openpyxl` is required only for the Excel workbook, and
+not available. The Excel workbook uses only Python's standard library, and
 `pyannote.core` plus `pyannote.metrics` are required only for DER and
 speaker-boundary metrics. The unified runner records a failed status and logs
 when an optional metric dependency is absent; it does not silently omit it.
@@ -57,9 +57,9 @@ Labels are named `<file_id>_label.txt` and contain rows such as:
 23_asr_1782715267098_3453_6823 (hui) text
 ```
 
-The result and label durations do not need to be identical. Segment diagnostics
-use positive time overlap rather than exact segment-ID equality, so split,
-merge, and unmatched cases remain visible.
+The result and label durations do not need to be identical. Per-audio ASR detail
+workbooks use the Agent SDK's fixed 500 ms time-alignment tolerance and
+connected time groups, so split, merge, and unmatched cases remain visible.
 
 ## Output layout
 
@@ -94,7 +94,7 @@ are:
 │   ├── speaker_diarization_boundary_details.csv
 │   ├── speaker_metrics.stdout.log
 │   └── speaker_metrics.stderr.log
-└── asr_segment_diff.xlsx
+└── <file_id>_segment_asr_detail.xlsx
 ```
 
 `evaluation_status.json` records every task as `success`, `failed`, or
@@ -106,10 +106,12 @@ are:
   audio and use one utterance ID per audio. This avoids penalizing a valid
   change in segmentation directly as an ASR error.
 - **DER:** `speaker_diarization_metrics.py` uses `skip_overlap=True`.
-- **`multi` labels:** their text remains in whole-audio WER; they are skipped
-  from DER overlap scoring and marked `overlap_not_scored` in the
-  single-speaker segment diagnostic workbook.
-- **Excel workbook:** `summary` contains aggregate WER/DER/boundary and
-  segment-diagnostic counts. `segment_details` contains label/prediction time
-  spans, overlap coverage, split/merge mapping type, ASR error counts, and
-  unmatched rows.
+- **`multi` labels:** their text remains in whole-audio WER and they are
+  skipped from DER overlap scoring.
+- **Per-audio Excel workbook:** one `<file_id>_segment_asr_detail.xlsx` is
+  generated for every matched label. It uses the Agent SDK's six columns:
+  `标注片段ID`, `标注ASR文本`, `识别片段ID`, `识别ASR文本`, `对齐状态`, and `差异文本`.
+  Time spans that overlap, or whose gap is at most 500 ms, are joined into a
+  connected alignment group. This supports one-to-many, many-to-one,
+  many-to-many, missing-recognition, and extra-recognition diagnostics without
+  creating a wide custom table.
