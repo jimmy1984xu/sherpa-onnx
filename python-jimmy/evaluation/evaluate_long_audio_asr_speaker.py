@@ -10,6 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
+from agent_sdk_segment_detail import (
+    LabelLine as AgentSdkLabelLine,
+    build_segment_detail_rows as _build_agent_sdk_segment_detail_rows,
+    write_segment_detail_workbook as _write_agent_sdk_segment_detail_workbook,
+)
+
 
 _SEGMENT_ID_RE = re.compile(r"^(?P<file_id>.+)_(?P<start_ms>\d+)_(?P<duration_ms>\d+)$")
 
@@ -427,6 +433,33 @@ def build_segment_detail_rows(
         rows.append(row)
     return rows
 
+def _agent_sdk_file_id(references: list[TimedSegment], predictions: list[TimedSegment]) -> str:
+    for segment in [*references, *predictions]:
+        return segment.file_id
+    raise ValueError("Agent SDK segment detail requires at least one reference or prediction segment")
+
+
+def build_agent_sdk_segment_detail_rows(
+    references: list[TimedSegment], predictions: list[TimedSegment], language: str
+):
+    """Adapt pipeline result/label segments to Agent SDK's six-column detail implementation."""
+    file_id = _agent_sdk_file_id(references, predictions)
+    labels = [AgentSdkLabelLine(segment.segment_id, segment.asr_text) for segment in references]
+    hypotheses = [
+        {
+            "segmentId": segment.segment_id,
+            "offsetMs": segment.start_ms,
+            "durationMs": segment.duration_ms,
+            "text": segment.asr_text,
+        }
+        for segment in predictions
+    ]
+    return _build_agent_sdk_segment_detail_rows(labels, hypotheses, language, file_id)
+
+
+def write_agent_sdk_segment_detail_workbook(path: Path, rows: Iterable[object]) -> None:
+    """Write the standard Agent SDK six-column XLSX without openpyxl."""
+    _write_agent_sdk_segment_detail_workbook(path, rows)
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -900,3 +933,4 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

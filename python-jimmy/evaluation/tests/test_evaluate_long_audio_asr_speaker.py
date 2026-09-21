@@ -5,7 +5,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree
 
 EVALUATION_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EVALUATION_DIR))
@@ -125,6 +127,68 @@ class SegmentMappingTest(unittest.TestCase):
         self.assertEqual(rows[-1]["match_status"], "unmatched_prediction")
 
 
+
+class AgentSdkSegmentDetailTest(unittest.TestCase):
+    def _segment(self, segment_id: str, speaker_id: str, text: str) -> runner.TimedSegment:
+        file_id, start_ms, duration_ms = runner.parse_segment_id(segment_id)
+        return runner.TimedSegment(file_id, segment_id, start_ms, duration_ms, speaker_id, text)
+
+    def test_time_alignment_groups_are_agent_sdk_compatible(self) -> None:
+        predictions = [
+            self._segment("audio_0_500", "speaker_00", "甲"),
+            self._segment("audio_500_500", "speaker_00", "乙"),
+            self._segment("audio_3000_500", "speaker_01", "多余"),
+        ]
+        references = [
+            self._segment("audio_0_1000", "alice", "甲乙"),
+            self._segment("audio_1600_500", "bob", "漏失"),
+        ]
+
+        rows = runner.build_agent_sdk_segment_detail_rows(references, predictions, "ZH")
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0].reference_id, "audio_0_1000")
+        self.assertEqual(rows[0].hypothesis_id, "audio_0_500\naudio_500_500")
+        self.assertEqual(rows[0].status, "正确")
+        self.assertEqual(rows[1].reference_id, "audio_1600_500")
+        self.assertEqual(rows[1].hypothesis_id, "")
+        self.assertEqual(rows[1].status, "漏识别")
+        self.assertEqual(rows[2].reference_id, "")
+        self.assertEqual(rows[2].hypothesis_id, "audio_3000_500")
+        self.assertEqual(rows[2].status, "多识别")
+
+    def test_time_gap_of_500_ms_is_aligned(self) -> None:
+        references = [self._segment("audio_0_1000", "alice", "甲")]
+        predictions = [self._segment("audio_1500_500", "speaker_00", "甲")]
+
+        rows = runner.build_agent_sdk_segment_detail_rows(references, predictions, "ZH")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].status, "正确")
+        self.assertEqual(rows[0].reference_id, "audio_0_1000")
+        self.assertEqual(rows[0].hypothesis_id, "audio_1500_500")
+
+    def test_writer_emits_agent_sdk_six_column_workbook(self) -> None:
+        references = [self._segment("audio_0_1000", "alice", "你好")]
+        predictions = [self._segment("audio_0_1000", "speaker_00", "你号")]
+        rows = runner.build_agent_sdk_segment_detail_rows(references, predictions, "ZH")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "audio_segment_asr_detail.xlsx"
+            runner.write_agent_sdk_segment_detail_workbook(output, rows)
+
+            with zipfile.ZipFile(output) as archive:
+                self.assertEqual(["xl/worksheets/sheet1.xml"], [
+                    name for name in archive.namelist() if name.startswith("xl/worksheets/")
+                ])
+                sheet = ElementTree.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+                values = [node.text or "" for node in sheet.iter() if node.tag.endswith("}t")]
+
+        self.assertEqual(
+            ["标注片段ID", "标注ASR文本", "识别片段ID", "识别ASR文本", "对齐状态", "差异文本"],
+            values[:6],
+        )
+        self.assertIn("识别错误", values)
 class RunnerIntegrationTest(unittest.TestCase):
     def test_cli_writes_standardized_evaluation_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -250,3 +314,5 @@ class CliContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
