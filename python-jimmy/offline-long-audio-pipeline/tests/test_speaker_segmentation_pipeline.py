@@ -128,6 +128,66 @@ class SpeakerSegmentationPipelineTimelineTest(unittest.TestCase):
         self.assertEqual([(segment.start_ms, segment.end_ms) for segment in weak], [(0, 2000)])
         self.assertEqual([(segment.start_ms, segment.end_ms) for segment in strong], [(0, 1100), (1100, 2200)])
 
+    def test_compacts_streaming_result_json_schema(self):
+        runner = _load_runner()
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "result.json").write_text(
+                """{
+                  "audio_name": "23_asr_1782715267098.pcm",
+                  "segments": [
+                    {
+                      "segment_id": "0001_100478_103008",
+                      "duration_ms": 2530,
+                      "speaker_composition": "single_speaker",
+                      "cut_left": "vad",
+                      "cut_right": "pyannote",
+                      "asr_language": "",
+                      "whisper_language": "",
+                      "whisper_lang_prob": null,
+                      "text_confidence": null,
+                      "asr_candidates": {},
+                      "asr_valid": 1
+                    },
+                    {
+                      "segment_id": "0002_103008_104008",
+                      "duration_ms": 1000,
+                      "speaker_composition": "single_speaker",
+                      "cut_left": "pyannote",
+                      "cut_right": "vad",
+                      "asr_language": "zh",
+                      "whisper_language": "zh",
+                      "whisper_lang_prob": 0.0,
+                      "text_confidence": 0.0,
+                      "asr_candidates": {"paraformer": "测试"},
+                      "asr_valid": 0
+                    }
+                  ]
+                }""",
+                encoding="utf-8",
+            )
+
+            runner._compact_result_json(run_dir)
+            result = __import__("json").loads((run_dir / "result.json").read_text(encoding="utf-8"))
+
+        first, second = result["segments"]
+        self.assertEqual(first["segment_id"], "23_asr_1782715267098_100478_2530")
+        self.assertEqual(first["cut"], ["vad", "pyannote"])
+        for field in (
+            "cut_left", "cut_right", "asr_language", "whisper_language",
+            "whisper_lang_prob", "text_confidence", "asr_candidates", "asr_valid",
+        ):
+            self.assertNotIn(field, first)
+
+        self.assertEqual(second["segment_id"], "23_asr_1782715267098_103008_1000")
+        self.assertEqual(second["cut"], ["pyannote", "vad"])
+        self.assertEqual(second["asr_language"], "zh")
+        self.assertEqual(second["whisper_language"], "zh")
+        self.assertEqual(second["whisper_lang_prob"], 0.0)
+        self.assertEqual(second["text_confidence"], 0.0)
+        self.assertEqual(second["asr_candidates"], {"paraformer": "测试"})
+        self.assertEqual(second["asr_valid"], 0)
+
     def test_summarizes_overlapped_segments_for_comparison_report(self):
         runner = _load_runner()
         with tempfile.TemporaryDirectory() as directory:
@@ -135,7 +195,7 @@ class SpeakerSegmentationPipelineTimelineTest(unittest.TestCase):
             (run_dir / "result.json").write_text(
                 '{"segments": [{"asr_text": "测试", '
                 '"speaker_composition": "overlapped_speakers", '
-                '"cut_left": "pyannote", "cut_right": "vad", '
+                '"cut": ["pyannote", "vad"], '
                 '"time_range": "00:00.000-00:01.000"}]}',
                 encoding="utf-8",
             )

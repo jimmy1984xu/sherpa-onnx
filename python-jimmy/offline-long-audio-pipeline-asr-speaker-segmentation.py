@@ -354,6 +354,85 @@ def _edit_distance(reference: str, hypothesis: str) -> int:
     return row[-1]
 
 
+def _compact_result_json(run_dir: Path) -> None:
+    """Rewrite the streaming pipeline result into its concise public schema."""
+    path = run_dir / "result.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    audio_name = payload.get("audio_name")
+    if not isinstance(audio_name, str) or not audio_name:
+        raise ValueError("result.json must contain a non-empty audio_name")
+    audio_stem = Path(audio_name).stem
+    if not audio_stem:
+        raise ValueError("result.json audio_name must include a file stem")
+
+    segments = payload.get("segments")
+    if not isinstance(segments, list):
+        raise ValueError("result.json must contain a segments list")
+
+    compact_segments: list[dict[str, Any]] = []
+    for index, raw_segment in enumerate(segments):
+        if not isinstance(raw_segment, Mapping):
+            raise ValueError(f"result.json segment {index} must be an object")
+        segment = dict(raw_segment)
+        legacy_id = segment.get("segment_id")
+        if not isinstance(legacy_id, str):
+            raise ValueError(f"result.json segment {index} has no segment_id")
+        id_parts = legacy_id.rsplit("_", maxsplit=2)
+        if len(id_parts) != 3 or not id_parts[1].isdigit():
+            raise ValueError(f"Cannot parse result.json segment_id: {legacy_id}")
+        duration_ms = segment.get("duration_ms")
+        if isinstance(duration_ms, bool) or not isinstance(duration_ms, int) or duration_ms <= 0:
+            raise ValueError(f"result.json segment {index} has invalid duration_ms")
+        segment["segment_id"] = f"{audio_stem}_{id_parts[1]}_{duration_ms}"
+
+        legacy_cut_left = segment.pop("cut_left", None)
+        legacy_cut_right = segment.pop("cut_right", None)
+        existing_cut = segment.pop("cut", None)
+        if legacy_cut_left is None and legacy_cut_right is None:
+            if not isinstance(existing_cut, list) or len(existing_cut) != 2:
+                raise ValueError(f"result.json segment {index} has no valid cut information")
+            cut = existing_cut
+        else:
+            cut = [
+                "vad" if legacy_cut_left is None else legacy_cut_left,
+                "vad" if legacy_cut_right is None else legacy_cut_right,
+            ]
+
+        for name in ("asr_language", "whisper_language", "asr_candidates"):
+            if not segment.get(name):
+                segment.pop(name, None)
+        for name in ("whisper_lang_prob", "text_confidence"):
+            if segment.get(name) is None:
+                segment.pop(name, None)
+        if segment.get("asr_valid", 1) == 0:
+            segment["asr_valid"] = 0
+        else:
+            segment.pop("asr_valid", None)
+
+        compact_segment: dict[str, Any] = {}
+        for name, value in segment.items():
+            compact_segment[name] = value
+            if name == "speaker_composition":
+                compact_segment["cut"] = cut
+        if "cut" not in compact_segment:
+            compact_segment["cut"] = cut
+        compact_segments.append(compact_segment)
+
+    payload["segments"] = compact_segments
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    temporary.replace(path)
+
+
+def _has_non_vad_cut(segment: Mapping[str, Any]) -> bool:
+    cut = segment.get("cut")
+    if isinstance(cut, Sequence) and not isinstance(cut, (str, bytes)):
+        return len(cut) != 2 or any(value != "vad" for value in cut)
+    return segment.get("cut_left") != "vad" or segment.get("cut_right") != "vad"
+
+
 def _result_summary(run_dir: Path, reference: Path | None) -> dict[str, Any]:
     result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
     segments = result.get("segments", [])
@@ -367,10 +446,7 @@ def _result_summary(run_dir: Path, reference: Path | None) -> dict[str, Any]:
         "wer": wer,
         "segment_count": len(segments),
         "multi_segment_count": len(multi_segments),
-        "multi_break_count": sum(
-            segment.get("cut_left") != "vad" or segment.get("cut_right") != "vad"
-            for segment in multi_segments
-        ),
+        "multi_break_count": sum(_has_non_vad_cut(segment) for segment in multi_segments),
         "multi_ranges": [segment.get("time_range") for segment in multi_segments],
         "wer_note": None if reference is not None else "N/A: no --reference supplied",
     }
@@ -581,6 +657,7 @@ def run(args: argparse.Namespace) -> baseline_pipeline.PipelineResult:
     with _use_streaming_segmentation_runtime(runtime):
         result = baseline_pipeline.run_pipeline(config)
 
+    _compact_result_json(result.run_dir)
     write_span_artifacts(
         result.run_dir,
         config.audio.stem,
