@@ -8,7 +8,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from segmentation import POWERSET_CLASS_BY_MASK, SpeakerCountSpan
+from segmentation import POWERSET_BIT_MASKS, POWERSET_CLASS_BY_MASK, SpeakerCountSpan
 from vad import SpeechSegment
 
 
@@ -32,18 +32,18 @@ def _class_index_for_span(span: SpeakerCountSpan) -> int:
 def format_pyannote_mask_rle(
     activity: Sequence[SpeakerCountSpan], start_ms: int, end_ms: int
 ) -> str:
-    """Run-length encode raw pyannote class indices inside [start_ms, end_ms)."""
+    """Run-length encode local speaker bit masks inside [start_ms, end_ms)."""
     if end_ms <= start_ms:
         return ""
     pieces: list[tuple[int, int]] = []
 
-    def append(duration_ms: int, class_index: int) -> None:
+    def append(duration_ms: int, bit_mask: int) -> None:
         if duration_ms <= 0:
             return
-        if pieces and pieces[-1][1] == class_index:
-            pieces[-1] = (pieces[-1][0] + duration_ms, class_index)
+        if pieces and pieces[-1][1] == bit_mask:
+            pieces[-1] = (pieces[-1][0] + duration_ms, bit_mask)
         else:
-            pieces.append((duration_ms, class_index))
+            pieces.append((duration_ms, bit_mask))
 
     cursor = start_ms
     for span in sorted(activity, key=lambda item: (item.start_ms, item.end_ms)):
@@ -55,11 +55,13 @@ def format_pyannote_mask_rle(
             append(left - cursor, 0)
             cursor = left
         if right > cursor:
-            append(right - cursor, _class_index_for_span(span))
+            class_index = _class_index_for_span(span)
+            bit_mask = POWERSET_BIT_MASKS[class_index] if 0 <= class_index < len(POWERSET_BIT_MASKS) else 0
+            append(right - cursor, bit_mask)
             cursor = right
     if cursor < end_ms:
         append(end_ms - cursor, 0)
-    return "".join(f"[{duration_ms},{class_index}]" for duration_ms, class_index in pieces)
+    return "".join(f"[{duration_ms},{bit_mask}]" for duration_ms, bit_mask in pieces)
 
 
 def _clean_single_speaker_spans(

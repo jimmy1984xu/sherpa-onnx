@@ -30,6 +30,13 @@ POWERSET_CLASS_BY_MASK = {
     tuple(int(value) for value in mask): class_index
     for class_index, mask in enumerate(POWERSET_MASKS)
 }
+# Public/display representation of a powerset class: one bit per local track.
+# This is intentionally separate from the model class index.  For example,
+# powerset class 4 ([1, 1, 0]) is bit mask 3 (0b011).
+POWERSET_BIT_MASKS = tuple(
+    sum((1 << track) for track, active in enumerate(mask) if active)
+    for mask in POWERSET_MASKS
+)
 _REQUIRED_METADATA = (
     "sample_rate",
     "window_size",

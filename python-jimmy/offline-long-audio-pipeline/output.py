@@ -53,6 +53,11 @@ def _format_time(milliseconds: int) -> str:
     return f"{minutes}:{seconds:02d}.{millis:03d}"
 
 
+def _format_clean_spans(spans: Sequence[tuple[int, int]]) -> str:
+    """Format embedding-eligible spans compactly for result.json."""
+    return " ".join(f"[{start_ms},{end_ms}]" for start_ms, end_ms in spans)
+
+
 def _segment_payload(segment: SpeechSegment) -> dict[str, Any]:
     return {
         "segment_id": segment.segment_id,
@@ -74,15 +79,8 @@ def _segment_payload(segment: SpeechSegment) -> dict[str, Any]:
         "speaker_id": segment.speaker_id,
         "previous_segment_similarity": segment.previous_segment_similarity,
         "cluster_assignment_similarity": segment.cluster_assignment_similarity,
-        "overlap_regions": [
-            {"start_ms": start_ms, "end_ms": end_ms}
-            for start_ms, end_ms in segment.overlap_regions
-        ],
         "pyannote_mask": segment.pyannote_mask,
-        "clean_spans": [
-            {"start_ms": start_ms, "end_ms": end_ms}
-            for start_ms, end_ms in segment.clean_spans
-        ],
+        "clean_spans": _format_clean_spans(segment.clean_spans),
         "local_speaker_mask": segment.local_speaker_mask,
         "local_speaker_mask_confidence": segment.local_speaker_mask_confidence,
         "speaker_assignment_source": segment.speaker_assignment_source,

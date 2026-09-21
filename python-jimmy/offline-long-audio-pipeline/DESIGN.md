@@ -98,7 +98,7 @@ PCM/WAV
 | 1 / 2 / 3 | 局部轨 A / B / C |
 | 4 / 5 / 6 | A+B / A+C / B+C |
 
-这是**局部** 3 轨，不是全文件说话人 ID。`result.json` 的 `pyannote_mask` 是平滑**前**原始 class 的 RLE，例如 `[5726,3][507,6]…`。
+这是**局部** 3 轨，不是全文件说话人 ID。对外输出统一使用 bit mask：A=1（0b001）、B=2（0b010）、C=4（0b100），A+B=3、A+C=5、B+C=6。因此 `result.json` 的 `pyannote_mask` 是平滑**前**局部 bit mask 的 RLE，例如 `[5726,4][507,6]…`；这里的第二个数字不再是模型 powerset class index。
 
 ### 5.2 按 mask 轨平滑
 
@@ -124,7 +124,7 @@ PCM/WAV
 在单个 VAD 内、不跨 VAD：
 
 1. **同 mask 无条件合并**（折叠 overlap 之前）。
-2. **任意长度 overlap 并入后句**；没有后句则并前句。空隙 > 2s 不并。宿主 composition 仍为 `single_speaker`，overlap 写入 `overlap_regions`。
+2. **任意长度 overlap 并入后句**；没有后句则并前句。空隙 > 2s 不并。宿主 composition 仍为 `single_speaker`，内部保留 `overlap_regions` 供净时长和声纹裁剪使用。
 3. **unknown ≤2s** 同样并后句（否则前句）；**>2s** 保持 `unknown_activity`。
 4. **同 mask** 在 fold overlap 之后：短岛仍并；**两边净时长（墙钟减 overlap）都 ≥ 2s** 才保留切点。
 5. **不同 mask** 的弱单人切点：两边净时长都 ≥ **1s** 才保留；否则短岛优先并后句。
@@ -133,7 +133,7 @@ PCM/WAV
 
 示例（Case1 关心的切开）：
 
-- `0026_149406_155132`：`pyannote_mask` 含 `[5726,3]`
+- `0026_149406_155132`：`pyannote_mask` 含 `[5726,4]`（局部轨 C）
 - `0027_155132_172277`：overlap `155132–155639`（507ms class 6 并入后句）
 
 ## 6. 声纹
@@ -148,7 +148,7 @@ PCM/WAV
 ## 7. ASR 与产物
 
 - 每段独立识别；失败写入 `asr_error`，文本可空。
-- `result.json` 每段含：`segment_id`、`time_range`、`duration_class`、`speaker_composition`、`cut_left` / `cut_right`（`vad` | `pyannote`）、`asr_text`、`speaker_id`、邻段相似度、`overlap_regions`、`pyannote_mask`。
+- `result.json` 每段含：`segment_id`、`time_range`、`duration_class`、`speaker_composition`、`cut_left` / `cut_right`（`vad` | `pyannote`）、`asr_text`、`speaker_id`、邻段相似度、`pyannote_mask`、`clean_spans`、`local_speaker_mask` 及其置信度。`overlap_regions` 仅作为内部解析字段，不再展示在 `result.json`；`clean_spans` 以紧凑字符串输出，例如 `[249214,252399] [252788,254070]`。
 - `run_metadata.json` 含段数、组成计数、聚类库存、RTF、模型路径。
 
 ## 8. 运行方式

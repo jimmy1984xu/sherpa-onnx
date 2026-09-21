@@ -30,7 +30,8 @@ class OutputTest(unittest.TestCase):
                 cluster_assignment_similarity=0.875,
                 cut_left="vad",
                 cut_right="pyannote",
-                pyannote_mask="[100,1][200,4]",
+                pyannote_mask="[100,1][200,3]",
+                clean_spans=[(126000, 127000), (128000, 129000)],
             )
             write_results(
                 run_dir,
@@ -67,9 +68,8 @@ class OutputTest(unittest.TestCase):
                     "speaker_id": "speaker_00",
                     "previous_segment_similarity": None,
                     "cluster_assignment_similarity": 0.875,
-                    "overlap_regions": [],
-                    "pyannote_mask": "[100,1][200,4]",
-                    "clean_spans": [],
+                    "pyannote_mask": "[100,1][200,3]",
+                    "clean_spans": "[126000,127000] [128000,129000]",
                     "local_speaker_mask": 0,
                     "local_speaker_mask_confidence": 0.0,
                     "speaker_assignment_source": "unknown",
@@ -93,10 +93,7 @@ class OutputTest(unittest.TestCase):
             )
             write_results(run_dir, "input.pcm", 4000, [segment], {"total_seconds": 1.0})
             payload = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
-        self.assertEqual(
-            payload["segments"][0]["overlap_regions"],
-            [{"start_ms": 2000, "end_ms": 2400}],
-        )
+        self.assertNotIn("overlap_regions", payload["segments"][0])
 
     def test_run_label_makes_experiment_directory_meaningful(self):
         with TemporaryDirectory() as directory:

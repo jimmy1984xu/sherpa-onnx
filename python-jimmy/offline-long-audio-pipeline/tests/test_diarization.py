@@ -74,7 +74,7 @@ class PyannoteMaskRleTest(unittest.TestCase):
         ]
         self.assertEqual(
             format_pyannote_mask_rle(activity, 100, 600),
-            "[100,1][200,4][100,0][100,1]",
+            "[100,1][200,3][100,0][100,1]",
         )
 
     def test_clips_to_segment_window(self):
@@ -114,8 +114,8 @@ class TimelineResolutionTest(unittest.TestCase):
         self.assertEqual(segments[1].overlap_regions, [(2000, 2400)])
         self.assertEqual(stats.true_overlap_count, 0)
         self.assertTrue(all(a.end_ms <= b.start_ms for a, b in zip(segments, segments[1:])))
-        self.assertEqual(segments[0].pyannote_mask, "[1000,1][50,4][950,1]")
-        self.assertEqual(segments[1].pyannote_mask, "[400,4][1600,2]")
+        self.assertEqual(segments[0].pyannote_mask, "[1000,1][50,3][950,1]")
+        self.assertEqual(segments[1].pyannote_mask, "[400,3][1600,2]")
 
     def test_folds_short_overlap_into_following_segment_and_keeps_range(self):
         waveform = np.zeros(16000 * 4, dtype=np.float32)
