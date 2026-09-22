@@ -192,7 +192,7 @@ python -m unittest discover -s python-jimmy/offline-long-audio-pipeline/tests
 
 1. Pipeline 把各段 `asr_text` 按时间序拼成一篇 hyp。
 2. 标注全文拼接为 ref；去掉行内说话人标签 `(hui|leslie|multi|speaker)` 等。
-3. `python-jimmy/evaluation.py --language zh`（字级 WER）。
+3. `python-jimmy/evaluation/evaluation.py --language zh`（字级 WER）。
 4. 主指标是全文 WER，不是 DER。`asr_error` 必须为 0 才承认该次跑数。
 
 固定测试集（NAS：`\\10.88.0.243\xainas\ProMax\测试集\音频测试集\中文\`）：

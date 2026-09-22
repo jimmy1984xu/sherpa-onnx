@@ -11,6 +11,7 @@ from typing import List
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+EVALUATION_SCRIPT = SCRIPT_DIR / "evaluation" / "evaluation.py"
 
 DEFAULT_MERGE_GAP_DURATION = 2.0
 DEFAULT_SHORT_SEGMENT_DURATION = 6.0
@@ -145,16 +146,15 @@ def validate_inputs(args: argparse.Namespace) -> None:
     vad_script_name = (
         "k2-vad-cut-merge.py" if vad_merge_enabled(args) else "k2-vad_cut.py"
     )
-    script_names = [
-        vad_script_name,
-        "k2-offline-asr.py",
-        "utils-merge-asr-text.py",
+    script_paths = [
+        SCRIPT_DIR / vad_script_name,
+        SCRIPT_DIR / "k2-offline-asr.py",
+        SCRIPT_DIR / "utils-merge-asr-text.py",
     ]
     if not skip_wer(args):
-        script_names.append("evaluation.py")
+        script_paths.append(EVALUATION_SCRIPT)
 
-    for script_name in script_names:
-        script_path = SCRIPT_DIR / script_name
+    for script_path in script_paths:
         if not script_path.is_file():
             raise FileNotFoundError(f"Pipeline script not found: {script_path}")
 
@@ -281,7 +281,7 @@ def run_pipeline(args: argparse.Namespace) -> dict:
             f"4/{total_steps} WER",
             [
                 sys.executable,
-                str(SCRIPT_DIR / "evaluation.py"),
+                str(EVALUATION_SCRIPT),
                 "--label",
                 str(Path(args.label)),
                 "--hyp",

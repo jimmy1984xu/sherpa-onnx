@@ -102,6 +102,31 @@ class PipelineArgumentTest(unittest.TestCase):
         self.assertIn(str(root / "asr-model"), asr_command)
         self.assertNotIn("detail", outputs)
 
+    def test_pipeline_uses_evaluation_directory_wer_script(self):
+        with TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            args = MODULE.build_parser().parse_args(
+                [
+                    "--audio", str(root / "audio.wav"),
+                    "--silero-vad-model", str(root / "silero.onnx"),
+                    "--asr-model", str(root / "asr-model"),
+                    "--language", "zh",
+                    "--label", str(root / "label.txt"),
+                    "--output-dir", str(root / "out"),
+                ]
+            )
+            commands = []
+            with patch.object(MODULE, "validate_inputs"), patch.object(
+                MODULE, "run_step", side_effect=lambda name, command: commands.append(command)
+            ), patch.object(MODULE, "print_wer_result"):
+                MODULE.run_pipeline(args)
+
+        self.assertEqual(len(commands), 4)
+        self.assertEqual(
+            pathlib.Path(commands[-1][1]),
+            SCRIPT.parent / "evaluation" / "evaluation.py",
+        )
+
     def test_vad_merge_is_disabled_without_merge_arguments(self):
         with TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)
@@ -125,7 +150,7 @@ class PipelineArgumentTest(unittest.TestCase):
             ):
                 MODULE.run_pipeline(args)
 
-        self.assertIn("k2-vad_cut.py", commands[0])
+        self.assertEqual(pathlib.Path(commands[0][1]).name, "k2-vad_cut.py")
         self.assertNotIn("k2-vad-cut-merge.py", commands[0])
 
     def test_any_merge_argument_enables_merge_with_defaults(self):
@@ -154,7 +179,7 @@ class PipelineArgumentTest(unittest.TestCase):
                 MODULE.run_pipeline(args)
 
         vad_command = commands[0]
-        self.assertIn("k2-vad-cut-merge.py", vad_command)
+        self.assertEqual(pathlib.Path(vad_command[1]).name, "k2-vad-cut-merge.py")
         self.assertIn("--merge-gap-duration", vad_command)
         self.assertIn("0.0", vad_command)
         self.assertIn("--short-segment-duration", vad_command)

@@ -52,7 +52,7 @@ Expected: failure mentioning missing `build_agent_sdk_segment_detail_rows` and/o
 
 - [x] **Step 3: Implement the minimal Agent SDK-compatible detail adapter.**
 
-Add `agent_sdk_segment_detail.py` as a verbatim local copy of the Agent SDK detail implementation, including its frozen data classes and time functions with their original semantics:
+Add `asr_segment_detail_diff.py` as a verbatim local copy of the Agent SDK detail implementation, including its frozen data classes and time functions with their original semantics:
 
 ```python
 _SEGMENT_ALIGN_TOLERANCE_MS = 500

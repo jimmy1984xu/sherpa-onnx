@@ -11,6 +11,7 @@ from xml.etree import ElementTree
 
 EVALUATION_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EVALUATION_DIR))
+import asr_segment_detail_diff as segment_detail  # noqa: E402
 import evaluate_long_audio_asr_speaker as runner  # noqa: E402
 
 

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
-from agent_sdk_segment_detail import (
+from asr_segment_detail_diff import (
     LabelLine as AgentSdkLabelLine,
     build_segment_detail_rows as _build_agent_sdk_segment_detail_rows,
     write_segment_detail_workbook as _write_agent_sdk_segment_detail_workbook,
