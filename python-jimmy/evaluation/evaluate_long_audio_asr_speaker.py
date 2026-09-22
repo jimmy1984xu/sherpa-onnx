@@ -6,6 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -224,30 +227,9 @@ def resolve_labels(
     return labels
 
 
-def _iter_segments(records: Iterable[ResultRecord]) -> Iterable[TimedSegment]:
-    for record in sorted(records, key=lambda item: item.file_id):
-        yield from record.segments
-
-
 def _format_machine_line(segment: TimedSegment) -> str:
     prefix = f"{segment.segment_id} {segment.speaker_id}"
     return f"{prefix} {segment.asr_text}\n" if segment.asr_text else f"{prefix}\n"
-
-
-def write_public_result_txt(records: list[ResultRecord], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(_format_machine_line(segment) for segment in _iter_segments(records)), encoding="utf-8")
-
-
-def write_internal_asr_files(records: list[ResultRecord], inputs_dir: Path) -> dict[str, Path]:
-    inputs_dir.mkdir(parents=True, exist_ok=True)
-    paths: dict[str, Path] = {}
-    for record in records:
-        path = inputs_dir / f"{record.file_id}_asr.txt"
-        path.write_text("".join(_format_machine_line(segment) for segment in record.segments), encoding="utf-8")
-        paths[record.file_id] = path
-    return paths
-
 
 
 def build_whole_audio_wer_inputs(
@@ -305,49 +287,37 @@ def _write_lines(path: Path, lines: list[str]) -> None:
     path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
-def write_internal_label_files(
-    labels: dict[str, LabelRecord], labels_dir: Path
-) -> dict[str, Path]:
-    labels_dir.mkdir(parents=True, exist_ok=True)
-    paths: dict[str, Path] = {}
-    for file_id, label in sorted(labels.items()):
-        path = labels_dir / f"{file_id}_label.txt"
-        lines = []
-        for segment in label.segments:
-            prefix = f"{segment.segment_id} {segment.speaker_id}"
-            lines.append(f"{prefix} {segment.asr_text}" if segment.asr_text else prefix)
-        _write_lines(path, lines)
-        paths[file_id] = path
-    return paths
+def meeting_output_dir(output_dir: Path, file_id: str) -> Path:
+    """Return the fixed artifact directory for one evaluated meeting."""
+    if not file_id or file_id in {".", ".."} or Path(file_id).name != file_id:
+        raise ValueError(f"unsafe meeting file_id for output directory: {file_id}")
+    return output_dir / file_id
 
 
-def _task(status: str, *, error: Optional[str] = None, artifacts: Optional[list[Path]] = None,
-          command: Optional[list[str]] = None, stdout_log: Optional[Path] = None,
-          stderr_log: Optional[Path] = None, return_code: Optional[int] = None) -> dict:
-    payload: dict[str, object] = {"status": status}
-    if error:
-        payload["error"] = error
-    if artifacts:
-        payload["artifacts"] = [str(path) for path in artifacts]
-    if command:
-        payload["command"] = command
-    if stdout_log:
-        payload["stdout_log"] = str(stdout_log)
-    if stderr_log:
-        payload["stderr_log"] = str(stderr_log)
-    if return_code is not None:
-        payload["return_code"] = return_code
-    return payload
+def write_meeting_asr_txt(record: ResultRecord, meeting_dir: Path) -> Path:
+    """Write the public, fixed-name ASR projection for one meeting."""
+    path = meeting_dir / "asr.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(_format_machine_line(segment) for segment in record.segments),
+        encoding="utf-8",
+    )
+    return path
 
 
-def run_subprocess_task(
-    command: list[str], stdout_path: Path, stderr_path: Path
-) -> dict:
-    stdout_path.parent.mkdir(parents=True, exist_ok=True)
-    stderr_path.parent.mkdir(parents=True, exist_ok=True)
+def _write_label_file(label: LabelRecord, path: Path) -> None:
+    _write_lines(
+        path,
+        [
+            f"{segment.segment_id} {segment.speaker_id} {segment.asr_text}".rstrip()
+            for segment in label.segments
+        ],
+    )
+
+
+def run_subprocess_task(command: list[str]) -> tuple[bool, str]:
+    """Run an evaluator without leaving stdout/stderr files in the output tree."""
     try:
-        import subprocess
-
         completed = subprocess.run(
             command,
             text=True,
@@ -358,33 +328,13 @@ def run_subprocess_task(
             check=False,
         )
     except OSError as error:
-        stdout_path.write_text("", encoding="utf-8")
-        stderr_path.write_text(f"{error}\n", encoding="utf-8")
-        return _task(
-            "failed",
-            error=str(error),
-            command=command,
-            stdout_log=stdout_path,
-            stderr_log=stderr_path,
-        )
-    stdout_path.write_text(completed.stdout, encoding="utf-8")
-    stderr_path.write_text(completed.stderr, encoding="utf-8")
+        return False, str(error)
     if completed.returncode:
-        return _task(
-            "failed",
-            error=f"command exited with {completed.returncode}",
-            command=command,
-            stdout_log=stdout_path,
-            stderr_log=stderr_path,
-            return_code=completed.returncode,
-        )
-    return _task(
-        "success",
-        command=command,
-        stdout_log=stdout_path,
-        stderr_log=stderr_path,
-        return_code=completed.returncode,
-    )
+        detail = (completed.stderr or completed.stdout).strip()
+        if not detail:
+            detail = f"command exited with {completed.returncode}"
+        return False, detail
+    return True, ""
 
 
 def summarize_wer_detail(path: Path) -> dict:
@@ -440,71 +390,172 @@ def _read_json_if_present(path: Path) -> Optional[dict]:
     return payload if isinstance(payload, dict) else None
 
 
+def _meeting_artifact_names(meeting_dir: Path) -> list[str]:
+    return sorted(path.name for path in meeting_dir.iterdir() if path.is_file())
+
+
+def _run_meeting_evaluation(
+    record: ResultRecord,
+    label: Optional[LabelRecord],
+    output_dir: Path,
+    language: str,
+    boundary_tolerance_ms: int,
+    collar_ms: int,
+) -> dict:
+    meeting_dir = meeting_output_dir(output_dir, record.file_id)
+    asr_path = write_meeting_asr_txt(record, meeting_dir)
+    outcome: dict[str, object] = {
+        "file_id": record.file_id,
+        "result_path": str(record.path),
+        "label_path": None if label is None else str(label.path),
+        "meeting_dir": meeting_dir,
+        "status": "success",
+        "errors": [],
+        "asr_path": asr_path,
+        "wer_summary": None,
+        "speaker_summary": None,
+    }
+    if label is None:
+        outcome["status"] = "skipped_no_label"
+        return outcome
+
+    with tempfile.TemporaryDirectory(prefix="long-audio-evaluation-") as temporary_directory:
+        temporary_root = Path(temporary_directory)
+        wer_label_path = temporary_root / "wer_label.txt"
+        wer_hyp_path = temporary_root / "wer_hyp.txt"
+        wer_detail_path = meeting_dir / "wer_detail.txt"
+        wer_label_lines, wer_hyp_lines = build_whole_audio_wer_inputs(
+            [record], {record.file_id: label}
+        )
+        _write_lines(wer_label_path, wer_label_lines)
+        _write_lines(wer_hyp_path, wer_hyp_lines)
+        wer_ok, wer_error = run_subprocess_task(
+            [
+                __import__("sys").executable,
+                str(Path(__file__).with_name("evaluation.py")),
+                "--label", str(wer_label_path),
+                "--hyp", str(wer_hyp_path),
+                "--language", language,
+                "--detail", str(wer_detail_path),
+            ]
+        )
+        if wer_ok:
+            try:
+                wer_summary = summarize_wer_detail(wer_detail_path)
+                _write_json(meeting_dir / "wer_summary.json", wer_summary)
+                outcome["wer_summary"] = wer_summary
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                outcome["errors"].append(f"WER: {error}")
+        else:
+            outcome["errors"].append(f"WER: {wer_error}")
+
+        try:
+            segment_rows = build_agent_sdk_segment_detail_rows(
+                label.segments, record.segments, language
+            )
+            write_agent_sdk_segment_detail_workbook(
+                meeting_dir / "segment_asr_detail.xlsx", segment_rows
+            )
+        except (OSError, ValueError) as error:
+            outcome["errors"].append(f"segment ASR detail: {error}")
+
+        speaker_results_dir = temporary_root / "speaker-results"
+        speaker_labels_dir = temporary_root / "speaker-labels"
+        _write_lines(
+            speaker_results_dir / f"{record.file_id}_asr.txt",
+            [
+                _format_machine_line(segment).rstrip("\n")
+                for segment in record.segments
+            ],
+        )
+        _write_label_file(label, speaker_labels_dir / f"{record.file_id}_label.txt")
+        speaker_output_dir = temporary_root / "speaker-output"
+        speaker_ok, speaker_error = run_subprocess_task(
+            [
+                __import__("sys").executable,
+                str(Path(__file__).with_name("speaker_diarization_metrics.py")),
+                "--results-dir", str(speaker_results_dir),
+                "--labels-dir", str(speaker_labels_dir),
+                "--output-dir", str(speaker_output_dir),
+                "--boundary-tolerance-ms", str(boundary_tolerance_ms),
+                "--collar-ms", str(collar_ms),
+            ]
+        )
+        if speaker_ok:
+            source_summary = speaker_output_dir / "speaker_diarization_summary.json"
+            source_boundary = speaker_output_dir / "speaker_diarization_boundary_details.csv"
+            try:
+                speaker_summary = _read_json_if_present(source_summary)
+                if speaker_summary is None or not source_boundary.is_file():
+                    raise ValueError("speaker evaluator did not generate its required outputs")
+                parameters = speaker_summary.get("parameters")
+                if isinstance(parameters, dict):
+                    parameters["results_dir"] = str(record.path)
+                    parameters["labels_dir"] = str(label.path)
+                    parameters["output_dir"] = str(meeting_dir)
+                _write_json(meeting_dir / "speaker_summary.json", speaker_summary)
+                shutil.copy2(source_boundary, meeting_dir / "speaker_diarization_boundary_details.csv")
+                outcome["speaker_summary"] = speaker_summary
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                outcome["errors"].append(f"speaker: {error}")
+        else:
+            outcome["errors"].append(f"speaker: {speaker_error}")
+
+    if outcome["errors"]:
+        outcome["status"] = "failed"
+    return outcome
+
+
 def write_report(
     path: Path,
-    manifest: dict,
-    status: dict,
-    wer_summary: Optional[dict],
-    speaker_summary: Optional[dict],
-    workbook_paths: list[Path],
+    results_dir: Path,
+    labels_dir: Optional[Path],
+    outcomes: list[dict],
 ) -> None:
+    success_count = sum(item["status"] == "success" for item in outcomes)
+    skipped_count = sum(item["status"] == "skipped_no_label" for item in outcomes)
+    failed_count = sum(item["status"] == "failed" for item in outcomes)
     lines = [
         "# Long-audio ASR and speaker evaluation report",
         "",
-        "## Inputs",
+        "## Summary",
         "",
-        f"- Results directory: `{manifest['parameters']['results_dir']}`",
-        f"- Labels directory: `{manifest['parameters'].get('labels_dir') or ''}`",
-        f"- Output directory: `{manifest['parameters']['output_dir']}`",
-        f"- Result audio files: {len(manifest['inputs']['result_files'])}",
-        f"- Matched label files: {len(manifest['inputs']['matched_labels'])}",
-        "",
-        "## Task status",
-        "",
-        "| Task | Status | Note |",
-        "| --- | --- | --- |",
+        f"- Results directory: `{results_dir}`",
+        f"- Labels directory: `{labels_dir or ''}`",
+        f"- Meetings: {len(outcomes)}",
+        f"- Success: {success_count}",
+        f"- Skipped (no label): {skipped_count}",
+        f"- Failed: {failed_count}",
     ]
-    for task_name, task_payload in status["tasks"].items():
-        lines.append(
-            f"| {task_name} | {task_payload['status']} | {task_payload.get('error', '')} |"
-        )
-    lines.extend(["", "## ASR", ""])
-    if wer_summary is None:
-        lines.append("WER was not generated.")
-    else:
+    for outcome in outcomes:
+        meeting_dir = outcome["meeting_dir"]
+        relative_dir = meeting_dir.name
         lines.extend(
             [
-                f"- Whole-audio WER: {wer_summary['wer_percent']}",
-                f"- Reference tokens: {wer_summary['reference_tokens']}",
-                f"- Errors: {wer_summary['errors']} (S={wer_summary['substitutions']}, D={wer_summary['deletions']}, I={wer_summary['insertions']})",
+                "",
+                f"## {outcome['file_id']}",
+                "",
+                f"- Status: {outcome['status']}",
+                f"- Source result: `{outcome['result_path']}`",
+                f"- Label: `{outcome['label_path'] or ''}`",
+                f"- Output: `{relative_dir}/`",
+                "- Artifacts:",
             ]
         )
-    lines.extend(["", "## Speaker", ""])
-    speaker_metrics = None if speaker_summary is None else speaker_summary.get("metrics")
-    if not isinstance(speaker_metrics, dict):
-        lines.append("Speaker metrics were not generated.")
-    else:
-        lines.extend(
-            [
-                f"- DER: {speaker_metrics.get('der')}",
-                f"- Speaker-change hit rate: {speaker_metrics.get('speaker_change_hit_rate')}",
-                f"- Speaker-change hits: {speaker_metrics.get('speaker_change_hits')}/{speaker_metrics.get('speaker_change_count')}",
-                f"- Overlap reference segments: {speaker_metrics.get('overlap_segments')}",
-            ]
-        )
-    lines.extend(["", "## Artifacts", ""])
-    for relative_path in (
-        "result.txt",
-        "evaluation_manifest.json",
-        "evaluation_status.json",
-        "asr/wer_detail.txt",
-        "asr/wer_summary.json",
-        "speaker/speaker_diarization_summary.json",
-        "speaker/speaker_diarization_boundary_details.csv",
-    ):
-        lines.append(f"- `{relative_path}`")
-    for workbook_path in workbook_paths:
-        lines.append(f"- `{workbook_path.name}` (Agent SDK six-column time-aligned ASR detail)")
+        for artifact_name in _meeting_artifact_names(meeting_dir):
+            lines.append(f"  - `{relative_dir}/{artifact_name}`")
+        wer_summary = outcome.get("wer_summary")
+        if isinstance(wer_summary, dict):
+            lines.append(f"- WER: {wer_summary.get('wer_percent')}")
+        speaker_summary = outcome.get("speaker_summary")
+        metrics = speaker_summary.get("metrics") if isinstance(speaker_summary, dict) else None
+        if isinstance(metrics, dict):
+            lines.append(f"- DER: {metrics.get('der')}")
+        errors = outcome.get("errors")
+        if errors:
+            lines.append("- Errors:")
+            for error in errors:
+                lines.append(f"  - {error}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -527,161 +578,24 @@ def main(argv: Optional[list[str]] = None) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     records = discover_result_records(args.results_dir)
     labels = resolve_labels(records, args.labels_dir, args.label)
-    evaluation_records = [record for record in records if record.file_id in labels]
-    inputs_dir = args.output_dir / "inputs"
-    asr_dir = args.output_dir / "asr"
-    speaker_dir = args.output_dir / "speaker"
-    result_txt = args.output_dir / "result.txt"
-    write_public_result_txt(records, result_txt)
-    asr_paths = write_internal_asr_files(evaluation_records, inputs_dir)
-    label_paths = write_internal_label_files(labels, inputs_dir / "labels")
-
-    manifest = {
-        "schema_version": 1,
-        "tool": "python-jimmy/evaluation",
-        "parameters": {
-            "results_dir": str(args.results_dir),
-            "labels_dir": None if args.labels_dir is None else str(args.labels_dir),
-            "label": None if args.label is None else str(args.label),
-            "output_dir": str(args.output_dir),
-            "language": args.language,
-            "boundary_tolerance_ms": args.boundary_tolerance_ms,
-            "collar_ms": args.collar_ms,
-        },
-        "inputs": {
-            "result_files": [
-                {"path": str(record.path), "audio_name": record.audio_name, "file_id": record.file_id}
-                for record in records
-            ],
-            "matched_labels": [
-                {"file_id": file_id, "path": str(label.path)}
-                for file_id, label in sorted(labels.items())
-            ],
-        },
-        "outputs": {
-            "result_txt": str(result_txt),
-            "internal_asr_files": {file_id: str(path) for file_id, path in asr_paths.items()},
-            "internal_label_files": {file_id: str(path) for file_id, path in label_paths.items()},
-        },
-    }
-    _write_json(args.output_dir / "evaluation_manifest.json", manifest)
-
-    tasks: dict[str, dict] = {
-        "normalization": _task(
-            "success",
-            artifacts=[result_txt, args.output_dir / "evaluation_manifest.json"],
+    outcomes = [
+        _run_meeting_evaluation(
+            record,
+            labels.get(record.file_id),
+            args.output_dir,
+            args.language,
+            args.boundary_tolerance_ms,
+            args.collar_ms,
         )
-    }
-    wer_summary: Optional[dict] = None
-    speaker_summary: Optional[dict] = None
-
-    if not evaluation_records:
-        tasks["wer"] = _task("skipped", error="no matching label file")
-        tasks["speaker"] = _task("skipped", error="no matching label file")
-    else:
-        wer_label_lines, wer_hyp_lines = build_whole_audio_wer_inputs(evaluation_records, labels)
-        wer_label_path = inputs_dir / "wer_label.txt"
-        wer_hyp_path = inputs_dir / "wer_hyp.txt"
-        wer_detail_path = asr_dir / "wer_detail.txt"
-        _write_lines(wer_label_path, wer_label_lines)
-        _write_lines(wer_hyp_path, wer_hyp_lines)
-        wer_command = [
-            __import__("sys").executable,
-            str(Path(__file__).with_name("evaluation.py")),
-            "--label", str(wer_label_path),
-            "--hyp", str(wer_hyp_path),
-            "--language", args.language,
-            "--detail", str(wer_detail_path),
-        ]
-        wer_task = run_subprocess_task(
-            wer_command, asr_dir / "evaluation.stdout.log", asr_dir / "evaluation.stderr.log"
-        )
-        if wer_task["status"] == "success":
-            try:
-                wer_summary = summarize_wer_detail(wer_detail_path)
-                wer_summary_path = asr_dir / "wer_summary.json"
-                _write_json(wer_summary_path, wer_summary)
-                wer_task["artifacts"] = [str(wer_detail_path), str(wer_summary_path)]
-            except (OSError, ValueError, json.JSONDecodeError) as error:
-                wer_task = _task(
-                    "failed",
-                    error=str(error),
-                    command=wer_command,
-                    stdout_log=asr_dir / "evaluation.stdout.log",
-                    stderr_log=asr_dir / "evaluation.stderr.log",
-                )
-        tasks["wer"] = wer_task
-
-        speaker_command = [
-            __import__("sys").executable,
-            str(Path(__file__).with_name("speaker_diarization_metrics.py")),
-            "--results-dir", str(inputs_dir),
-            "--labels-dir", str(inputs_dir / "labels"),
-            "--output-dir", str(speaker_dir),
-            "--boundary-tolerance-ms", str(args.boundary_tolerance_ms),
-            "--collar-ms", str(args.collar_ms),
-        ]
-        speaker_task = run_subprocess_task(
-            speaker_command,
-            speaker_dir / "speaker_metrics.stdout.log",
-            speaker_dir / "speaker_metrics.stderr.log",
-        )
-        speaker_summary_path = speaker_dir / "speaker_diarization_summary.json"
-        if speaker_task["status"] == "success":
-            try:
-                speaker_summary = _read_json_if_present(speaker_summary_path)
-                if speaker_summary is None:
-                    raise ValueError(f"speaker summary was not created: {speaker_summary_path}")
-                speaker_task["artifacts"] = [
-                    str(speaker_summary_path),
-                    str(speaker_dir / "speaker_diarization_per_file.json"),
-                    str(speaker_dir / "speaker_diarization_boundary_details.csv"),
-                ]
-            except (OSError, ValueError, json.JSONDecodeError) as error:
-                speaker_task = _task(
-                    "failed",
-                    error=str(error),
-                    command=speaker_command,
-                    stdout_log=speaker_dir / "speaker_metrics.stdout.log",
-                    stderr_log=speaker_dir / "speaker_metrics.stderr.log",
-                )
-        tasks["speaker"] = speaker_task
-
-    workbook_paths: list[Path] = []
-    if not evaluation_records:
-        tasks["excel"] = _task("skipped", error="no matched labels")
-    else:
-        try:
-            for record in evaluation_records:
-                rows = build_agent_sdk_segment_detail_rows(
-                    labels[record.file_id].segments,
-                    record.segments,
-                    args.language,
-                )
-                workbook_path = args.output_dir / f"{record.file_id}_segment_asr_detail.xlsx"
-                write_agent_sdk_segment_detail_workbook(workbook_path, rows)
-                workbook_paths.append(workbook_path)
-            tasks["excel"] = _task("success", artifacts=workbook_paths)
-        except OSError as error:
-            tasks["excel"] = _task("failed", error=str(error))
-
-    manifest["outputs"]["asr_detail_workbooks"] = [str(path) for path in workbook_paths]
-    _write_json(args.output_dir / "evaluation_manifest.json", manifest)
-    status = {
-        "schema_version": 1,
-        "overall_status": "failed" if any(task["status"] == "failed" for task in tasks.values()) else "success",
-        "tasks": tasks,
-    }
-    status_path = args.output_dir / "evaluation_status.json"
-    _write_json(status_path, status)
+        for record in records
+    ]
     report_path = args.output_dir / "evaluation_report.md"
-    write_report(report_path, manifest, status, wer_summary, speaker_summary, workbook_paths)
-    print(f"normalized {len(records)} audio result(s) into {args.output_dir}")
+    write_report(report_path, args.results_dir, args.labels_dir, outcomes)
+    print(f"evaluated {len(records)} meeting result(s) into {args.output_dir}")
     print(f"matched {len(labels)} label file(s)")
-    print(f"status: {status_path}")
-    return 1 if status["overall_status"] == "failed" else 0
+    print(f"report: {report_path}")
+    return 1 if any(outcome["status"] == "failed" for outcome in outcomes) else 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

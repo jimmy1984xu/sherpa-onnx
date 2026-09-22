@@ -64,41 +64,41 @@ connected time groups, so split, merge, and unmatched cases remain visible.
 ## Output layout
 
 The runner writes only to `--output-dir`; it never overwrites pipeline files.
-The pipeline's existing human-readable `result.txt` remains unchanged. The
-independent evaluation output has a machine-readable `result.txt` whose rows
-are:
+Every discovered audio produces one meeting directory, including a single-audio
+run. The directory name is the unique `file_id` derived from its segment IDs,
+and the artifact names inside it are fixed for portable automation.
+
+```text
+<output-dir>/
+├── evaluation_report.md
+├── <file_id-A>/
+│   ├── asr.txt
+│   ├── wer_detail.txt
+│   ├── wer_summary.json
+│   ├── segment_asr_detail.xlsx
+│   ├── speaker_summary.json
+│   └── speaker_diarization_boundary_details.csv
+└── <file_id-B>/
+    └── ...the same fixed names...
+```
+
+`asr.txt` is always generated and contains:
 
 ```text
 <segment_id> <speaker_id> <asr_text>
 ```
 
-```text
-<output-dir>/
-├── result.txt
-├── evaluation_manifest.json
-├── evaluation_status.json
-├── evaluation_report.md
-├── inputs/
-│   ├── <file_id>_asr.txt
-│   ├── labels/<file_id>_label.txt
-│   ├── wer_label.txt
-│   └── wer_hyp.txt
-├── asr/
-│   ├── wer_detail.txt
-│   ├── wer_summary.json
-│   ├── evaluation.stdout.log
-│   └── evaluation.stderr.log
-├── speaker/
-│   ├── speaker_diarization_summary.json
-│   ├── speaker_diarization_per_file.json
-│   ├── speaker_diarization_boundary_details.csv
-│   ├── speaker_metrics.stdout.log
-│   └── speaker_metrics.stderr.log
-└── <file_id>_segment_asr_detail.xlsx
-```
+For a meeting that has a matching label, the runner independently produces its
+WER detail/summary, Agent SDK time-aligned segment workbook, speaker summary,
+and speaker boundary CSV. `speaker_summary.json` has the same metrics schema
+as the former `speaker_diarization_summary.json` output.
 
-`evaluation_status.json` records every task as `success`, `failed`, or
-`skipped`, with command, log, error, and artifact paths as applicable.
+For a meeting with no matching label, its directory contains only `asr.txt`;
+`evaluation_report.md` records the `skipped_no_label` state. The root report is
+the only cross-meeting artifact. The runner does not retain `result.txt`,
+`evaluation_manifest.json`, `evaluation_status.json`, `inputs/`, `asr/`,
+`speaker/`, WER ref/hyp files, subprocess logs, or
+`speaker_diarization_per_file.json`.
 
 ## Metric conventions
 

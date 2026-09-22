@@ -44,15 +44,15 @@ class ResultAndLabelParsingTest(unittest.TestCase):
         )
         return run
 
-    def test_parse_result_resolve_label_and_write_public_projection(self) -> None:
+    def test_parse_result_resolve_label_and_write_meeting_projection(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             results_dir = self._write_result(root)
             labels_dir = root / "labels"
             labels_dir.mkdir()
             (labels_dir / "23_asr_1782715267098_label.txt").write_text(
-                "23_asr_1782715267098_1118_2335 (leslie) \u6765\u5427\n"
-                "23_asr_1782715267098_3453_6823 (hui) \u53ef\u4ee5\n",
+                "23_asr_1782715267098_1118_2335 (leslie) 来吧\n"
+                "23_asr_1782715267098_3453_6823 (hui) 可以\n",
                 encoding="utf-8",
             )
             records = runner.discover_result_records(results_dir)
@@ -64,16 +64,15 @@ class ResultAndLabelParsingTest(unittest.TestCase):
                 labels[records[0].file_id].path.name,
                 "23_asr_1782715267098_label.txt",
             )
-            output = root / "out"
-            output.mkdir()
-            runner.write_public_result_txt(records, output / "result.txt")
-            self.assertEqual(
-                (output / "result.txt").read_text(encoding="utf-8"),
-                "23_asr_1782715267098_1118_2308 speaker_02 \u6765\u5427\n"
-                "23_asr_1782715267098_3426_6846 speaker_00 \u53ef\u4ee5\n",
+            asr_path = runner.write_meeting_asr_txt(
+                records[0], root / "out" / "23_asr_1782715267098"
             )
-            runner.write_internal_asr_files(records, output / "inputs")
-            self.assertTrue((output / "inputs" / "23_asr_1782715267098_asr.txt").is_file())
+            self.assertEqual(
+                asr_path.read_text(encoding="utf-8"),
+                "23_asr_1782715267098_1118_2308 speaker_02 来吧\n"
+                "23_asr_1782715267098_3426_6846 speaker_00 可以\n",
+            )
+            self.assertEqual(asr_path.name, "asr.txt")
 
     def test_explicit_label_requires_a_single_result_audio(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -181,42 +180,47 @@ class AgentSdkSegmentDetailTest(unittest.TestCase):
         )
         self.assertIn("识别错误", values)
 class RunnerIntegrationTest(unittest.TestCase):
-    def test_cli_writes_standardized_evaluation_artifacts(self) -> None:
+    def _write_result(self, run_dir: Path, file_id: str, segments: list[dict]) -> None:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "result.json").write_text(
+            json.dumps(
+                {"audio_name": f"{file_id}.pcm", "segments": segments},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    def test_cli_writes_fixed_artifacts_in_a_meeting_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             run = root / "run"
             labels = root / "labels"
             output = root / "evaluation"
-            run.mkdir()
             labels.mkdir()
-            (run / "result.json").write_text(
-                json.dumps(
+            self._write_result(
+                run,
+                "meeting",
+                [
                     {
-                        "audio_name": "meeting.pcm",
-                        "segments": [
-                            {
-                                "segment_id": "meeting_0_1000",
-                                "duration_ms": 1000,
-                                "speaker_id": "speaker_00",
-                                "asr_text": "\u4f60\u597d",
-                            },
-                            {
-                                "segment_id": "meeting_1000_1000",
-                                "duration_ms": 1000,
-                                "speaker_id": "speaker_01",
-                                "asr_text": "\u4e16\u754c",
-                            },
-                        ],
+                        "segment_id": "meeting_0_1000",
+                        "duration_ms": 1000,
+                        "speaker_id": "speaker_00",
+                        "asr_text": "你好",
                     },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
+                    {
+                        "segment_id": "meeting_1000_1000",
+                        "duration_ms": 1000,
+                        "speaker_id": "speaker_01",
+                        "asr_text": "世界",
+                    },
+                ],
             )
             (labels / "meeting_label.txt").write_text(
-                "meeting_0_1000 (alice) \u4f60\u597d\n"
-                "meeting_1000_1000 (bob) \u4e16\u754c\n",
+                "meeting_0_1000 (alice) 你好\n"
+                "meeting_1000_1000 (bob) 世界\n",
                 encoding="utf-8",
             )
+
             exit_code = runner.main(
                 [
                     "--results-dir", str(run),
@@ -227,29 +231,32 @@ class RunnerIntegrationTest(unittest.TestCase):
                     "--collar-ms", "0",
                 ]
             )
+
             self.assertEqual(exit_code, 0)
-            self.assertTrue((output / "result.txt").is_file())
-            self.assertTrue((output / "asr" / "wer_detail.txt").is_file())
-            self.assertTrue((output / "asr" / "wer_summary.json").is_file())
-            self.assertTrue((output / "speaker" / "speaker_diarization_summary.json").is_file())
-            self.assertTrue((output / "speaker" / "speaker_diarization_boundary_details.csv").is_file())
-            detail_workbook = output / "meeting_segment_asr_detail.xlsx"
-            self.assertTrue(detail_workbook.is_file())
-            self.assertFalse((output / "asr_segment_diff.xlsx").exists())
-            self.assertTrue((output / "evaluation_manifest.json").is_file())
-            self.assertTrue((output / "evaluation_report.md").is_file())
-            status = json.loads((output / "evaluation_status.json").read_text(encoding="utf-8"))
-            self.assertEqual(status["tasks"]["wer"]["status"], "success")
-            self.assertEqual(status["tasks"]["speaker"]["status"], "success")
-            self.assertEqual(status["tasks"]["excel"]["status"], "success")
-            self.assertEqual(status["tasks"]["excel"]["artifacts"], [str(detail_workbook)])
-            manifest = json.loads((output / "evaluation_manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest["outputs"]["asr_detail_workbooks"], [str(detail_workbook)])
-            self.assertIn(
-                "meeting_segment_asr_detail.xlsx",
-                (output / "evaluation_report.md").read_text(encoding="utf-8"),
+            meeting_dir = output / "meeting"
+            self.assertEqual(
+                {path.name for path in meeting_dir.iterdir()},
+                {
+                    "asr.txt",
+                    "wer_detail.txt",
+                    "wer_summary.json",
+                    "segment_asr_detail.xlsx",
+                    "speaker_summary.json",
+                    "speaker_diarization_boundary_details.csv",
+                },
             )
-            with zipfile.ZipFile(detail_workbook) as archive:
+            self.assertEqual(
+                {path.name for path in output.iterdir()},
+                {"evaluation_report.md", "meeting"},
+            )
+            self.assertIn("meeting_0_1000 speaker_00 你好", (meeting_dir / "asr.txt").read_text(encoding="utf-8"))
+            self.assertIsInstance(json.loads((meeting_dir / "wer_summary.json").read_text(encoding="utf-8")), dict)
+            self.assertIsInstance(json.loads((meeting_dir / "speaker_summary.json").read_text(encoding="utf-8")), dict)
+            self.assertTrue((meeting_dir / "speaker_diarization_boundary_details.csv").read_text(encoding="utf-8-sig"))
+            report = (output / "evaluation_report.md").read_text(encoding="utf-8")
+            self.assertIn("meeting/wer_summary.json", report)
+            self.assertIn("## meeting", report)
+            with zipfile.ZipFile(meeting_dir / "segment_asr_detail.xlsx") as archive:
                 sheet = ElementTree.fromstring(archive.read("xl/worksheets/sheet1.xml"))
                 values = [node.text or "" for node in sheet.iter() if node.tag.endswith("}t")]
             self.assertEqual(
@@ -257,46 +264,64 @@ class RunnerIntegrationTest(unittest.TestCase):
                 values[:6],
             )
 
-    def test_missing_label_writes_normalized_result_and_skips_metrics(self) -> None:
+    def test_multiple_meetings_are_isolated_and_unlabeled_meeting_only_has_asr(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             run = root / "run"
             labels = root / "labels"
             output = root / "evaluation"
-            run.mkdir()
             labels.mkdir()
-            (run / "result.json").write_text(
-                json.dumps(
-                    {
-                        "audio_name": "unlabeled.pcm",
-                        "segments": [
-                            {
-                                "segment_id": "unlabeled_0_1000",
-                                "duration_ms": 1000,
-                                "speaker_id": "speaker_00",
-                                "asr_text": "text",
-                            }
-                        ],
-                    }
-                ),
-                encoding="utf-8",
+            self._write_result(
+                run / "labeled",
+                "labeled",
+                [{
+                    "segment_id": "labeled_0_1000",
+                    "duration_ms": 1000,
+                    "speaker_id": "speaker_00",
+                    "asr_text": "已标注",
+                }],
             )
+            self._write_result(
+                run / "unlabeled",
+                "unlabeled",
+                [{
+                    "segment_id": "unlabeled_0_1000",
+                    "duration_ms": 1000,
+                    "speaker_id": "speaker_00",
+                    "asr_text": "未标注",
+                }],
+            )
+            (labels / "labeled_label.txt").write_text(
+                "labeled_0_1000 (alice) 已标注\n", encoding="utf-8"
+            )
+
             self.assertEqual(
                 runner.main(
                     [
                         "--results-dir", str(run),
                         "--labels-dir", str(labels),
                         "--output-dir", str(output),
+                        "--collar-ms", "0",
                     ]
                 ),
                 0,
             )
-            status = json.loads((output / "evaluation_status.json").read_text(encoding="utf-8"))
-            self.assertEqual(status["tasks"]["wer"]["status"], "skipped")
-            self.assertEqual(status["tasks"]["speaker"]["status"], "skipped")
-            self.assertEqual(status["tasks"]["excel"]["status"], "skipped")
-            self.assertFalse((output / "unlabeled_segment_asr_detail.xlsx").exists())
-            self.assertTrue((output / "result.txt").is_file())
+
+            self.assertEqual(
+                {path.name for path in output.iterdir()},
+                {"evaluation_report.md", "labeled", "unlabeled"},
+            )
+            self.assertTrue((output / "labeled" / "asr.txt").is_file())
+            self.assertTrue((output / "labeled" / "wer_detail.txt").is_file())
+            self.assertTrue((output / "labeled" / "speaker_summary.json").is_file())
+            self.assertEqual(
+                {path.name for path in (output / "unlabeled").iterdir()},
+                {"asr.txt"},
+            )
+            report = (output / "evaluation_report.md").read_text(encoding="utf-8")
+            self.assertIn("skipped_no_label", report)
+            self.assertIn("## labeled", report)
+            self.assertIn("## unlabeled", report)
 
 
 class CliContractTest(unittest.TestCase):
