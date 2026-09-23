@@ -17,6 +17,11 @@ from vad import (
 
 SAMPLE_RATE = 16000
 DEFAULT_MAX_EMBEDDING_SAMPLES = 10 * SAMPLE_RATE
+# A remainder this short after overlap filtering is not meaningful speaker
+# evidence. More importantly, Titanet cannot become ready for such input;
+# classify it as an expected no-usable-audio skip instead of an extractor
+# failure.
+MIN_USABLE_EMBEDDING_SAMPLES = SAMPLE_RATE // 10
 DEFAULT_LOCAL_MASK_CONFIDENCE_THRESHOLD = 0.70
 DEFAULT_LOCAL_MASK_MAX_GAP_MS = 3000
 
@@ -351,7 +356,7 @@ def assign_speaker_ids_with_centroids(
                 if segment.is_cluster_eligible
                 else samples_for_embedding(segment)
             )
-            if embedding_samples.size == 0:
+            if embedding_samples.size < MIN_USABLE_EMBEDDING_SAMPLES:
                 segment.speaker_id = UNKNOWN_SPEAKER_ID
                 segment.speaker_assignment_source = "no_usable_embedding_audio"
                 skipped_no_usable_audio += 1

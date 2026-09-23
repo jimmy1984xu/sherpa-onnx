@@ -448,6 +448,31 @@ class NoUsableEmbeddingAudioTest(unittest.TestCase):
         self.assertEqual(segment.speaker_assignment_source, "no_usable_embedding_audio")
         self.assertIsNone(segment.embedding_error)
 
+    def test_tiny_overlap_remainder_is_expected_skip_without_extractor_call(self):
+        segment = SpeechSegment(
+            1,
+            229406,
+            231648,
+            np.zeros(35872, dtype=np.float32),
+            speaker_composition="single_speaker",
+            overlap_regions=[(229416, 230445), (231238, 231289)],
+        )
+        extractor = self.ExtractorMustNotRun()
+
+        errors, assigned, unknown, skipped = assign_speaker_ids_with_centroids(
+            extractor,
+            [segment],
+            cluster_threshold=0.5,
+            num_clusters=-1,
+            assignment_similarity_threshold=0.5,
+        )
+
+        self.assertEqual((errors, assigned, unknown, skipped), (0, 0, 1, 1))
+        self.assertEqual(extractor.create_stream_calls, 0)
+        self.assertEqual(segment.speaker_id, "UNKNOWN")
+        self.assertEqual(segment.speaker_assignment_source, "no_usable_embedding_audio")
+        self.assertIsNone(segment.embedding_error)
+
     def test_nonempty_extractor_failure_remains_embedding_error(self):
         segment = SpeechSegment(
             1,
