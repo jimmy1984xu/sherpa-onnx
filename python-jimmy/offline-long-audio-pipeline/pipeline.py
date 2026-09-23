@@ -14,7 +14,7 @@ from diarization import finalize_vad_only_segments, resolve_final_segments
 from models import PipelineRuntimes, build_runtimes
 from output import create_run_directory, write_metadata, write_results
 from speaker import assign_speaker_ids_with_centroids
-from vad import collect_vad_segments
+from vad import UNKNOWN_SPEAKER_ID, collect_vad_segments
 from whisper_asr import (
     BILINGUAL_MIN_TEXT_CONFIDENCE,
     WhisperClientConfig,
@@ -225,7 +225,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             for segment in segments:
                 write_segment_wav(run_dir / "segments" / f"{segment.segment_id}.wav", segment.samples)
 
-        def run_speaker() -> tuple[int, int, int]:
+        def run_speaker() -> tuple[int, int, int, int]:
             logger.info("stage=speaker event=start segments=%s", len(segments))
             started_local = time.perf_counter()
             counts = assign_speaker_ids_with_centroids(
@@ -237,8 +237,8 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             )
             timings["speaker_seconds"] = time.perf_counter() - started_local
             logger.info(
-                "stage=speaker event=complete seconds=%.6f segments=%s errors=%s centroid_assigned=%s unknown_excluded=%s",
-                timings["speaker_seconds"], len(segments), counts[0], counts[1], counts[2],
+                "stage=speaker event=complete seconds=%.6f segments=%s errors=%s centroid_assigned=%s unknown_excluded=%s skipped_no_usable_audio=%s",
+                timings["speaker_seconds"], len(segments), counts[0], counts[1], counts[2], counts[3],
             )
             return counts
 
@@ -269,9 +269,9 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
 
         if config.asr_engine == ASR_ENGINE_WHISPER:
             asr_error_count = run_asr()
-            embedding_error_count, centroid_assigned, unknown_excluded = run_speaker()
+            embedding_error_count, centroid_assigned, unknown_excluded, embedding_skipped_no_usable_audio_count = run_speaker()
         else:
-            embedding_error_count, centroid_assigned, unknown_excluded = run_speaker()
+            embedding_error_count, centroid_assigned, unknown_excluded, embedding_skipped_no_usable_audio_count = run_speaker()
             asr_error_count = run_asr()
 
         timings["total_seconds"] = time.perf_counter() - total_started
@@ -286,7 +286,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         clustered_speaker_ids = {
             segment.speaker_id
             for segment in segments
-            if segment.is_cluster_eligible and segment.speaker_id not in {"unknown", "-"}
+            if segment.is_cluster_eligible and segment.speaker_id not in {UNKNOWN_SPEAKER_ID, "-"}
         }
         write_metadata(
             run_dir,
@@ -308,6 +308,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
                 "true_overlap_count": resolution_stats.true_overlap_count,
                 "asr_error_count": asr_error_count,
                 "embedding_error_count": embedding_error_count,
+                "embedding_skipped_no_usable_audio_count": embedding_skipped_no_usable_audio_count,
                 "timings": timings,
             },
         )

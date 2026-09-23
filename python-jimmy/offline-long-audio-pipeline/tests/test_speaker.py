@@ -96,7 +96,7 @@ class CleanSpanAndLocalMaskAssignmentTest(unittest.TestCase):
         )
         clusterer = RecordingClusterer([7])
 
-        errors, assigned, unknown = assign_speaker_ids_with_centroids(
+        errors, assigned, unknown, skipped = assign_speaker_ids_with_centroids(
             SequenceExtractor([[1.0, 0.0], [0.0, 1.0]]),
             [split_clean, exact_clean],
             cluster_threshold=0.5,
@@ -105,11 +105,11 @@ class CleanSpanAndLocalMaskAssignmentTest(unittest.TestCase):
             clusterer_factory=ControlledSpeakerAssignmentTest._factory(clusterer),
         )
 
-        self.assertEqual((errors, assigned, unknown), (0, 0, 1))
+        self.assertEqual((errors, assigned, unknown, skipped), (0, 0, 1, 0))
         self.assertEqual(clusterer.received.shape, (1, 2))
         self.assertEqual(exact_clean.speaker_id, "speaker_00")
         self.assertEqual(exact_clean.speaker_assignment_source, "clean_cluster")
-        self.assertEqual(split_clean.speaker_id, "unknown")
+        self.assertEqual(split_clean.speaker_id, "UNKNOWN")
 
     def test_short_turn_inherits_a_clean_cluster_through_same_fused_mask(self):
         clean = self._segment(
@@ -118,7 +118,7 @@ class CleanSpanAndLocalMaskAssignmentTest(unittest.TestCase):
         short = self._segment(2, 8000, 9000, mask=1, confidence=0.95)
         clusterer = RecordingClusterer([4])
 
-        errors, assigned, unknown = assign_speaker_ids_with_centroids(
+        errors, assigned, unknown, skipped = assign_speaker_ids_with_centroids(
             # Deliberately make the short embedding unlike the clean centroid:
             # mask continuity, not global embedding, must decide this turn.
             SequenceExtractor([[1.0, 0.0], [0.0, 1.0]]),
@@ -129,7 +129,7 @@ class CleanSpanAndLocalMaskAssignmentTest(unittest.TestCase):
             clusterer_factory=ControlledSpeakerAssignmentTest._factory(clusterer),
         )
 
-        self.assertEqual((errors, assigned, unknown), (0, 1, 0))
+        self.assertEqual((errors, assigned, unknown, skipped), (0, 1, 0, 0))
         self.assertEqual([clean.speaker_id, short.speaker_id], ["speaker_00", "speaker_00"])
         self.assertEqual(clean.speaker_assignment_source, "clean_cluster")
         self.assertEqual(short.speaker_assignment_source, "local_mask_inherit")
@@ -227,7 +227,7 @@ class ControlledSpeakerAssignmentTest(unittest.TestCase):
         overlap = self._segment(4, 6500, 8000, "overlapped_speakers")
         clusterer = RecordingClusterer([4, 4])
 
-        errors, assigned_excluded, unknown_excluded = assign_speaker_ids_with_centroids(
+        errors, assigned_excluded, unknown_excluded, skipped = assign_speaker_ids_with_centroids(
             SequenceExtractor([[1.0, 0.0], [0.8, 0.6], [0.9, 0.1], [0.0, 1.0]]),
             [eligible_a, eligible_b, short, overlap],
             cluster_threshold=0.5,
@@ -245,7 +245,7 @@ class ControlledSpeakerAssignmentTest(unittest.TestCase):
         )
         self.assertEqual(short.speaker_id, "speaker_00")
         self.assertGreaterEqual(short.cluster_assignment_similarity, 0.5)
-        self.assertEqual(overlap.speaker_id, "unknown")
+        self.assertEqual(overlap.speaker_id, "UNKNOWN")
         self.assertLess(overlap.cluster_assignment_similarity, 0.5)
         self.assertIsNone(eligible_a.previous_segment_similarity)
         self.assertGreater(eligible_b.previous_segment_similarity, 0.0)
@@ -256,7 +256,7 @@ class ControlledSpeakerAssignmentTest(unittest.TestCase):
         short = self._segment(1, 0, 500, "single_speaker")
         overlap = self._segment(2, 500, 2000, "overlapped_speakers")
 
-        errors, assigned_excluded, unknown_excluded = assign_speaker_ids_with_centroids(
+        errors, assigned_excluded, unknown_excluded, skipped = assign_speaker_ids_with_centroids(
             SequenceExtractor([[1.0, 0.0], [0.0, 1.0]]),
             [short, overlap],
             cluster_threshold=0.5,
@@ -265,8 +265,8 @@ class ControlledSpeakerAssignmentTest(unittest.TestCase):
             clusterer_factory=lambda *_args: self.fail("clusterer must not be created"),
         )
 
-        self.assertEqual((errors, assigned_excluded, unknown_excluded), (0, 0, 2))
-        self.assertEqual([short.speaker_id, overlap.speaker_id], ["unknown", "unknown"])
+        self.assertEqual((errors, assigned_excluded, unknown_excluded, skipped), (0, 0, 2, 0))
+        self.assertEqual([short.speaker_id, overlap.speaker_id], ["UNKNOWN", "UNKNOWN"])
         self.assertIsNone(short.cluster_assignment_similarity)
         self.assertIsNone(overlap.cluster_assignment_similarity)
 
@@ -275,7 +275,7 @@ class ControlledSpeakerAssignmentTest(unittest.TestCase):
         good = self._segment(2, 3000, 6000, "single_speaker")
         clusterer = RecordingClusterer([9])
 
-        errors, assigned_excluded, unknown_excluded = assign_speaker_ids_with_centroids(
+        errors, assigned_excluded, unknown_excluded, skipped = assign_speaker_ids_with_centroids(
             SequenceExtractor([RuntimeError("bad embedding"), [1.0, 0.0]]),
             [failed, good],
             cluster_threshold=0.5,
@@ -284,8 +284,8 @@ class ControlledSpeakerAssignmentTest(unittest.TestCase):
             clusterer_factory=self._factory(clusterer),
         )
 
-        self.assertEqual((errors, assigned_excluded, unknown_excluded), (1, 0, 0))
-        self.assertEqual(failed.speaker_id, "unknown")
+        self.assertEqual((errors, assigned_excluded, unknown_excluded, skipped), (1, 0, 0, 0))
+        self.assertEqual(failed.speaker_id, "UNKNOWN")
         self.assertIsNone(failed.embedding)
         self.assertEqual(good.speaker_id, "speaker_00")
         self.assertEqual(clusterer.received.shape, (1, 2))
@@ -312,7 +312,7 @@ class ControlledSpeakerAssignmentTest(unittest.TestCase):
         good = self._segment(2, 3000, 6000, "single_speaker")
         clusterer = RecordingClusterer([1])
 
-        errors, assigned_excluded, unknown_excluded = assign_speaker_ids_with_centroids(
+        errors, assigned_excluded, unknown_excluded, skipped = assign_speaker_ids_with_centroids(
             SequenceExtractor([[1.0, 0.0]]),
             [invalid, good],
             cluster_threshold=0.5,
@@ -321,7 +321,7 @@ class ControlledSpeakerAssignmentTest(unittest.TestCase):
             clusterer_factory=self._factory(clusterer),
         )
 
-        self.assertEqual((errors, assigned_excluded, unknown_excluded), (0, 0, 0))
+        self.assertEqual((errors, assigned_excluded, unknown_excluded, skipped), (0, 0, 0, 0))
         self.assertEqual(invalid.speaker_id, "-")
         self.assertIsNone(invalid.embedding)
         self.assertEqual(good.speaker_id, "speaker_00")
@@ -386,4 +386,121 @@ class EmbeddingOverlapCropTest(unittest.TestCase):
         self.assertEqual(len(received), 1)
         self.assertEqual(received[0].size, 9600)
         np.testing.assert_array_equal(received[0], samples[22400:])
-        self.assertEqual(segment.speaker_id, "unknown")
+        self.assertEqual(segment.speaker_id, "UNKNOWN")
+
+
+class NoUsableEmbeddingAudioTest(unittest.TestCase):
+    class ExtractorMustNotRun:
+        def __init__(self):
+            self.create_stream_calls = 0
+
+        def create_stream(self):
+            self.create_stream_calls += 1
+            raise AssertionError("extractor must not run when no usable embedding audio exists")
+
+    def test_full_overlap_is_expected_skip_without_extractor_call(self):
+        segment = SpeechSegment(
+            1,
+            0,
+            1000,
+            np.zeros(16000, dtype=np.float32),
+            speaker_composition="overlapped_speakers",
+            overlap_regions=[(0, 1000)],
+        )
+        extractor = self.ExtractorMustNotRun()
+
+        errors, assigned, unknown, skipped = assign_speaker_ids_with_centroids(
+            extractor,
+            [segment],
+            cluster_threshold=0.5,
+            num_clusters=-1,
+            assignment_similarity_threshold=0.5,
+        )
+
+        self.assertEqual((errors, assigned, unknown, skipped), (0, 0, 1, 1))
+        self.assertEqual(extractor.create_stream_calls, 0)
+        self.assertEqual(segment.speaker_id, "UNKNOWN")
+        self.assertEqual(segment.speaker_assignment_source, "no_usable_embedding_audio")
+        self.assertIsNone(segment.embedding_error)
+
+    def test_overlap_padding_can_skip_a_single_speaker_turn_without_extractor_call(self):
+        segment = SpeechSegment(
+            1,
+            0,
+            2000,
+            np.zeros(32000, dtype=np.float32),
+            speaker_composition="single_speaker",
+            overlap_regions=[(0, 1000)],
+        )
+        extractor = self.ExtractorMustNotRun()
+
+        errors, assigned, unknown, skipped = assign_speaker_ids_with_centroids(
+            extractor,
+            [segment],
+            cluster_threshold=0.5,
+            num_clusters=-1,
+            assignment_similarity_threshold=0.5,
+        )
+
+        self.assertEqual((errors, assigned, unknown, skipped), (0, 0, 1, 1))
+        self.assertEqual(extractor.create_stream_calls, 0)
+        self.assertEqual(segment.speaker_id, "UNKNOWN")
+        self.assertEqual(segment.speaker_assignment_source, "no_usable_embedding_audio")
+        self.assertIsNone(segment.embedding_error)
+
+    def test_nonempty_extractor_failure_remains_embedding_error(self):
+        segment = SpeechSegment(
+            1,
+            0,
+            1000,
+            np.zeros(16000, dtype=np.float32),
+            speaker_composition="single_speaker",
+        )
+
+        errors, assigned, unknown, skipped = assign_speaker_ids_with_centroids(
+            SequenceExtractor([RuntimeError("Titanet compute failed")]),
+            [segment],
+            cluster_threshold=0.5,
+            num_clusters=-1,
+            assignment_similarity_threshold=0.5,
+        )
+
+        self.assertEqual((errors, assigned, unknown, skipped), (1, 0, 1, 0))
+        self.assertEqual(segment.speaker_id, "UNKNOWN")
+        self.assertEqual(segment.embedding_error, "Titanet compute failed")
+
+    def test_no_usable_audio_is_not_overridden_by_local_mask_inheritance(self):
+        clean = SpeechSegment(
+            1,
+            0,
+            3000,
+            np.zeros(48000, dtype=np.float32),
+            speaker_composition="single_speaker",
+            clean_spans=[(0, 3000)],
+            local_speaker_mask=1,
+            local_speaker_mask_confidence=0.99,
+        )
+        skipped_segment = SpeechSegment(
+            2,
+            3000,
+            4000,
+            np.zeros(16000, dtype=np.float32),
+            speaker_composition="overlapped_speakers",
+            overlap_regions=[(3000, 4000)],
+            local_speaker_mask=1,
+            local_speaker_mask_confidence=0.99,
+        )
+        clusterer = RecordingClusterer([1])
+
+        errors, assigned, unknown, skipped = assign_speaker_ids_with_centroids(
+            SequenceExtractor([[1.0, 0.0]]),
+            [clean, skipped_segment],
+            cluster_threshold=0.5,
+            num_clusters=-1,
+            assignment_similarity_threshold=0.5,
+            clusterer_factory=ControlledSpeakerAssignmentTest._factory(clusterer),
+        )
+
+        self.assertEqual((errors, assigned, unknown, skipped), (0, 0, 1, 1))
+        self.assertEqual(skipped_segment.speaker_id, "UNKNOWN")
+        self.assertEqual(skipped_segment.speaker_assignment_source, "no_usable_embedding_audio")

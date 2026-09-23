@@ -9,6 +9,7 @@ import numpy as np
 
 POST_OVERLAP_PAD_MS = 1000
 CLEAN_SPAN_MIN_DURATION_MS = 3000
+UNKNOWN_SPEAKER_ID = "UNKNOWN"
 
 
 @dataclass
@@ -26,7 +27,7 @@ class SpeechSegment:
     asr_candidates: dict[str, dict[str, Any]] = field(default_factory=dict)
     asr_valid: int = 1
     embedding_error: str | None = None
-    speaker_id: str = "unknown"
+    speaker_id: str = UNKNOWN_SPEAKER_ID
     previous_segment_similarity: float | None = None
     cluster_assignment_similarity: float | None = None
     speaker_composition: str = "unknown_activity"

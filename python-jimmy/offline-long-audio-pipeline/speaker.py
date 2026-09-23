@@ -8,7 +8,12 @@ from typing import Any
 import numpy as np
 import sherpa_onnx
 
-from vad import CLEAN_SPAN_MIN_DURATION_MS, POST_OVERLAP_PAD_MS, SpeechSegment
+from vad import (
+    CLEAN_SPAN_MIN_DURATION_MS,
+    POST_OVERLAP_PAD_MS,
+    UNKNOWN_SPEAKER_ID,
+    SpeechSegment,
+)
 
 SAMPLE_RATE = 16000
 DEFAULT_MAX_EMBEDDING_SAMPLES = 10 * SAMPLE_RATE
@@ -126,14 +131,18 @@ def _inherit_local_mask_speaker_ids(
     while changed:
         changed = False
         for target in segments:
-            if target.asr_valid == 0 or target.speaker_id != "unknown":
+            if (
+                target.asr_valid == 0
+                or target.speaker_id != UNKNOWN_SPEAKER_ID
+                or target.speaker_assignment_source != "unknown"
+            ):
                 continue
             if not _mask_can_link(target, confidence_threshold):
                 continue
             candidates = [
                 source
                 for source in segments
-                if source.speaker_id not in ("unknown", "-")
+                if source.speaker_id not in (UNKNOWN_SPEAKER_ID, "-")
                 and _mask_can_link(source, confidence_threshold)
                 and source.local_speaker_mask == target.local_speaker_mask
                 and _gap_ms(source, target) <= max_gap_ms
@@ -213,7 +222,7 @@ def assign_speaker_ids(
     embeddings: list[np.ndarray] = []
     embeddings_by_index: dict[int, np.ndarray] = {}
     for index, segment in enumerate(segments):
-        segment.speaker_id = "unknown"
+        segment.speaker_id = UNKNOWN_SPEAKER_ID
         segment.embedding_error = None
         segment.previous_segment_similarity = None
         try:
@@ -307,7 +316,7 @@ def assign_speaker_ids_with_centroids(
     assignment_similarity_threshold: float,
     max_embedding_samples: int = DEFAULT_MAX_EMBEDDING_SAMPLES,
     clusterer_factory: Callable[[float, int], Callable[[np.ndarray], Sequence[int]]] | None = None,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, int]:
     """Cluster eligible embeddings and assign excluded segments from final centroids.
 
     All segments receive a Titanet embedding attempt and an adjacent-similarity
@@ -315,7 +324,7 @@ def assign_speaker_ids_with_centroids(
     Excluded segments are read-only centroid comparisons and therefore cannot
     influence the resulting speaker inventory.
 
-    Returns ``(embedding_errors, assigned_excluded, unknown_excluded)``.
+    Returns ``(embedding_errors, assigned_excluded, unknown_excluded, skipped_no_usable_audio)``.
     """
     if max_embedding_samples <= 0:
         raise ValueError("Maximum embedding samples must be positive")
@@ -323,6 +332,7 @@ def assign_speaker_ids_with_centroids(
         raise ValueError("assignment_similarity_threshold must be in [-1.0, 1.0]")
 
     embedding_errors = 0
+    skipped_no_usable_audio = 0
     embeddings_by_index: dict[int, np.ndarray] = {}
     for index, segment in enumerate(segments):
         segment.previous_segment_similarity = None
@@ -334,19 +344,26 @@ def assign_speaker_ids_with_centroids(
             segment.speaker_id = "-"
             segment.speaker_assignment_source = "asr_invalid"
             continue
-        segment.speaker_id = "unknown"
+        segment.speaker_id = UNKNOWN_SPEAKER_ID
         try:
             embedding_samples = (
                 samples_for_clean_embedding(segment)
                 if segment.is_cluster_eligible
                 else samples_for_embedding(segment)
             )
+            if embedding_samples.size == 0:
+                segment.speaker_id = UNKNOWN_SPEAKER_ID
+                segment.speaker_assignment_source = "no_usable_embedding_audio"
+                skipped_no_usable_audio += 1
+                continue
             embedding = l2_normalize(
                 _extract_embedding(extractor, embedding_samples, max_embedding_samples)
             )
             if embedding is None:
                 raise RuntimeError("zero-norm embedding")
         except Exception as error:
+            segment.speaker_id = UNKNOWN_SPEAKER_ID
+            segment.speaker_assignment_source = "embedding_error"
             segment.embedding_error = str(error)
             embedding_errors += 1
             continue
@@ -398,7 +415,7 @@ def assign_speaker_ids_with_centroids(
     centroid_assigned_excluded = 0
     unknown_excluded = 0
     for segment in segments:
-        if segment.asr_valid == 0 or segment.speaker_id != "unknown":
+        if segment.asr_valid == 0 or segment.speaker_id != UNKNOWN_SPEAKER_ID:
             continue
         if segment.is_cluster_eligible or segment.embedding is None:
             if not segment.is_cluster_eligible:
@@ -414,4 +431,9 @@ def assign_speaker_ids_with_centroids(
             segment.speaker_assignment_source = "unknown"
             unknown_excluded += 1
 
-    return embedding_errors, local_mask_assigned + centroid_assigned_excluded, unknown_excluded
+    return (
+        embedding_errors,
+        local_mask_assigned + centroid_assigned_excluded,
+        unknown_excluded,
+        skipped_no_usable_audio,
+    )

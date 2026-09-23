@@ -40,7 +40,7 @@ class PipelineTest(unittest.TestCase):
                 ),
                 SpeechSegment(
                     2, 1000, 1500, waveform[8000:],
-                    speaker_id="unknown", speaker_composition="overlapped_speakers",
+                    speaker_id="UNKNOWN", speaker_composition="overlapped_speakers",
                 ),
             ]
             activity = [object()]
@@ -61,7 +61,7 @@ class PipelineTest(unittest.TestCase):
                  patch("pipeline.build_runtimes", return_value=runtimes) as build_runtimes, \
                  patch("pipeline.collect_vad_segments", return_value=raw_vad_segments), \
                  patch("pipeline.resolve_final_segments", return_value=(final_segments, resolution_stats)) as resolve, \
-                 patch("pipeline.assign_speaker_ids_with_centroids", return_value=(1, 0, 1)) as assign, \
+                 patch("pipeline.assign_speaker_ids_with_centroids", return_value=(1, 0, 1, 2)) as assign, \
                  patch("pipeline.transcribe_segments") as transcribe, \
                  patch("pipeline.create_run_directory", return_value=run_dir), \
                  patch("pipeline.write_results") as write_results, \
@@ -109,6 +109,7 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(captured_metadata["true_overlap_count"], 1)
         self.assertNotIn("tolerated_overlap_count", captured_metadata)
         self.assertEqual(captured_metadata["embedding_error_count"], 1)
+        self.assertEqual(captured_metadata["embedding_skipped_no_usable_audio_count"], 2)
         self.assertIn("output_seconds", captured_metadata["timings"])
         for stage in ("audio_io", "model_load", "vad", "segmentation", "timeline_resolution", "speaker", "asr", "output"):
             self.assertIn(f"stage={stage} event=complete", log_content)
@@ -179,7 +180,7 @@ class PipelineTest(unittest.TestCase):
                  patch("pipeline.collect_vad_segments", return_value=raw_vad_segments), \
                  patch("pipeline.finalize_vad_only_segments", return_value=(vad_only_segments, SimpleNamespace(true_overlap_count=0))) as finalize, \
                  patch("pipeline.resolve_final_segments") as resolve, \
-                 patch("pipeline.assign_speaker_ids_with_centroids", return_value=(0, 0, 0)), \
+                 patch("pipeline.assign_speaker_ids_with_centroids", return_value=(0, 0, 0, 0)), \
                  patch("pipeline.transcribe_segments"), \
                  patch("pipeline.create_run_directory", return_value=run_dir), \
                  patch("pipeline.write_results"), \
@@ -226,7 +227,7 @@ class PipelineTest(unittest.TestCase):
                  patch("pipeline.collect_vad_segments", return_value=final_segments), \
                  patch("pipeline.resolve_final_segments", return_value=(final_segments, SimpleNamespace(true_overlap_count=0))), \
                  patch("pipeline.transcribe_segments_with_whisper", side_effect=lambda *_args, **_kwargs: order.append("asr")) as whisper, \
-                 patch("pipeline.assign_speaker_ids_with_centroids", side_effect=lambda *_args, **_kwargs: order.append("speaker") or (0, 0, 0)), \
+                 patch("pipeline.assign_speaker_ids_with_centroids", side_effect=lambda *_args, **_kwargs: order.append("speaker") or (0, 0, 0, 0)), \
                  patch("pipeline.transcribe_segments") as paraformer, \
                  patch("pipeline.create_run_directory", return_value=run_dir), \
                  patch("pipeline.write_results"), \
