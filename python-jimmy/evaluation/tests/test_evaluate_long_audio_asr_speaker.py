@@ -239,7 +239,10 @@ class RunnerIntegrationTest(unittest.TestCase):
                 {
                     "asr.txt",
                     "wer_detail.txt",
+                    "wer_exclude_unclear_detail.txt",
+                    "wer_clean_detail.txt",
                     "wer_summary.json",
+                    "wer_metrics.json",
                     "segment_asr_detail.xlsx",
                     "speaker_summary.json",
                     "speaker_diarization_boundary_details.csv",
@@ -251,6 +254,8 @@ class RunnerIntegrationTest(unittest.TestCase):
             )
             self.assertIn("meeting_0_1000 speaker_00 你好", (meeting_dir / "asr.txt").read_text(encoding="utf-8"))
             self.assertIsInstance(json.loads((meeting_dir / "wer_summary.json").read_text(encoding="utf-8")), dict)
+            wer_metrics = json.loads((meeting_dir / "wer_metrics.json").read_text(encoding="utf-8"))
+            self.assertEqual(set(wer_metrics["variants"]), {"wer_all", "wer_exclude_unclear", "wer_clean"})
             self.assertIsInstance(json.loads((meeting_dir / "speaker_summary.json").read_text(encoding="utf-8")), dict)
             self.assertTrue((meeting_dir / "speaker_diarization_boundary_details.csv").read_text(encoding="utf-8-sig"))
             report = (output / "evaluation_report.md").read_text(encoding="utf-8")
@@ -339,5 +344,41 @@ class CliContractTest(unittest.TestCase):
         self.assertIn("--output-dir", completed.stdout)
 
 
+
+class TypedLabelContractTest(unittest.TestCase):
+    def test_typed_labels_preserve_type_and_reject_reserved_id_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            label = Path(temp_dir) / "audio_label.txt"
+            label.write_text(
+                "audio_0_1000 (alice)(单人) 甲\n"
+                "audio_1000_1000 (bob)(短插话) 乙\n"
+                "audio_2000_1000 (MULTI)(重叠) 丙\n"
+                "audio_3000_1000 (UNCLEAR)(听不清) 丁\n",
+                encoding="utf-8",
+            )
+            parsed = runner.parse_label_file(label)
+            self.assertEqual([item.segment_type for item in parsed.segments], ["单人", "短插话", "重叠", "听不清"])
+            invalid = Path(temp_dir) / "invalid_label.txt"
+            invalid.write_text("audio_0_1000 (alice)(重叠) 甲\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"invalid_label.txt:1:.*MULTI"):
+                runner.parse_label_file(invalid)
+
+    def test_wer_variants_filter_only_reference_types(self) -> None:
+        predictions = [
+            runner.TimedSegment("audio", "audio_0_4000", 0, 4000, "speaker_00", "甲乙丙丁"),
+        ]
+        references = [
+            runner.TimedSegment("audio", "audio_0_1000", 0, 1000, "alice", "甲", "单人"),
+            runner.TimedSegment("audio", "audio_1000_1000", 1000, 1000, "bob", "乙", "短插话"),
+            runner.TimedSegment("audio", "audio_2000_1000", 2000, 1000, "MULTI", "丙", "重叠"),
+            runner.TimedSegment("audio", "audio_3000_1000", 3000, 1000, "UNCLEAR", "丁", "听不清"),
+        ]
+        record = runner.ResultRecord(Path("run/result.json"), "audio.pcm", "audio", predictions)
+        label = runner.LabelRecord(Path("audio_label.txt"), "audio", references)
+        variants = runner.build_wer_variant_inputs([record], {"audio": label})
+        self.assertEqual(variants["wer_all"][0], ["audio 甲乙丙丁"])
+        self.assertEqual(variants["wer_exclude_unclear"][0], ["audio 甲乙丙"])
+        self.assertEqual(variants["wer_clean"][0], ["audio 甲乙"])
+        self.assertEqual(variants["wer_clean"][1], ["audio 甲乙丙丁"])
 if __name__ == "__main__":
     unittest.main()

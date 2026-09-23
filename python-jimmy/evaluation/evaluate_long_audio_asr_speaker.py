@@ -21,6 +21,23 @@ from asr_segment_detail_diff import (
 
 
 _SEGMENT_ID_RE = re.compile(r"^(?P<file_id>.+)_(?P<start_ms>\d+)_(?P<duration_ms>\d+)$")
+_TYPED_LABEL_RE = re.compile(
+    r"^(?P<segment_id>\S+)\s+\((?P<speaker_id>[^()]*)\)(?:\((?P<segment_type>单人|短插话|重叠|听不清)\))?(?:\s+(?P<text>.*))?$"
+)
+SEGMENT_TYPE_SINGLE = "单人"
+SEGMENT_TYPE_SHORT = "短插话"
+SEGMENT_TYPE_OVERLAP = "重叠"
+SEGMENT_TYPE_UNCLEAR = "听不清"
+SEGMENT_TYPES = frozenset(
+    {SEGMENT_TYPE_SINGLE, SEGMENT_TYPE_SHORT, SEGMENT_TYPE_OVERLAP, SEGMENT_TYPE_UNCLEAR}
+)
+WER_VARIANT_TYPES = {
+    "wer_all": SEGMENT_TYPES,
+    "wer_exclude_unclear": frozenset(
+        {SEGMENT_TYPE_SINGLE, SEGMENT_TYPE_SHORT, SEGMENT_TYPE_OVERLAP}
+    ),
+    "wer_clean": frozenset({SEGMENT_TYPE_SINGLE, SEGMENT_TYPE_SHORT}),
+}
 
 
 @dataclass(frozen=True)
@@ -31,6 +48,7 @@ class TimedSegment:
     duration_ms: int
     speaker_id: str
     asr_text: str
+    segment_type: str = SEGMENT_TYPE_SINGLE
 
     @property
     def end_ms(self) -> int:
@@ -156,6 +174,17 @@ def discover_result_records(results_dir: Path) -> list[ResultRecord]:
     return sorted(records, key=lambda item: (item.file_id, str(item.path)))
 
 
+def _validate_typed_label(path: Path, line_number: int, speaker_id: str, segment_type: str) -> None:
+    if segment_type not in SEGMENT_TYPES:
+        raise ValueError(f"{path}:{line_number}: unsupported segment type: {segment_type}")
+    if segment_type == SEGMENT_TYPE_OVERLAP and speaker_id != "MULTI":
+        raise ValueError(f"{path}:{line_number}: 重叠 segment_type requires speaker_id MULTI")
+    if segment_type == SEGMENT_TYPE_UNCLEAR and speaker_id != "UNCLEAR":
+        raise ValueError(f"{path}:{line_number}: 听不清 segment_type requires speaker_id UNCLEAR")
+    if segment_type in {SEGMENT_TYPE_SINGLE, SEGMENT_TYPE_SHORT} and speaker_id in {"MULTI", "UNCLEAR"}:
+        raise ValueError(f"{path}:{line_number}: {segment_type} segment_type cannot use reserved speaker_id {speaker_id}")
+
+
 def parse_label_file(path: Path) -> LabelRecord:
     segments: list[TimedSegment] = []
     with path.open(encoding="utf-8-sig") as stream:
@@ -163,20 +192,31 @@ def parse_label_file(path: Path) -> LabelRecord:
             line = raw_line.strip()
             if not line:
                 continue
-            columns = line.split(maxsplit=2)
-            if len(columns) < 2:
-                raise ValueError(f"{path}:{line_number}: expected segment_id and speaker")
-            segment_id, speaker_id = columns[:2]
+            match = _TYPED_LABEL_RE.fullmatch(line)
+            if match is None:
+                raise ValueError(
+                    f"{path}:{line_number}: expected '<segment_id> (speaker_id)(segment_type) text'"
+                )
+            segment_id = match.group("segment_id")
+            speaker_id = match.group("speaker_id").strip()
+            explicit_type = match.group("segment_type")
+            segment_type = explicit_type or SEGMENT_TYPE_SINGLE
+            if explicit_type is not None:
+                _validate_typed_label(path, line_number, speaker_id, segment_type)
+            elif speaker_id == "MULTI":
+                segment_type = SEGMENT_TYPE_OVERLAP
+            elif speaker_id == "UNCLEAR":
+                segment_type = SEGMENT_TYPE_UNCLEAR
             file_id, start_ms, duration_ms = parse_segment_id(segment_id)
-            text = columns[2] if len(columns) > 2 else ""
             segments.append(
                 TimedSegment(
                     file_id=file_id,
                     segment_id=segment_id,
                     start_ms=start_ms,
                     duration_ms=duration_ms,
-                    speaker_id=speaker_id.strip().strip("()"),
-                    asr_text=text,
+                    speaker_id=speaker_id,
+                    asr_text=match.group("text") or "",
+                    segment_type=segment_type,
                 )
             )
     if not segments:
@@ -232,20 +272,29 @@ def _format_machine_line(segment: TimedSegment) -> str:
     return f"{prefix} {segment.asr_text}\n" if segment.asr_text else f"{prefix}\n"
 
 
-def build_whole_audio_wer_inputs(
+def build_wer_variant_inputs(
     records: list[ResultRecord], labels: dict[str, LabelRecord]
-) -> tuple[list[str], list[str]]:
-    label_lines: list[str] = []
-    hypothesis_lines: list[str] = []
+) -> dict[str, tuple[list[str], list[str]]]:
+    variants = {name: ([], []) for name in WER_VARIANT_TYPES}
     for record in sorted(records, key=lambda item: item.file_id):
         label = labels.get(record.file_id)
         if label is None:
             continue
-        reference_text = "".join(segment.asr_text for segment in label.segments)
         hypothesis_text = "".join(segment.asr_text for segment in record.segments)
-        label_lines.append(f"{record.file_id} {reference_text}".rstrip())
-        hypothesis_lines.append(f"{record.file_id} {hypothesis_text}".rstrip())
-    return label_lines, hypothesis_lines
+        for name, accepted_types in WER_VARIANT_TYPES.items():
+            reference_text = "".join(
+                segment.asr_text for segment in label.segments if segment.segment_type in accepted_types
+            )
+            variants[name][0].append(f"{record.file_id} {reference_text}".rstrip())
+            variants[name][1].append(f"{record.file_id} {hypothesis_text}".rstrip())
+    return variants
+
+
+def build_whole_audio_wer_inputs(
+    records: list[ResultRecord], labels: dict[str, LabelRecord]
+) -> tuple[list[str], list[str]]:
+    """Compatibility wrapper retaining the historic whole-label WER input."""
+    return build_wer_variant_inputs(records, labels)["wer_all"]
 
 
 def _agent_sdk_file_id(references: list[TimedSegment], predictions: list[TimedSegment]) -> str:
@@ -309,7 +358,7 @@ def _write_label_file(label: LabelRecord, path: Path) -> None:
     _write_lines(
         path,
         [
-            f"{segment.segment_id} {segment.speaker_id} {segment.asr_text}".rstrip()
+            f"{segment.segment_id} ({segment.speaker_id})({segment.segment_type}) {segment.asr_text}".rstrip()
             for segment in label.segments
         ],
     )
@@ -413,6 +462,7 @@ def _run_meeting_evaluation(
         "errors": [],
         "asr_path": asr_path,
         "wer_summary": None,
+        "wer_summaries": None,
         "speaker_summary": None,
     }
     if label is None:
@@ -421,33 +471,41 @@ def _run_meeting_evaluation(
 
     with tempfile.TemporaryDirectory(prefix="long-audio-evaluation-") as temporary_directory:
         temporary_root = Path(temporary_directory)
-        wer_label_path = temporary_root / "wer_label.txt"
-        wer_hyp_path = temporary_root / "wer_hyp.txt"
-        wer_detail_path = meeting_dir / "wer_detail.txt"
-        wer_label_lines, wer_hyp_lines = build_whole_audio_wer_inputs(
-            [record], {record.file_id: label}
-        )
-        _write_lines(wer_label_path, wer_label_lines)
-        _write_lines(wer_hyp_path, wer_hyp_lines)
-        wer_ok, wer_error = run_subprocess_task(
-            [
-                __import__("sys").executable,
-                str(Path(__file__).with_name("evaluation.py")),
-                "--label", str(wer_label_path),
-                "--hyp", str(wer_hyp_path),
-                "--language", language,
-                "--detail", str(wer_detail_path),
-            ]
-        )
-        if wer_ok:
+        wer_variants = build_wer_variant_inputs([record], {record.file_id: label})
+        wer_detail_names = {
+            "wer_all": "wer_detail.txt",
+            "wer_exclude_unclear": "wer_exclude_unclear_detail.txt",
+            "wer_clean": "wer_clean_detail.txt",
+        }
+        wer_summaries: dict[str, dict] = {}
+        for variant_name, (wer_label_lines, wer_hyp_lines) in wer_variants.items():
+            wer_label_path = temporary_root / f"{variant_name}_label.txt"
+            wer_hyp_path = temporary_root / f"{variant_name}_hyp.txt"
+            wer_detail_path = meeting_dir / wer_detail_names[variant_name]
+            _write_lines(wer_label_path, wer_label_lines)
+            _write_lines(wer_hyp_path, wer_hyp_lines)
+            wer_ok, wer_error = run_subprocess_task(
+                [
+                    __import__("sys").executable,
+                    str(Path(__file__).with_name("evaluation.py")),
+                    "--label", str(wer_label_path),
+                    "--hyp", str(wer_hyp_path),
+                    "--language", language,
+                    "--detail", str(wer_detail_path),
+                ]
+            )
+            if not wer_ok:
+                outcome["errors"].append(f"WER {variant_name}: {wer_error}")
+                continue
             try:
-                wer_summary = summarize_wer_detail(wer_detail_path)
-                _write_json(meeting_dir / "wer_summary.json", wer_summary)
-                outcome["wer_summary"] = wer_summary
+                wer_summaries[variant_name] = summarize_wer_detail(wer_detail_path)
             except (OSError, ValueError, json.JSONDecodeError) as error:
-                outcome["errors"].append(f"WER: {error}")
-        else:
-            outcome["errors"].append(f"WER: {wer_error}")
+                outcome["errors"].append(f"WER {variant_name}: {error}")
+        if len(wer_summaries) == len(WER_VARIANT_TYPES):
+            _write_json(meeting_dir / "wer_summary.json", wer_summaries["wer_all"])
+            _write_json(meeting_dir / "wer_metrics.json", {"variants": wer_summaries})
+            outcome["wer_summary"] = wer_summaries["wer_all"]
+            outcome["wer_summaries"] = wer_summaries
 
         try:
             segment_rows = build_agent_sdk_segment_detail_rows(
@@ -544,9 +602,17 @@ def write_report(
         )
         for artifact_name in _meeting_artifact_names(meeting_dir):
             lines.append(f"  - `{relative_dir}/{artifact_name}`")
-        wer_summary = outcome.get("wer_summary")
-        if isinstance(wer_summary, dict):
-            lines.append(f"- WER: {wer_summary.get('wer_percent')}")
+        wer_summaries = outcome.get("wer_summaries")
+        if isinstance(wer_summaries, dict):
+            lines.append("- WER variants:")
+            for variant_name in ("wer_all", "wer_exclude_unclear", "wer_clean"):
+                summary = wer_summaries.get(variant_name)
+                if isinstance(summary, dict):
+                    lines.append(f"  - {variant_name}: {summary.get('wer_percent')}")
+        else:
+            wer_summary = outcome.get("wer_summary")
+            if isinstance(wer_summary, dict):
+                lines.append(f"- WER: {wer_summary.get('wer_percent')}")
         speaker_summary = outcome.get("speaker_summary")
         metrics = speaker_summary.get("metrics") if isinstance(speaker_summary, dict) else None
         if isinstance(metrics, dict):
