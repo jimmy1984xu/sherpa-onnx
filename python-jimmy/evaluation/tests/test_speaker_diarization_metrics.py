@@ -61,7 +61,7 @@ class TypedSpeakerMetricContractTest(unittest.TestCase):
             )
             segments = metrics.parse_speaker_file(label)
             self.assertEqual([item.segment_type for item in segments], ["单人", "重叠", "听不清"])
-            self.assertEqual([item.is_unknown_reference for item in segments], [False, True, True])
+            self.assertEqual([item.is_unknown_reference for item in segments], [False, True, False])
 
     def test_invalid_parenthesized_type_fails_with_file_and_line_number(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -69,6 +69,18 @@ class TypedSpeakerMetricContractTest(unittest.TestCase):
             label.write_text("audio_0_1000 (alice)(未知类型) 甲\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, r"invalid_label.txt 第 1 行"):
                 metrics.parse_speaker_file(label)
+
+    def test_unclear_is_not_part_of_primary_unknown_duration_metric(self) -> None:
+        references = [
+            metrics.TimedSpeakerSegment("audio_0_1000", "UNCLEAR", 0, 1000, "听不清", "听不清"),
+        ]
+        predictions = [
+            metrics.TimedSpeakerSegment("audio_0_1000", "UNKNOWN", 0, 1000, "", "单人"),
+        ]
+        summary = metrics.compute_unknown_duration_metrics(references, predictions)
+        self.assertEqual(summary["reference_unknown_ms"], 0)
+        self.assertIsNone(summary["recall"])
+        self.assertEqual(summary["by_reference_type"]["unclear"]["reference_unknown_ms"], 1000)
 
     def test_unknown_duration_metrics_report_no_prediction_as_zero_recall(self) -> None:
         references = [

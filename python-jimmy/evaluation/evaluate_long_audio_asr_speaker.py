@@ -31,13 +31,7 @@ SEGMENT_TYPE_UNCLEAR = "听不清"
 SEGMENT_TYPES = frozenset(
     {SEGMENT_TYPE_SINGLE, SEGMENT_TYPE_SHORT, SEGMENT_TYPE_OVERLAP, SEGMENT_TYPE_UNCLEAR}
 )
-WER_VARIANT_TYPES = {
-    "wer_all": SEGMENT_TYPES,
-    "wer_exclude_unclear": frozenset(
-        {SEGMENT_TYPE_SINGLE, SEGMENT_TYPE_SHORT, SEGMENT_TYPE_OVERLAP}
-    ),
-    "wer_clean": frozenset({SEGMENT_TYPE_SINGLE, SEGMENT_TYPE_SHORT}),
-}
+BUSINESS_WER_NAME = "wer"
 
 
 @dataclass(frozen=True)
@@ -272,29 +266,37 @@ def _format_machine_line(segment: TimedSegment) -> str:
     return f"{prefix} {segment.asr_text}\n" if segment.asr_text else f"{prefix}\n"
 
 
-def build_wer_variant_inputs(
+def build_business_wer_inputs(
     records: list[ResultRecord], labels: dict[str, LabelRecord]
-) -> dict[str, tuple[list[str], list[str]]]:
-    variants = {name: ([], []) for name in WER_VARIANT_TYPES}
+) -> tuple[list[str], list[str]]:
+    """Build the single business WER input.
+
+    ``听不清`` is a business-level silence target: its reference text is
+    intentionally empty, while the full pipeline hypothesis is retained so
+    any emitted text is scored as an insertion. ``单人``, ``短插话`` and
+    ``重叠`` keep their reference text.
+    """
+    reference_lines: list[str] = []
+    hypothesis_lines: list[str] = []
     for record in sorted(records, key=lambda item: item.file_id):
         label = labels.get(record.file_id)
         if label is None:
             continue
+        reference_text = "".join(
+            "" if segment.segment_type == SEGMENT_TYPE_UNCLEAR else segment.asr_text
+            for segment in label.segments
+        )
         hypothesis_text = "".join(segment.asr_text for segment in record.segments)
-        for name, accepted_types in WER_VARIANT_TYPES.items():
-            reference_text = "".join(
-                segment.asr_text for segment in label.segments if segment.segment_type in accepted_types
-            )
-            variants[name][0].append(f"{record.file_id} {reference_text}".rstrip())
-            variants[name][1].append(f"{record.file_id} {hypothesis_text}".rstrip())
-    return variants
+        reference_lines.append(f"{record.file_id} {reference_text}".rstrip())
+        hypothesis_lines.append(f"{record.file_id} {hypothesis_text}".rstrip())
+    return reference_lines, hypothesis_lines
 
 
 def build_whole_audio_wer_inputs(
     records: list[ResultRecord], labels: dict[str, LabelRecord]
 ) -> tuple[list[str], list[str]]:
-    """Compatibility wrapper retaining the historic whole-label WER input."""
-    return build_wer_variant_inputs(records, labels)["wer_all"]
+    """Compatibility wrapper for the v1.0 business WER input."""
+    return build_business_wer_inputs(records, labels)
 
 
 def _agent_sdk_file_id(references: list[TimedSegment], predictions: list[TimedSegment]) -> str:
@@ -471,41 +473,34 @@ def _run_meeting_evaluation(
 
     with tempfile.TemporaryDirectory(prefix="long-audio-evaluation-") as temporary_directory:
         temporary_root = Path(temporary_directory)
-        wer_variants = build_wer_variant_inputs([record], {record.file_id: label})
-        wer_detail_names = {
-            "wer_all": "wer_detail.txt",
-            "wer_exclude_unclear": "wer_exclude_unclear_detail.txt",
-            "wer_clean": "wer_clean_detail.txt",
-        }
-        wer_summaries: dict[str, dict] = {}
-        for variant_name, (wer_label_lines, wer_hyp_lines) in wer_variants.items():
-            wer_label_path = temporary_root / f"{variant_name}_label.txt"
-            wer_hyp_path = temporary_root / f"{variant_name}_hyp.txt"
-            wer_detail_path = meeting_dir / wer_detail_names[variant_name]
-            _write_lines(wer_label_path, wer_label_lines)
-            _write_lines(wer_hyp_path, wer_hyp_lines)
-            wer_ok, wer_error = run_subprocess_task(
-                [
-                    __import__("sys").executable,
-                    str(Path(__file__).with_name("evaluation.py")),
-                    "--label", str(wer_label_path),
-                    "--hyp", str(wer_hyp_path),
-                    "--language", language,
-                    "--detail", str(wer_detail_path),
-                ]
-            )
-            if not wer_ok:
-                outcome["errors"].append(f"WER {variant_name}: {wer_error}")
-                continue
+        wer_label_lines, wer_hyp_lines = build_business_wer_inputs(
+            [record], {record.file_id: label}
+        )
+        wer_label_path = temporary_root / "wer_label.txt"
+        wer_hyp_path = temporary_root / "wer_hyp.txt"
+        wer_detail_path = meeting_dir / "wer_detail.txt"
+        _write_lines(wer_label_path, wer_label_lines)
+        _write_lines(wer_hyp_path, wer_hyp_lines)
+        wer_ok, wer_error = run_subprocess_task(
+            [
+                __import__("sys").executable,
+                str(Path(__file__).with_name("evaluation.py")),
+                "--label", str(wer_label_path),
+                "--hyp", str(wer_hyp_path),
+                "--language", language,
+                "--detail", str(wer_detail_path),
+            ]
+        )
+        if not wer_ok:
+            outcome["errors"].append(f"WER: {wer_error}")
+        else:
             try:
-                wer_summaries[variant_name] = summarize_wer_detail(wer_detail_path)
+                wer_summary = summarize_wer_detail(wer_detail_path)
+                _write_json(meeting_dir / "wer_summary.json", wer_summary)
+                _write_json(meeting_dir / "wer_metrics.json", {BUSINESS_WER_NAME: wer_summary})
+                outcome["wer_summary"] = wer_summary
             except (OSError, ValueError, json.JSONDecodeError) as error:
-                outcome["errors"].append(f"WER {variant_name}: {error}")
-        if len(wer_summaries) == len(WER_VARIANT_TYPES):
-            _write_json(meeting_dir / "wer_summary.json", wer_summaries["wer_all"])
-            _write_json(meeting_dir / "wer_metrics.json", {"variants": wer_summaries})
-            outcome["wer_summary"] = wer_summaries["wer_all"]
-            outcome["wer_summaries"] = wer_summaries
+                outcome["errors"].append(f"WER: {error}")
 
         try:
             segment_rows = build_agent_sdk_segment_detail_rows(
@@ -602,17 +597,9 @@ def write_report(
         )
         for artifact_name in _meeting_artifact_names(meeting_dir):
             lines.append(f"  - `{relative_dir}/{artifact_name}`")
-        wer_summaries = outcome.get("wer_summaries")
-        if isinstance(wer_summaries, dict):
-            lines.append("- WER variants:")
-            for variant_name in ("wer_all", "wer_exclude_unclear", "wer_clean"):
-                summary = wer_summaries.get(variant_name)
-                if isinstance(summary, dict):
-                    lines.append(f"  - {variant_name}: {summary.get('wer_percent')}")
-        else:
-            wer_summary = outcome.get("wer_summary")
-            if isinstance(wer_summary, dict):
-                lines.append(f"- WER: {wer_summary.get('wer_percent')}")
+        wer_summary = outcome.get("wer_summary")
+        if isinstance(wer_summary, dict):
+            lines.append(f"- WER: {wer_summary.get('wer_percent')}")
         speaker_summary = outcome.get("speaker_summary")
         metrics = speaker_summary.get("metrics") if isinstance(speaker_summary, dict) else None
         if isinstance(metrics, dict):
