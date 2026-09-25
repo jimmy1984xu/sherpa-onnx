@@ -67,53 +67,123 @@ def _extract_embedding(extractor: Any, samples: np.ndarray, max_samples: int) ->
     return embedding
 
 
+def _timeline_ms_for_sample(segment: SpeechSegment, sample_index: int, sample_rate: int) -> int:
+    return segment.start_ms + int(round(sample_index * 1000.0 / sample_rate))
+
+
+def _relative_sample_bounds(
+    segment: SpeechSegment,
+    start_ms: int,
+    end_ms: int,
+    sample_rate: int,
+    sample_count: int,
+) -> tuple[int, int]:
+    start = int(round((start_ms - segment.start_ms) * sample_rate / 1000.0))
+    end = int(round((end_ms - segment.start_ms) * sample_rate / 1000.0))
+    start = max(0, min(sample_count, start))
+    end = max(start, min(sample_count, end))
+    return start, end
+
+
+def embedding_samples_and_spans(
+    segment: SpeechSegment, sample_rate: int = SAMPLE_RATE
+) -> tuple[np.ndarray, list[tuple[int, int]]]:
+    """Return exactly the samples and original-audio spans used for embedding."""
+    if sample_rate <= 0:
+        raise ValueError("Embedding sample rate must be positive")
+    samples = np.ascontiguousarray(np.asarray(segment.samples, dtype=np.float32))
+    skip_bounds = [
+        _relative_sample_bounds(segment, start_ms, end_ms, sample_rate, samples.size)
+        for start_ms, end_ms in segment.embedding_skip_regions(POST_OVERLAP_PAD_MS)
+    ]
+    skip_bounds = [(start, end) for start, end in skip_bounds if end > start]
+    skip_bounds.sort()
+
+    kept_bounds: list[tuple[int, int]] = []
+    cursor = 0
+    for start, end in skip_bounds:
+        if start > cursor:
+            kept_bounds.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < samples.size:
+        kept_bounds.append((cursor, samples.size))
+
+    chunks = [samples[start:end] for start, end in kept_bounds if end > start]
+    if not chunks:
+        return np.zeros(0, dtype=np.float32), []
+    spans = [
+        (
+            _timeline_ms_for_sample(segment, start, sample_rate),
+            _timeline_ms_for_sample(segment, end, sample_rate),
+        )
+        for start, end in kept_bounds
+        if end > start
+    ]
+    return np.ascontiguousarray(np.concatenate(chunks), dtype=np.float32), spans
+
+
 def samples_for_embedding(
     segment: SpeechSegment, sample_rate: int = SAMPLE_RATE
 ) -> np.ndarray:
-    """Return the waveform used for Titanet, skipping overlap and a short tail after it."""
-    samples = np.ascontiguousarray(np.asarray(segment.samples, dtype=np.float32))
+    """Return the waveform used for Titanet, skipping overlap and its short tail."""
+    samples, _spans = embedding_samples_and_spans(segment, sample_rate)
+    return samples
+
+
+def clean_embedding_samples_and_spans(
+    segment: SpeechSegment, sample_rate: int = SAMPLE_RATE
+) -> tuple[np.ndarray, list[tuple[int, int]]]:
+    """Return the longest eligible clean span and its original-audio interval."""
     if sample_rate <= 0:
         raise ValueError("Embedding sample rate must be positive")
-    skip_regions = segment.embedding_skip_regions(POST_OVERLAP_PAD_MS)
-    if not skip_regions:
-        return samples
-    keep = np.ones(samples.size, dtype=bool)
-    for start_ms, end_ms in skip_regions:
-        rel_start = int(round((start_ms - segment.start_ms) * sample_rate / 1000.0))
-        rel_end = int(round((end_ms - segment.start_ms) * sample_rate / 1000.0))
-        rel_start = max(0, min(samples.size, rel_start))
-        rel_end = max(0, min(samples.size, rel_end))
-        keep[rel_start:rel_end] = False
-    cropped = samples[keep]
-    if cropped.size == 0:
-        return np.zeros(0, dtype=np.float32)
-    return np.ascontiguousarray(cropped, dtype=np.float32)
-
+    clean_span = segment.longest_clean_span
+    if clean_span is None or clean_span[1] - clean_span[0] < CLEAN_SPAN_MIN_DURATION_MS:
+        return np.zeros(0, dtype=np.float32), []
+    samples = np.ascontiguousarray(np.asarray(segment.samples, dtype=np.float32))
+    start, end = _relative_sample_bounds(
+        segment, clean_span[0], clean_span[1], sample_rate, samples.size
+    )
+    if end <= start:
+        return np.zeros(0, dtype=np.float32), []
+    return (
+        np.ascontiguousarray(samples[start:end], dtype=np.float32),
+        [
+            (
+                _timeline_ms_for_sample(segment, start, sample_rate),
+                _timeline_ms_for_sample(segment, end, sample_rate),
+            )
+        ],
+    )
 
 
 def samples_for_clean_embedding(
     segment: SpeechSegment, sample_rate: int = SAMPLE_RATE
 ) -> np.ndarray:
-    """Return the longest continuous clean span for a cluster embedding.
+    """Return the waveform used for a clean-cluster embedding."""
+    samples, _spans = clean_embedding_samples_and_spans(segment, sample_rate)
+    return samples
 
-    This intentionally differs from ``samples_for_embedding``. Clean-cluster
-    input must be one uninterrupted single-speaker interval of at least three
-    seconds, not a concatenation of pieces on opposite sides of overlap.
-    """
-    if sample_rate <= 0:
-        raise ValueError("Embedding sample rate must be positive")
-    clean_span = segment.longest_clean_span
-    if clean_span is None:
-        return np.zeros(0, dtype=np.float32)
-    start_ms, end_ms = clean_span
-    if end_ms - start_ms < CLEAN_SPAN_MIN_DURATION_MS:
-        return np.zeros(0, dtype=np.float32)
-    samples = np.ascontiguousarray(np.asarray(segment.samples, dtype=np.float32))
-    start = int(round((start_ms - segment.start_ms) * sample_rate / 1000.0))
-    end = int(round((end_ms - segment.start_ms) * sample_rate / 1000.0))
-    start = max(0, min(samples.size, start))
-    end = max(start, min(samples.size, end))
-    return np.ascontiguousarray(samples[start:end], dtype=np.float32)
+
+def _truncate_embedding_spans(
+    spans: Sequence[tuple[int, int]], max_samples: int, sample_rate: int = SAMPLE_RATE
+) -> list[tuple[int, int]]:
+    """Limit source spans to the prefix actually sent to the extractor."""
+    if max_samples <= 0 or sample_rate <= 0:
+        raise ValueError("Embedding sample and sample rates must be positive")
+    remaining = max_samples
+    truncated: list[tuple[int, int]] = []
+    for start_ms, end_ms in spans:
+        span_samples = int(round((end_ms - start_ms) * sample_rate / 1000.0))
+        if span_samples <= 0:
+            continue
+        take = min(remaining, span_samples)
+        truncated_end_ms = start_ms + int(round(take * 1000.0 / sample_rate))
+        if truncated_end_ms > start_ms:
+            truncated.append((start_ms, truncated_end_ms))
+        remaining -= take
+        if remaining <= 0:
+            break
+    return truncated
 
 
 def _mask_can_link(segment: SpeechSegment, threshold: float) -> bool:
@@ -196,9 +266,14 @@ def populate_previous_segment_similarities(
     error_count = 0
     for index, segment in enumerate(segments):
         segment.previous_segment_similarity = None
+        segment.embedding_audio_spans = []
         try:
+            embedding_samples, embedding_spans = embedding_samples_and_spans(segment)
             embeddings[index] = _extract_embedding(
-                extractor, samples_for_embedding(segment), max_embedding_samples
+                extractor, embedding_samples, max_embedding_samples
+            )
+            segment.embedding_audio_spans = _truncate_embedding_spans(
+                embedding_spans, max_embedding_samples
             )
         except Exception:
             error_count += 1
@@ -230,9 +305,14 @@ def assign_speaker_ids(
         segment.speaker_id = UNKNOWN_SPEAKER_ID
         segment.embedding_error = None
         segment.previous_segment_similarity = None
+        segment.embedding_audio_spans = []
         try:
+            embedding_samples, embedding_spans = embedding_samples_and_spans(segment)
             embedding = _extract_embedding(
-                extractor, samples_for_embedding(segment), max_embedding_samples
+                extractor, embedding_samples, max_embedding_samples
+            )
+            segment.embedding_audio_spans = _truncate_embedding_spans(
+                embedding_spans, max_embedding_samples
             )
         except Exception as error:
             segment.embedding_error = str(error)
@@ -343,6 +423,7 @@ def assign_speaker_ids_with_centroids(
         segment.previous_segment_similarity = None
         segment.cluster_assignment_similarity = None
         segment.embedding = None
+        segment.embedding_audio_spans = []
         segment.embedding_error = None
         segment.speaker_assignment_source = "unknown"
         if segment.asr_valid == 0:
@@ -351,10 +432,10 @@ def assign_speaker_ids_with_centroids(
             continue
         segment.speaker_id = UNKNOWN_SPEAKER_ID
         try:
-            embedding_samples = (
-                samples_for_clean_embedding(segment)
+            embedding_samples, embedding_spans = (
+                clean_embedding_samples_and_spans(segment)
                 if segment.is_cluster_eligible
-                else samples_for_embedding(segment)
+                else embedding_samples_and_spans(segment)
             )
             if embedding_samples.size < MIN_USABLE_EMBEDDING_SAMPLES:
                 segment.speaker_id = UNKNOWN_SPEAKER_ID
@@ -366,6 +447,9 @@ def assign_speaker_ids_with_centroids(
             )
             if embedding is None:
                 raise RuntimeError("zero-norm embedding")
+            segment.embedding_audio_spans = _truncate_embedding_spans(
+                embedding_spans, max_embedding_samples
+            )
         except Exception as error:
             segment.speaker_id = UNKNOWN_SPEAKER_ID
             segment.speaker_assignment_source = "embedding_error"

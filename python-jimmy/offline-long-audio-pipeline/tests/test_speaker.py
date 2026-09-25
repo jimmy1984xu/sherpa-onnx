@@ -11,6 +11,8 @@ from speaker import (
     _default_clusterer_factory,
     assign_speaker_ids,
     assign_speaker_ids_with_centroids,
+    clean_embedding_samples_and_spans,
+    embedding_samples_and_spans,
     populate_previous_segment_similarities,
     samples_for_embedding,
     stable_speaker_ids,
@@ -529,3 +531,136 @@ class NoUsableEmbeddingAudioTest(unittest.TestCase):
         self.assertEqual((errors, assigned, unknown, skipped), (0, 0, 1, 1))
         self.assertEqual(skipped_segment.speaker_id, "UNKNOWN")
         self.assertEqual(skipped_segment.speaker_assignment_source, "no_usable_embedding_audio")
+
+
+class EmbeddingSourceSpanTest(unittest.TestCase):
+    def test_prefix_overlap_returns_exact_kept_span(self):
+        segment = SpeechSegment(
+            1,
+            0,
+            2000,
+            np.arange(32000, dtype=np.float32),
+            speaker_composition="overlapped_speakers",
+            overlap_regions=[(0, 400)],
+        )
+
+        samples, spans = embedding_samples_and_spans(segment)
+
+        self.assertEqual(spans, [(1400, 2000)])
+        self.assertEqual(samples.size, 9600)
+
+    def test_middle_overlap_preserves_multiple_source_spans(self):
+        segment = SpeechSegment(
+            1,
+            0,
+            5000,
+            np.arange(80000, dtype=np.float32),
+            speaker_composition="overlapped_speakers",
+            overlap_regions=[(1000, 1200)],
+        )
+
+        samples, spans = embedding_samples_and_spans(segment)
+
+        self.assertEqual(spans, [(0, 1000), (2200, 5000)])
+        self.assertEqual(samples.size, 60800)
+
+    def test_clean_embedding_returns_only_longest_clean_span(self):
+        segment = SpeechSegment(
+            1,
+            0,
+            8000,
+            np.arange(128000, dtype=np.float32),
+            speaker_composition="single_speaker",
+            clean_spans=[(1000, 2000), (3000, 7000)],
+        )
+
+        samples, spans = clean_embedding_samples_and_spans(segment)
+
+        self.assertEqual(spans, [(3000, 7000)])
+        self.assertEqual(samples.size, 64000)
+
+    def test_failed_or_skipped_extraction_does_not_retain_spans(self):
+        segment = SpeechSegment(
+            1,
+            0,
+            2000,
+            np.zeros(32000, dtype=np.float32),
+            speaker_composition="overlapped_speakers",
+            overlap_regions=[(0, 2000)],
+        )
+
+        errors, assigned, unknown, skipped = assign_speaker_ids_with_centroids(
+            FakeExtractor(),
+            [segment],
+            cluster_threshold=0.5,
+            num_clusters=-1,
+            assignment_similarity_threshold=0.5,
+        )
+
+        self.assertEqual((errors, assigned, unknown, skipped), (0, 0, 1, 1))
+        self.assertEqual(segment.embedding_audio_spans, [])
+
+
+class SuccessfulEmbeddingSpanAttachmentTest(unittest.TestCase):
+    def test_successful_extraction_attaches_actual_source_spans(self):
+        segment = SpeechSegment(
+            1,
+            0,
+            2000,
+            np.arange(32000, dtype=np.float32),
+            speaker_composition="overlapped_speakers",
+            overlap_regions=[(0, 400)],
+        )
+
+        errors, assigned, unknown, skipped = assign_speaker_ids_with_centroids(
+            FakeExtractor(),
+            [segment],
+            cluster_threshold=0.5,
+            num_clusters=-1,
+            assignment_similarity_threshold=0.5,
+        )
+
+        self.assertEqual((errors, assigned, unknown, skipped), (0, 0, 1, 0))
+        self.assertEqual(segment.embedding_audio_spans, [(1400, 2000)])
+
+    def test_extractor_failure_leaves_spans_empty(self):
+        segment = SpeechSegment(
+            1,
+            0,
+            2000,
+            np.zeros(32000, dtype=np.float32),
+            speaker_composition="overlapped_speakers",
+        )
+
+        errors, assigned, unknown, skipped = assign_speaker_ids_with_centroids(
+            SequenceExtractor([RuntimeError("failed")]),
+            [segment],
+            cluster_threshold=0.5,
+            num_clusters=-1,
+            assignment_similarity_threshold=0.5,
+        )
+
+        self.assertEqual((errors, assigned, unknown, skipped), (1, 0, 1, 0))
+        self.assertEqual(segment.embedding_audio_spans, [])
+
+    def test_cluster_embedding_records_longest_clean_span(self):
+        segment = SpeechSegment(
+            1,
+            0,
+            8000,
+            np.zeros(128000, dtype=np.float32),
+            speaker_composition="single_speaker",
+            clean_spans=[(1000, 2000), (3000, 7000)],
+        )
+
+        errors, assigned, unknown, skipped = assign_speaker_ids_with_centroids(
+            FakeExtractor(),
+            [segment],
+            cluster_threshold=0.5,
+            num_clusters=-1,
+            assignment_similarity_threshold=0.5,
+            clusterer_factory=lambda _threshold, _num_clusters: lambda embeddings: [0],
+        )
+
+        self.assertEqual((errors, assigned, unknown, skipped), (0, 0, 0, 0))
+        self.assertEqual(segment.embedding_audio_spans, [(3000, 7000)])
