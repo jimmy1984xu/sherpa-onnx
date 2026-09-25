@@ -148,7 +148,7 @@ PCM/WAV
 ## 7. ASR 与产物
 
 - 每段独立识别；失败写入 `asr_error`，文本可空。
-- `result.json` 每段含：`segment_id`、`time_range`、`duration_class`、`speaker_composition`、`cut_left` / `cut_right`（`vad` | `pyannote`）、`asr_text`、`speaker_id`、邻段相似度、`pyannote_mask`、`clean_spans`、`local_speaker_mask` 及其置信度。`overlap_regions` 仅作为内部解析字段，不再展示在 `result.json`；`clean_spans` 以紧凑字符串输出，例如 `[249214,252399] [252788,254070]`。
+- `result.json` 每段含：`segment_id`、`time_range`、`duration_class`、`speaker_composition`、`cut_left` / `cut_right`（`vad` | `pyannote`）、`asr_text`、`speaker_id`、邻段相似度、`pyannote_mask`、`clean_spans`、`local_speaker_mask` 及其置信度。`overlap_regions` 仅作为内部解析字段，不再展示在 `result.json`；`clean_spans` 以紧凑字符串输出，例如 `[249214,252399] [252788,254070]`。成功提取 speaker embedding 的片段额外写入结构化 `embedding_audio_spans`，记录原始音频时间轴上实际送入 embedding 提取器的区间；未提取、跳过或失败的片段省略该字段。`clean_spans` 是诊断用 clean-source 区间，不等同于实际 embedding 输入区间。
 - `run_metadata.json` 含段数、组成计数、聚类库存、RTF、模型路径。
 
 ## 8. 运行方式

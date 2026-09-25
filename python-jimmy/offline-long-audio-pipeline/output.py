@@ -58,8 +58,17 @@ def _format_clean_spans(spans: Sequence[tuple[int, int]]) -> str:
     return " ".join(f"[{start_ms},{end_ms}]" for start_ms, end_ms in spans)
 
 
+def _format_embedding_audio_spans(
+    spans: Sequence[tuple[int, int]],
+) -> list[dict[str, int]]:
+    return [
+        {"start_ms": start_ms, "end_ms": end_ms}
+        for start_ms, end_ms in spans
+    ]
+
+
 def _segment_payload(segment: SpeechSegment) -> dict[str, Any]:
-    return {
+    payload = {
         "segment_id": segment.segment_id,
         "time_range": (
             f"{_format_time(segment.start_ms)}-{_format_time(segment.end_ms)}"
@@ -85,6 +94,11 @@ def _segment_payload(segment: SpeechSegment) -> dict[str, Any]:
         "local_speaker_mask_confidence": segment.local_speaker_mask_confidence,
         "speaker_assignment_source": segment.speaker_assignment_source,
     }
+    if segment.embedding_audio_spans:
+        payload["embedding_audio_spans"] = _format_embedding_audio_spans(
+            segment.embedding_audio_spans
+        )
+    return payload
 
 
 def write_results(
