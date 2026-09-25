@@ -3836,6 +3836,135 @@ typedef struct SherpaOnnxOfflineSpeakerSegmentationModelConfig {
 } SherpaOnnxOfflineSpeakerSegmentationModelConfig;
 
 /**
+ * @brief Right-boundary flags for a speaker-segmentation span.
+ *
+ * Flags may be combined with bitwise OR. A value of
+ * SherpaOnnxSpeakerSegmentationFlagContinue is a stable incremental checkpoint,
+ * not a sentence boundary.
+ */
+typedef enum SherpaOnnxSpeakerSegmentationSpanFlag {
+  SherpaOnnxSpeakerSegmentationFlagContinue = 0,
+  /** The speaker count changes at this span's right boundary. */
+  SherpaOnnxSpeakerSegmentationFlagSpeakerCountChanged = 1 << 0,
+  /** A one-speaker local-track change is supported at the right boundary. */
+  SherpaOnnxSpeakerSegmentationFlagSingleSpeakerChanged = 1 << 1,
+  /** The caller has marked input complete; this is the final output span. */
+  SherpaOnnxSpeakerSegmentationFlagInputFinished = 1 << 2,
+} SherpaOnnxSpeakerSegmentationSpanFlag;
+
+/**
+ * @brief Configuration for streaming pyannote speaker segmentation.
+ *
+ * This API performs local count/change segmentation only. It does not compute
+ * speaker embeddings, global speaker IDs, or clustering.
+ */
+typedef struct SherpaOnnxSpeakerSegmentationConfig {
+  /** Pyannote segmentation model configuration. */
+  SherpaOnnxOfflineSpeakerSegmentationModelConfig model;
+  /** Remove short local-track active islands used only for change evidence. */
+  float min_duration_on;
+  /** Close short local-track inactive gaps used only for change evidence. */
+  float min_duration_off;
+  /** Minimum normalized local-track change vote in (0, 1]. */
+  float change_vote_threshold;
+} SherpaOnnxSpeakerSegmentationConfig;
+
+/**
+ * @brief A finalized, non-overlapping speaker-segmentation span.
+ */
+typedef struct SherpaOnnxSpeakerSegmentationSpan {
+  /** Span start time in seconds. */
+  float start;
+  /** Span end time in seconds. */
+  float end;
+  /** Number of active speakers, constrained to 0, 1, or 2. */
+  int32_t speaker_count;
+  /** Bitwise OR of SherpaOnnxSpeakerSegmentationSpanFlag values. */
+  int32_t flag;
+  /**
+   * Fused session-local canonical pyannote activity mask. Only the low three
+   * bits are valid; it is not a global speaker ID.
+   */
+  uint8_t local_speaker_mask;
+  /** Fused winning powerset probability for local_speaker_mask in [0, 1]. */
+  float local_speaker_mask_confidence;
+} SherpaOnnxSpeakerSegmentationSpan;
+
+/** @brief Opaque streaming speaker-segmentation handle. */
+typedef struct SherpaOnnxSpeakerSegmentation SherpaOnnxSpeakerSegmentation;
+
+/**
+ * @brief Create a streaming pyannote speaker-segmentation runner.
+ *
+ * @param config Segmentation model and fusion configuration.
+ * @return A newly allocated runner, or NULL on validation/error. Free it with
+ *         SherpaOnnxDestroySpeakerSegmentation().
+ */
+SHERPA_ONNX_API const SherpaOnnxSpeakerSegmentation *
+SherpaOnnxCreateSpeakerSegmentation(
+    const SherpaOnnxSpeakerSegmentationConfig *config);
+
+/**
+ * @brief Destroy a streaming speaker-segmentation runner.
+ */
+SHERPA_ONNX_API void SherpaOnnxDestroySpeakerSegmentation(
+    const SherpaOnnxSpeakerSegmentation *segmenter);
+
+/**
+ * @brief Return the required mono input sample rate in Hz.
+ */
+SHERPA_ONNX_API int32_t SherpaOnnxSpeakerSegmentationGetSampleRate(
+    const SherpaOnnxSpeakerSegmentation *segmenter);
+
+/**
+ * @brief Append mono PCM samples normalized to [-1, 1].
+ *
+ * Samples may be supplied in arbitrary chunk sizes. Calling this after
+ * SherpaOnnxSpeakerSegmentationInputFinished() is rejected until Reset().
+ */
+SHERPA_ONNX_API void SherpaOnnxSpeakerSegmentationAcceptWaveform(
+    const SherpaOnnxSpeakerSegmentation *segmenter, const float *samples,
+    int32_t n);
+
+/**
+ * @brief Mark input complete and flush the zero-padded tail windows.
+ *
+ * This function is idempotent. The last returned span contains
+ * SherpaOnnxSpeakerSegmentationInputFinished.
+ */
+SHERPA_ONNX_API void SherpaOnnxSpeakerSegmentationInputFinished(
+    const SherpaOnnxSpeakerSegmentation *segmenter);
+
+/**
+ * @brief Return non-zero when no finalized span is available.
+ */
+SHERPA_ONNX_API int32_t SherpaOnnxSpeakerSegmentationEmpty(
+    const SherpaOnnxSpeakerSegmentation *segmenter);
+
+/**
+ * @brief Return the next finalized span without removing it.
+ *
+ * @return NULL if the queue is empty. The returned pointer is owned by
+ *         @p segmenter; do not free it. It remains valid only until the next
+ *         call on the same @p segmenter.
+ */
+SHERPA_ONNX_API const SherpaOnnxSpeakerSegmentationSpan *
+SherpaOnnxSpeakerSegmentationFront(
+    const SherpaOnnxSpeakerSegmentation *segmenter);
+
+/**
+ * @brief Remove the next finalized span. This is a no-op for an empty queue.
+ */
+SHERPA_ONNX_API void SherpaOnnxSpeakerSegmentationPop(
+    const SherpaOnnxSpeakerSegmentation *segmenter);
+
+/**
+ * @brief Clear audio/fusion/result state without reloading the model.
+ */
+SHERPA_ONNX_API void SherpaOnnxSpeakerSegmentationReset(
+    const SherpaOnnxSpeakerSegmentation *segmenter);
+
+/**
  * @brief Fast clustering configuration.
  *
  * If @c num_clusters is greater than 0, @c threshold is ignored. When the

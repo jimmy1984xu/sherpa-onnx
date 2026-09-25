@@ -23,7 +23,7 @@ static void PybindOfflineSpeakerSegmentationPyannoteModelConfig(py::module *m) {
       .def("validate", &PyClass::Validate);
 }
 
-static void PybindOfflineSpeakerSegmentationModelConfig(py::module *m) {
+void PybindOfflineSpeakerSegmentationModelConfig(py::module *m) {
   PybindOfflineSpeakerSegmentationPyannoteModelConfig(m);
 
   using PyClass = OfflineSpeakerSegmentationModelConfig;
@@ -42,7 +42,6 @@ static void PybindOfflineSpeakerSegmentationModelConfig(py::module *m) {
 }
 
 static void PybindOfflineSpeakerDiarizationConfig(py::module *m) {
-  PybindOfflineSpeakerSegmentationModelConfig(m);
 
   using PyClass = OfflineSpeakerDiarizationConfig;
   py::class_<PyClass>(*m, "OfflineSpeakerDiarizationConfig")
