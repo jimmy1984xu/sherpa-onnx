@@ -139,4 +139,3 @@ def collect_vad_segments(
     vad.flush()
     drain()
     return segments
-
