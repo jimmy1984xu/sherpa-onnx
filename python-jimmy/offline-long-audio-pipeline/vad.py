@@ -32,6 +32,9 @@ class SpeechSegment:
     cluster_assignment_similarity: float | None = None
     speaker_composition: str = "unknown_activity"
     embedding: np.ndarray | None = field(default=None, repr=False)
+    # Original-audio intervals used by the successful embedding extraction.
+    # Empty means no usable embedding was extracted and is omitted from JSON.
+    embedding_audio_spans: list[tuple[int, int]] = field(default_factory=list)
     overlap_regions: list[tuple[int, int]] = field(default_factory=list)
     cut_left: str = "vad"
     cut_right: str = "vad"
@@ -136,3 +139,4 @@ def collect_vad_segments(
     vad.flush()
     drain()
     return segments
+
