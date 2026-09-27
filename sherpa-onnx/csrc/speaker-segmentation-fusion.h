@@ -5,7 +5,9 @@
 #ifndef SHERPA_ONNX_CSRC_SPEAKER_SEGMENTATION_FUSION_H_
 #define SHERPA_ONNX_CSRC_SPEAKER_SEGMENTATION_FUSION_H_
 
+#include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -19,6 +21,24 @@ struct FinalizedSpeakerFrame {
   // Winning fused powerset-class probability in [0, 1].
   float local_speaker_mask_confidence;
   bool single_speaker_changed_before;
+  std::array<float, 7> fused_probabilities{};
+  int32_t coverage_count = 0;
+  bool has_change_candidate_cluster = false;
+  int32_t change_vote_count = 0;
+  int32_t change_vote_coverage = 0;
+  float change_vote_ratio = 0.0F;
+  bool change_vote_threshold_passed = false;
+};
+
+struct SpeakerSegmentationWindowTrace {
+  int32_t window_id = 0;
+  int64_t start_frame = 0;
+  std::array<int32_t, 3> track_permutation{0, 1, 2};
+  std::vector<float> input_probabilities;
+  std::vector<float> aligned_probabilities;
+  std::vector<uint8_t> raw_masks;
+  std::vector<uint8_t> stabilized_masks;
+  std::vector<int64_t> change_candidate_frames;
 };
 
 struct SpeakerSegmentationFusionConfig {
@@ -28,6 +48,8 @@ struct SpeakerSegmentationFusionConfig {
   float min_duration_on;
   float min_duration_off;
   float change_vote_threshold;
+  std::function<void(const SpeakerSegmentationWindowTrace &)> on_window_trace;
+  std::function<void(const FinalizedSpeakerFrame &)> on_frame_trace;
 };
 
 // Fuses independent local segmentation windows without assigning global

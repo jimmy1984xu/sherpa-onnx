@@ -244,14 +244,33 @@ class SpeakerSegmentationFusion::Impl {
 
     const std::array<int32_t, 3> permutation =
         BestTrackPermutation(start_frame, normalized_probabilities);
+    const bool capture_window_trace =
+        static_cast<bool>(config_.on_window_trace);
+    SpeakerSegmentationWindowTrace trace;
+    if (capture_window_trace) {
+      trace.window_id = next_window_id_;
+      trace.start_frame = start_frame;
+      trace.track_permutation = permutation;
+      trace.input_probabilities = normalized_probabilities;
+      trace.aligned_probabilities.resize(normalized_probabilities.size());
+      trace.raw_masks.resize(num_frames);
+    }
     std::vector<uint8_t> aligned_masks(num_frames);
     for (size_t i = 0; i != num_frames; ++i) {
       const float *raw = normalized_probabilities.data() +
                          i * kNumPowersetClasses;
       const std::array<float, kNumPowersetClasses> aligned =
           RemapProbabilities(raw, permutation);
+      if (capture_window_trace) {
+        std::copy(aligned.begin(), aligned.end(),
+                  trace.aligned_probabilities.begin() +
+                      i * kNumPowersetClasses);
+      }
       const int32_t best_class = BestClass(aligned);
       aligned_masks[i] = kPowersetMasks[best_class];
+      if (capture_window_trace) {
+        trace.raw_masks[i] = aligned_masks[i];
+      }
       const int64_t frame = start_frame + static_cast<int64_t>(i);
       FrameAccumulator &acc = frames_[frame];
       for (int32_t c = 0; c != kNumPowersetClasses; ++c) {
@@ -268,8 +287,18 @@ class SpeakerSegmentationFusion::Impl {
     const int32_t window_id = next_window_id_++;
     const std::vector<uint8_t> masks =
         StabilizeMasks(aligned_masks, min_on_frames_, min_off_frames_);
+    if (capture_window_trace) {
+      trace.stabilized_masks = masks;
+    }
     for (int64_t local : ExtractChangeFrames(masks)) {
-      candidates_.push_back(ChangeCandidate{start_frame + local, window_id});
+      const int64_t candidate_frame = start_frame + local;
+      candidates_.push_back(ChangeCandidate{candidate_frame, window_id});
+      if (capture_window_trace) {
+        trace.change_candidate_frames.push_back(candidate_frame);
+      }
+    }
+    if (capture_window_trace) {
+      config_.on_window_trace(trace);
     }
   }
 
@@ -279,7 +308,9 @@ class SpeakerSegmentationFusion::Impl {
       return ans;
     }
 
-    const std::set<int64_t> change_frames = ConfirmReadyClusters(frame_exclusive);
+    const ChangeDecisions change_decisions =
+        ConfirmReadyClusters(frame_exclusive);
+    const std::set<int64_t> &change_frames = change_decisions.accepted_frames;
     int64_t emit_exclusive = EmitExclusive(frame_exclusive);
 
     for (auto iter = frames_.begin();
@@ -292,6 +323,20 @@ class SpeakerSegmentationFusion::Impl {
       for (int32_t c = 0; c != kNumPowersetClasses; ++c) {
         averaged[c] = acc.probability_sum[c] /
                       static_cast<float>(acc.count_coverage);
+        if (config_.on_frame_trace) {
+          result.fused_probabilities[c] = averaged[c];
+        }
+      }
+      if (config_.on_frame_trace) {
+        result.coverage_count = acc.count_coverage;
+        const auto vote = change_decisions.vote_evidence.find(frame);
+        if (vote != change_decisions.vote_evidence.end()) {
+          result.has_change_candidate_cluster = true;
+          result.change_vote_count = vote->second.vote_count;
+          result.change_vote_coverage = vote->second.coverage_count;
+          result.change_vote_ratio = vote->second.ratio;
+          result.change_vote_threshold_passed = vote->second.threshold_passed;
+        }
       }
       const int32_t best_class = BestClass(averaged);
       result.speaker_count = std::max(
@@ -303,6 +348,9 @@ class SpeakerSegmentationFusion::Impl {
       result.single_speaker_changed_before =
           change_frames.find(frame) != change_frames.end();
       ans.push_back(result);
+      if (config_.on_frame_trace) {
+        config_.on_frame_trace(ans.back());
+      }
       iter = frames_.erase(iter);
     }
 
@@ -467,7 +515,19 @@ class SpeakerSegmentationFusion::Impl {
     return emit_exclusive;
   }
 
-  std::set<int64_t> ConfirmReadyClusters(int64_t frame_exclusive) const {
+  struct ChangeVoteEvidence {
+    int32_t vote_count = 0;
+    int32_t coverage_count = 0;
+    float ratio = 0.0F;
+    bool threshold_passed = false;
+  };
+
+  struct ChangeDecisions {
+    std::set<int64_t> accepted_frames;
+    std::map<int64_t, ChangeVoteEvidence> vote_evidence;
+  };
+
+  ChangeDecisions ConfirmReadyClusters(int64_t frame_exclusive) const {
     const int64_t emit_exclusive = EmitExclusive(frame_exclusive);
     struct Peak {
       int64_t frame = 0;
@@ -475,6 +535,7 @@ class SpeakerSegmentationFusion::Impl {
       int32_t n_vote = 0;
     };
     std::vector<Peak> peaks;
+    ChangeDecisions decisions;
     for (const auto &cluster : ClusterCandidates()) {
       if (cluster.empty()) {
         continue;
@@ -492,7 +553,12 @@ class SpeakerSegmentationFusion::Impl {
       }
       const float ratio = static_cast<float>(n_vote) /
                           static_cast<float>(iter->second.count_coverage);
-      if (ratio < config_.change_vote_threshold) {
+      const bool threshold_passed = ratio >= config_.change_vote_threshold;
+      if (config_.on_frame_trace) {
+        decisions.vote_evidence[rep] = ChangeVoteEvidence{
+            n_vote, iter->second.count_coverage, ratio, threshold_passed};
+      }
+      if (!threshold_passed) {
         continue;
       }
       peaks.push_back(Peak{rep, ratio, n_vote});
@@ -513,11 +579,10 @@ class SpeakerSegmentationFusion::Impl {
       }
     }
 
-    std::set<int64_t> frames;
     for (const auto &peak : suppressed) {
-      frames.insert(peak.frame);
+      decisions.accepted_frames.insert(peak.frame);
     }
-    return frames;
+    return decisions;
   }
 
   SpeakerSegmentationFusionConfig config_;

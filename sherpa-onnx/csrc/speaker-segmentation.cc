@@ -8,10 +8,17 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <deque>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <locale>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -134,6 +141,7 @@ class SpeakerSegmentation::Impl {
       SHERPA_ONNX_LOGE("Unsupported pyannote segmentation model metadata");
       SHERPA_ONNX_EXIT(-1);
     }
+    InitializeTrace();
     ResetFusion();
   }
 
@@ -153,6 +161,7 @@ class SpeakerSegmentation::Impl {
       SHERPA_ONNX_LOGE("Invalid speaker segmentation test runner setup");
       SHERPA_ONNX_EXIT(-1);
     }
+    InitializeTrace();
     ResetFusion();
   }
 
@@ -221,11 +230,169 @@ class SpeakerSegmentation::Impl {
     next_window_start_ = 0;
     published_until_sample_ = 0;
     input_finished_ = false;
+    if (trace_stream_.is_open()) {
+      trace_stream_.flush();
+    }
+    ++trace_session_id_;
+    trace_window_id_ = 0;
     ResetFusion();
   }
 
  private:
+  void InitializeTrace() {
+    const char *trace_path =
+        std::getenv("SHERPA_ONNX_PYANNOTE_TRACE_FILE");
+    if (!trace_path || trace_path[0] == '\0') {
+      return;
+    }
+
+    std::error_code error;
+    if (std::filesystem::exists(trace_path, error) || error) {
+      SHERPA_ONNX_LOGE(
+          "Pyannote trace file already exists or cannot be checked: %s",
+          trace_path);
+      SHERPA_ONNX_EXIT(-1);
+    }
+    trace_stream_.open(trace_path, std::ios::out | std::ios::binary);
+    if (!trace_stream_) {
+      SHERPA_ONNX_LOGE("Cannot open Pyannote trace file: %s", trace_path);
+      SHERPA_ONNX_EXIT(-1);
+    }
+    trace_stream_.imbue(std::locale::classic());
+    trace_stream_ << std::setprecision(9);
+    trace_stream_ << "{\"type\":\"trace_header\","
+                  << "\"schema_version\":1,"
+                  << "\"sample_rate\":" << meta_data_.sample_rate
+                  << ",\"window_size_samples\":"
+                  << meta_data_.window_size
+                  << ",\"window_shift_samples\":"
+                  << meta_data_.window_shift
+                  << ",\"receptive_field_shift_samples\":"
+                  << meta_data_.receptive_field_shift
+                  << ",\"num_classes\":" << meta_data_.num_classes
+                  << ",\"min_duration_on_seconds\":"
+                  << config_.min_duration_on
+                  << ",\"min_duration_off_seconds\":"
+                  << config_.min_duration_off
+                  << ",\"change_vote_threshold\":"
+                  << config_.change_vote_threshold << "}\n";
+    trace_stream_.flush();
+    if (!trace_stream_) {
+      SHERPA_ONNX_LOGE("Failed writing Pyannote trace header: %s", trace_path);
+      SHERPA_ONNX_EXIT(-1);
+    }
+  }
+
+  void WriteArray(const std::array<float, 7> &values) {
+    trace_stream_ << '[';
+    for (size_t i = 0; i != values.size(); ++i) {
+      if (i != 0) {
+        trace_stream_ << ',';
+      }
+      if (std::isfinite(values[i])) {
+        trace_stream_ << values[i];
+      } else {
+        trace_stream_ << "null";
+      }
+    }
+    trace_stream_ << ']';
+  }
+
+  template <typename T>
+  void WriteArray(const std::vector<T> &values) {
+    trace_stream_ << '[';
+    for (size_t i = 0; i != values.size(); ++i) {
+      if (i != 0) {
+        trace_stream_ << ',';
+      }
+      if constexpr (std::is_floating_point_v<T>) {
+        if (std::isfinite(values[i])) {
+          trace_stream_ << values[i];
+        } else {
+          trace_stream_ << "null";
+        }
+      } else {
+        trace_stream_ << +values[i];
+      }
+    }
+    trace_stream_ << ']';
+  }
+
+  void WriteWindowTrace(const SpeakerSegmentationWindowTrace &trace) {
+    trace_stream_ << "{\"type\":\"fusion_window\",\"session_id\":"
+                  << trace_session_id_ << ",\"window_id\":"
+                  << trace.window_id << ",\"start_frame\":"
+                  << trace.start_frame << ",\"num_frames\":"
+                  << trace.raw_masks.size() << ",\"num_classes\":7"
+                  << ",\"track_permutation\":["
+                  << trace.track_permutation[0] << ','
+                  << trace.track_permutation[1] << ','
+                  << trace.track_permutation[2]
+                  << "],\"input_probabilities\":";
+    WriteArray(trace.input_probabilities);
+    trace_stream_ << ",\"aligned_probabilities\":";
+    WriteArray(trace.aligned_probabilities);
+    trace_stream_ << ",\"raw_masks\":";
+    WriteArray(trace.raw_masks);
+    trace_stream_ << ",\"stabilized_masks\":";
+    WriteArray(trace.stabilized_masks);
+    trace_stream_ << ",\"change_candidate_frames\":";
+    WriteArray(trace.change_candidate_frames);
+    trace_stream_ << "}\n";
+  }
+
+  void WriteFrameTrace(const FinalizedSpeakerFrame &frame) {
+    trace_stream_ << "{\"type\":\"fused_frame\",\"session_id\":"
+                  << trace_session_id_ << ",\"frame_index\":"
+                  << frame.frame_index << ",\"speaker_count\":"
+                  << frame.speaker_count << ",\"local_speaker_mask\":"
+                  << static_cast<int32_t>(frame.local_speaker_mask)
+                  << ",\"mask_confidence\":"
+                  << frame.local_speaker_mask_confidence
+                  << ",\"coverage_count\":" << frame.coverage_count
+                  << ",\"fused_probabilities\":";
+    WriteArray(frame.fused_probabilities);
+    trace_stream_ << ",\"has_change_candidate_cluster\":"
+                  << (frame.has_change_candidate_cluster ? "true" : "false")
+                  << ",\"change_vote_count\":"
+                  << frame.change_vote_count
+                  << ",\"change_vote_coverage\":"
+                  << frame.change_vote_coverage
+                  << ",\"change_vote_ratio\":"
+                  << frame.change_vote_ratio
+                  << ",\"change_vote_threshold_passed\":"
+                  << (frame.change_vote_threshold_passed ? "true" : "false")
+                  << ",\"single_speaker_changed_before\":"
+                  << (frame.single_speaker_changed_before ? "true" : "false")
+                  << "}\n";
+  }
+
+  void WriteModelTrace(int64_t start_sample, bool pad_right,
+                       const std::vector<float> &logits,
+                       int32_t num_frames) {
+    trace_stream_ << "{\"type\":\"model_forward\",\"session_id\":"
+                  << trace_session_id_ << ",\"window_id\":"
+                  << trace_window_id_++ << ",\"start_sample\":"
+                  << start_sample << ",\"start_frame\":"
+                  << FrameIndexForSample(start_sample, meta_data_)
+                  << ",\"pad_right\":"
+                  << (pad_right ? "true" : "false")
+                  << ",\"num_frames\":" << num_frames
+                  << ",\"num_classes\":" << meta_data_.num_classes
+                  << ",\"logits\":";
+    WriteArray(logits);
+    trace_stream_ << "}\n";
+  }
+
   void ResetFusion() {
+    if (trace_stream_.is_open()) {
+      fusion_config_.on_window_trace = [this](
+          const SpeakerSegmentationWindowTrace &trace) {
+        WriteWindowTrace(trace);
+      };
+      fusion_config_.on_frame_trace = [this](
+          const FinalizedSpeakerFrame &frame) { WriteFrameTrace(frame); };
+    }
     fusion_ = std::make_unique<SpeakerSegmentationFusion>(fusion_config_);
   }
 
@@ -267,7 +434,8 @@ class SpeakerSegmentation::Impl {
     return window;
   }
 
-  std::vector<float> RunForward(const std::vector<float> &window) const {
+  std::vector<float> RunForward(const std::vector<float> &window,
+                                std::vector<float> *raw_logits) const {
     if (test_forward_) {
       const std::vector<uint8_t> masks = test_forward_(window);
       std::vector<float> probabilities(masks.size() * meta_data_.num_classes,
@@ -295,6 +463,10 @@ class SpeakerSegmentation::Impl {
 
     const int32_t num_frames = static_cast<int32_t>(output_shape[1]);
     const float *scores = output.GetTensorData<float>();
+    if (raw_logits) {
+      raw_logits->assign(scores,
+                         scores + num_frames * meta_data_.num_classes);
+    }
     std::vector<float> probabilities(num_frames * meta_data_.num_classes);
     for (int32_t frame = 0; frame != num_frames; ++frame) {
       const float *row = scores + frame * meta_data_.num_classes;
@@ -316,12 +488,25 @@ class SpeakerSegmentation::Impl {
   }
 
   void ProcessWindow(int64_t start_sample, bool pad_right) {
-    const auto probabilities = RunForward(GetWindow(start_sample, pad_right));
+    std::vector<float> raw_logits;
+    const auto probabilities = RunForward(
+        GetWindow(start_sample, pad_right),
+        trace_stream_.is_open() ? &raw_logits : nullptr);
     if (probabilities.empty()) {
       SHERPA_ONNX_LOGE("Segmentation model returned no frames");
       SHERPA_ONNX_EXIT(-1);
     }
 
+    if (trace_stream_.is_open() && !raw_logits.empty()) {
+      WriteModelTrace(start_sample, pad_right, raw_logits,
+                      static_cast<int32_t>(probabilities.size() /
+                                           meta_data_.num_classes));
+      trace_stream_.flush();
+      if (!trace_stream_) {
+        SHERPA_ONNX_LOGE("Failed writing Pyannote model trace data");
+        SHERPA_ONNX_EXIT(-1);
+      }
+    }
     fusion_->AddWindowProbabilities(
         FrameIndexForSample(start_sample, meta_data_), probabilities);
 
@@ -331,6 +516,13 @@ class SpeakerSegmentation::Impl {
         FrameIndexForSample(start_sample + meta_data_.window_shift, meta_data_);
     EmitFinalizedFrames(fusion_->FinalizeBefore(finalize_frame),
                         finalize_sample);
+    if (trace_stream_.is_open()) {
+      trace_stream_.flush();
+      if (!trace_stream_) {
+        SHERPA_ONNX_LOGE("Failed writing Pyannote trace data");
+        SHERPA_ONNX_EXIT(-1);
+      }
+    }
   }
 
   void EmitFinalizedFrames(const std::vector<FinalizedSpeakerFrame> &frames,
@@ -433,6 +625,9 @@ class SpeakerSegmentation::Impl {
   SpeakerSegmentationTestForward test_forward_;
   SpeakerSegmentationFusionConfig fusion_config_;
   std::unique_ptr<SpeakerSegmentationFusion> fusion_;
+  std::ofstream trace_stream_;
+  int64_t trace_session_id_ = 0;
+  int32_t trace_window_id_ = 0;
 
   std::vector<float> audio_buffer_;
   std::deque<SpeakerSegmentationSpan> spans_;

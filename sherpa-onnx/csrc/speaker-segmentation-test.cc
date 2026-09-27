@@ -6,6 +6,7 @@
 #include "sherpa-onnx/csrc/speaker-segmentation.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -26,6 +27,48 @@ SpeakerSegmentationFusionConfig MakeFusionConfig(
   config.min_duration_off = min_duration_off;
   config.change_vote_threshold = change_vote_threshold;
   return config;
+}
+
+TEST(SpeakerSegmentationFusion, EmitsDiagnosticWindowAndFrameEvidence) {
+  SpeakerSegmentationWindowTrace captured_window;
+  std::vector<FinalizedSpeakerFrame> captured_frames;
+  auto config = MakeFusionConfig();
+  config.on_window_trace = [&captured_window](
+                              const SpeakerSegmentationWindowTrace &trace) {
+    captured_window = trace;
+  };
+  config.on_frame_trace = [&captured_frames](
+                              const FinalizedSpeakerFrame &frame) {
+    captured_frames.push_back(frame);
+  };
+  SpeakerSegmentationFusion fuser(config);
+
+  fuser.AddWindowProbabilities(
+      /*start_frame=*/0,
+      {// silence, 001, 010, 100, 011, 101, 110
+       0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F,
+       0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F});
+  const auto frames = fuser.FinalizeBefore(/*frame_exclusive=*/2);
+
+  ASSERT_EQ(captured_window.window_id, 0);
+  EXPECT_EQ(captured_window.start_frame, 0);
+  EXPECT_EQ(captured_window.track_permutation,
+            (std::array<int32_t, 3>{0, 1, 2}));
+  EXPECT_EQ(captured_window.raw_masks, (std::vector<uint8_t>{0b001, 0b010}));
+  EXPECT_EQ(captured_window.stabilized_masks,
+            (std::vector<uint8_t>{0b001, 0b010}));
+  EXPECT_EQ(captured_window.change_candidate_frames,
+            (std::vector<int64_t>{1}));
+
+  ASSERT_EQ(frames.size(), 2);
+  ASSERT_EQ(captured_frames.size(), 2);
+  EXPECT_EQ(captured_frames[1].coverage_count, 1);
+  EXPECT_FLOAT_EQ(captured_frames[1].fused_probabilities[2], 1.0F);
+  EXPECT_EQ(captured_frames[1].change_vote_count, 1);
+  EXPECT_EQ(captured_frames[1].change_vote_coverage, 1);
+  EXPECT_FLOAT_EQ(captured_frames[1].change_vote_ratio, 1.0F);
+  EXPECT_TRUE(captured_frames[1].change_vote_threshold_passed);
+  EXPECT_TRUE(captured_frames[1].single_speaker_changed_before);
 }
 
 TEST(SpeakerSegmentationFusion, CountsUseCoverageAverageAndRound) {
@@ -183,7 +226,12 @@ TEST(SpeakerSegmentationFusion, TwoOfFourCoveringWindowsConfirmAChange) {
 }
 
 TEST(SpeakerSegmentationFusion, OneOfFourCoveringWindowsDoesNotConfirm) {
-  SpeakerSegmentationFusion fuser(MakeFusionConfig());
+  std::vector<FinalizedSpeakerFrame> traced_frames;
+  auto config = MakeFusionConfig();
+  config.on_frame_trace = [&traced_frames](const FinalizedSpeakerFrame &frame) {
+    traced_frames.push_back(frame);
+  };
+  SpeakerSegmentationFusion fuser(config);
   const auto changed = TwoSpeakerRun(6, 0b001, 6, 0b010);
   const auto unchanged = RepeatMask(0b001, 12);
   fuser.AddWindow(/*start_frame=*/0, changed);
@@ -195,6 +243,13 @@ TEST(SpeakerSegmentationFusion, OneOfFourCoveringWindowsDoesNotConfirm) {
 
   ASSERT_EQ(frames.size(), 12);
   EXPECT_EQ(CountSingleSpeakerChanges(frames), 0);
+  ASSERT_EQ(traced_frames.size(), frames.size());
+  EXPECT_TRUE(traced_frames[6].has_change_candidate_cluster);
+  EXPECT_EQ(traced_frames[6].change_vote_count, 1);
+  EXPECT_EQ(traced_frames[6].change_vote_coverage, 4);
+  EXPECT_FLOAT_EQ(traced_frames[6].change_vote_ratio, 0.25F);
+  EXPECT_FALSE(traced_frames[6].change_vote_threshold_passed);
+  EXPECT_FALSE(traced_frames[6].single_speaker_changed_before);
 }
 
 TEST(SpeakerSegmentationFusion, JitteredVotesClusterToHalfSwitchedFrame) {
