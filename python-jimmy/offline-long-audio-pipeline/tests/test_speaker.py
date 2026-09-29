@@ -138,6 +138,51 @@ class CleanSpanAndLocalMaskAssignmentTest(unittest.TestCase):
         self.assertIsNone(short.cluster_assignment_similarity)
 
 
+class E3AssignmentIntegrationTest(unittest.TestCase):
+    @staticmethod
+    def _segment(index, start_ms, end_ms):
+        return SpeechSegment(
+            index,
+            start_ms,
+            end_ms,
+            np.zeros((end_ms - start_ms) * 16, dtype=np.float32),
+            speaker_composition="single_speaker",
+            clean_spans=[(start_ms, end_ms)],
+        )
+
+    def test_e3_merges_only_clean_cluster_inputs_and_records_diagnostics(self):
+        segments = [
+            self._segment(1, 0, 3000),
+            self._segment(2, 3000, 6000),
+            self._segment(3, 6000, 9000),
+            self._segment(4, 9000, 12000),
+        ]
+        clusterer = RecordingClusterer([0, 1, 2, 2])
+        diagnostics = {}
+
+        assign_speaker_ids_with_centroids(
+            SequenceExtractor([[1.0, 0.0], [0.99, 0.1], [0.0, 1.0], [0.0, 0.99]]),
+            segments,
+            cluster_threshold=0.6,
+            num_clusters=-1,
+            assignment_similarity_threshold=0.5,
+            clusterer_factory=ControlledSpeakerAssignmentTest._factory(clusterer),
+            clean_cluster_merge_mode="robust_center_e3",
+            diagnostics=diagnostics,
+        )
+
+        self.assertEqual(clusterer.received.shape, (4, 2))
+        self.assertEqual(diagnostics["clean_cluster_merge_mode"], "robust_center_e3")
+        self.assertEqual(diagnostics["eligible_segment_count"], 4)
+        self.assertEqual(diagnostics["initial_cluster_count"], 3)
+        self.assertEqual(diagnostics["final_cluster_count"], 2)
+        self.assertEqual(len(diagnostics["merge_operations"]), 1)
+        self.assertEqual(segments[0].speaker_id, segments[1].speaker_id)
+        self.assertNotEqual(segments[0].speaker_id, segments[2].speaker_id)
+        self.assertEqual(segments[2].speaker_id, segments[3].speaker_id)
+
+
+
 if __name__ == "__main__":
     unittest.main()
 

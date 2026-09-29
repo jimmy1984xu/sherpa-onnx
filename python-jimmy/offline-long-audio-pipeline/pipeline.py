@@ -69,6 +69,10 @@ class PipelineConfig:
     debug: bool = False
     segmentation_mode: str = SEGMENTATION_MODE_VAD_PYANNOTE
     run_label: str | None = None
+    clean_cluster_merge_mode: str = "none"
+    e3_center_method: str = "trimmed_centroid"
+    e3_trim_ratio: float = 0.10
+    e3_similarity_threshold: float = 0.75
 
 
 @dataclass(frozen=True)
@@ -118,6 +122,14 @@ def _validate_config(config: PipelineConfig) -> None:
         raise ValueError("whisper_timeout_ms must be positive")
     if not 0.0 <= config.min_text_confidence <= 1.0:
         raise ValueError("min_text_confidence must be in [0.0, 1.0]")
+    if config.clean_cluster_merge_mode not in {"none", "robust_center_e3"}:
+        raise ValueError("clean_cluster_merge_mode must be 'none' or 'robust_center_e3'")
+    if config.e3_center_method != "trimmed_centroid":
+        raise ValueError("e3_center_method must be 'trimmed_centroid'")
+    if not 0.0 <= config.e3_trim_ratio < 0.5:
+        raise ValueError("e3_trim_ratio must be in [0.0, 0.5)")
+    if not -1.0 <= config.e3_similarity_threshold <= 1.0:
+        raise ValueError("e3_similarity_threshold must be in [-1.0, 1.0]")
 
 
 def _composition_counts(segments: list[Any]) -> dict[str, int]:
@@ -225,8 +237,10 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             for segment in segments:
                 write_segment_wav(run_dir / "segments" / f"{segment.segment_id}.wav", segment.samples)
 
+        speaker_diagnostics: dict[str, Any] = {}
+
         def run_speaker() -> tuple[int, int, int, int]:
-            logger.info("stage=speaker event=start segments=%s", len(segments))
+            logger.info("stage=speaker event=start segments=%s merge_mode=%s", len(segments), config.clean_cluster_merge_mode)
             started_local = time.perf_counter()
             counts = assign_speaker_ids_with_centroids(
                 runtimes.extractor,
@@ -234,6 +248,11 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
                 cluster_threshold=config.cluster_threshold,
                 num_clusters=config.num_clusters,
                 assignment_similarity_threshold=config.centroid_assignment_similarity_threshold,
+                clean_cluster_merge_mode=config.clean_cluster_merge_mode,
+                e3_center_method=config.e3_center_method,
+                e3_trim_ratio=config.e3_trim_ratio,
+                e3_similarity_threshold=config.e3_similarity_threshold,
+                diagnostics=speaker_diagnostics,
             )
             timings["speaker_seconds"] = time.perf_counter() - started_local
             logger.info(
@@ -309,6 +328,13 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
                 "asr_error_count": asr_error_count,
                 "embedding_error_count": embedding_error_count,
                 "embedding_skipped_no_usable_audio_count": embedding_skipped_no_usable_audio_count,
+                "clean_cluster_merge_mode": config.clean_cluster_merge_mode,
+                "e3_config": {
+                    "center_method": config.e3_center_method,
+                    "trim_ratio": config.e3_trim_ratio,
+                    "similarity_threshold": config.e3_similarity_threshold,
+                },
+                "clean_cluster_diagnostics": speaker_diagnostics,
                 "timings": timings,
             },
         )

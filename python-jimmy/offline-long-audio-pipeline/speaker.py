@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import sherpa_onnx
 
+from e3_merge import merge_initial_clusters
 from vad import (
     CLEAN_SPAN_MIN_DURATION_MS,
     POST_OVERLAP_PAD_MS,
@@ -401,6 +402,11 @@ def assign_speaker_ids_with_centroids(
     assignment_similarity_threshold: float,
     max_embedding_samples: int = DEFAULT_MAX_EMBEDDING_SAMPLES,
     clusterer_factory: Callable[[float, int], Callable[[np.ndarray], Sequence[int]]] | None = None,
+    clean_cluster_merge_mode: str = "none",
+    e3_center_method: str = "trimmed_centroid",
+    e3_trim_ratio: float = 0.10,
+    e3_similarity_threshold: float = 0.75,
+    diagnostics: dict[str, Any] | None = None,
 ) -> tuple[int, int, int, int]:
     """Cluster eligible embeddings and assign excluded segments from final centroids.
 
@@ -415,6 +421,23 @@ def assign_speaker_ids_with_centroids(
         raise ValueError("Maximum embedding samples must be positive")
     if not -1.0 <= assignment_similarity_threshold <= 1.0:
         raise ValueError("assignment_similarity_threshold must be in [-1.0, 1.0]")
+    if clean_cluster_merge_mode not in {"none", "robust_center_e3"}:
+        raise ValueError("clean_cluster_merge_mode must be 'none' or 'robust_center_e3'")
+    if e3_center_method != "trimmed_centroid":
+        raise ValueError("e3_center_method must be 'trimmed_centroid'")
+    if not 0.0 <= e3_trim_ratio < 0.5:
+        raise ValueError("e3_trim_ratio must be in [0.0, 0.5)")
+    if not -1.0 <= e3_similarity_threshold <= 1.0:
+        raise ValueError("e3_similarity_threshold must be in [-1.0, 1.0]")
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics.update({
+            "clean_cluster_merge_mode": clean_cluster_merge_mode,
+            "initial_cluster_count": 0,
+            "final_cluster_count": 0,
+            "merge_operations": [],
+            "eligible_segment_count": 0,
+        })
 
     embedding_errors = 0
     skipped_no_usable_audio = 0
@@ -486,7 +509,22 @@ def assign_speaker_ids_with_centroids(
         labels = list(factory(cluster_threshold, num_clusters)(embedding_matrix))
         if len(labels) != len(eligible_indices):
             raise RuntimeError("FastClustering returned an unexpected number of labels")
+        if diagnostics is not None:
+            diagnostics["initial_cluster_count"] = len(set(labels))
+            diagnostics["eligible_segment_count"] = len(eligible_indices)
+        if clean_cluster_merge_mode == "robust_center_e3":
+            labels, merge_operations = merge_initial_clusters(
+                embedding_matrix,
+                labels,
+                similarity_threshold=e3_similarity_threshold,
+                center_method=e3_center_method,
+                trim_ratio=e3_trim_ratio,
+            )
+            if diagnostics is not None:
+                diagnostics["merge_operations"] = merge_operations
         stable_ids = stable_speaker_ids(labels)
+        if diagnostics is not None:
+            diagnostics["final_cluster_count"] = len(set(stable_ids))
         centroids = normalized_mean_by_stable_id(stable_ids, eligible_embeddings)
         for index, stable_id in zip(eligible_indices, stable_ids):
             segment = segments[index]

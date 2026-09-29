@@ -555,6 +555,10 @@ def build_baseline_pipeline_config(args: argparse.Namespace) -> baseline_pipelin
         debug=args.debug,
         segmentation_mode=baseline_pipeline.SEGMENTATION_MODE_VAD_PYANNOTE,
         run_label=args.run_label,
+        clean_cluster_merge_mode=args.clean_cluster_merge_mode,
+        e3_center_method=args.e3_center_method,
+        e3_trim_ratio=args.e3_trim_ratio,
+        e3_similarity_threshold=args.e3_similarity_threshold,
     )
 
 

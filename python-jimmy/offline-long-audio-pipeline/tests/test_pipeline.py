@@ -86,6 +86,11 @@ class PipelineTest(unittest.TestCase):
             cluster_threshold=0.5,
             num_clusters=2,
             assignment_similarity_threshold=0.5,
+            clean_cluster_merge_mode="none",
+            e3_center_method="trimmed_centroid",
+            e3_trim_ratio=0.1,
+            e3_similarity_threshold=0.75,
+            diagnostics={},
         )
         transcribe.assert_called_once_with(runtimes.recognizer, final_segments, 16000)
         self.assertIs(write_results.call_args.args[3], final_segments)

@@ -38,6 +38,23 @@ class EntryPointTest(unittest.TestCase):
         self.assertEqual(args.centroid_assignment_similarity_threshold, 0.5)
         self.assertFalse(hasattr(args, "overlap_tolerance_ms"))
 
+    def test_exposes_e3_merge_controls_with_safe_default(self):
+        defaults = MODULE.build_parser().parse_args(["--audio", "input.pcm"])
+        self.assertEqual(defaults.clean_cluster_merge_mode, "none")
+        self.assertEqual(defaults.e3_center_method, "trimmed_centroid")
+        self.assertEqual(defaults.e3_trim_ratio, 0.10)
+        self.assertEqual(defaults.e3_similarity_threshold, 0.75)
+
+        candidate = MODULE.build_parser().parse_args([
+            "--audio", "input.pcm",
+            "--clean-cluster-merge-mode", "robust_center_e3",
+            "--e3-trim-ratio", "0.1",
+            "--e3-similarity-threshold", "0.75",
+        ])
+        self.assertEqual(candidate.clean_cluster_merge_mode, "robust_center_e3")
+        self.assertEqual(candidate.e3_trim_ratio, 0.1)
+        self.assertEqual(candidate.e3_similarity_threshold, 0.75)
+
     def test_allows_controlled_cluster_assignment_overrides(self):
         args = MODULE.build_parser().parse_args([
             "--audio", "input.pcm",
