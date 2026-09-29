@@ -84,6 +84,10 @@ def build_parser() -> argparse.ArgumentParser:
         default="vad-pyannote",
         help="vad keeps Silero VAD regions; vad-pyannote splits VAD speech with local pyannote activity",
     )
+    parser.add_argument("--clean-cluster-merge-mode", choices=("none", "robust_center_e3"), default="none")
+    parser.add_argument("--e3-center-method", choices=("trimmed_centroid",), default="trimmed_centroid")
+    parser.add_argument("--e3-trim-ratio", type=float, default=0.10)
+    parser.add_argument("--e3-similarity-threshold", type=float, default=0.75)
     parser.add_argument(
         "--run-label",
         default=None,
@@ -132,6 +136,10 @@ def main(argv: list[str] | None = None) -> int:
                 debug=args.debug,
                 segmentation_mode=args.segmentation_mode,
                 run_label=args.run_label,
+                clean_cluster_merge_mode=args.clean_cluster_merge_mode,
+                e3_center_method=args.e3_center_method,
+                e3_trim_ratio=args.e3_trim_ratio,
+                e3_similarity_threshold=args.e3_similarity_threshold,
             )
         )
     except (FileNotFoundError, RuntimeError, ValueError) as error:
