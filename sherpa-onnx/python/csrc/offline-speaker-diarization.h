@@ -9,6 +9,7 @@
 
 namespace sherpa_onnx {
 
+void PybindOfflineSpeakerSegmentationModelConfig(py::module *m);
 void PybindOfflineSpeakerDiarization(py::module *m);
 
 }
