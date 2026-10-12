@@ -45,6 +45,7 @@
 #include "sherpa-onnx/python/csrc/fast-clustering.h"
 #include "sherpa-onnx/python/csrc/offline-speaker-diarization-result.h"
 #include "sherpa-onnx/python/csrc/offline-speaker-diarization.h"
+#include "sherpa-onnx/python/csrc/speaker-segmentation.h"
 #endif
 
 namespace sherpa_onnx {
@@ -104,6 +105,8 @@ PYBIND11_MODULE(_sherpa_onnx, m) {
 #if SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION == 1
   PybindFastClustering(&m);
   PybindOfflineSpeakerDiarizationResult(&m);
+  PybindOfflineSpeakerSegmentationModelConfig(&m);
+  PybindSpeakerSegmentation(&m);
   PybindOfflineSpeakerDiarization(&m);
 #else
   /* Define "empty" diarization symbols */
@@ -115,6 +118,13 @@ PYBIND11_MODULE(_sherpa_onnx, m) {
   m.attr("OfflineSpeakerSegmentationModelConfig") = py::none();
   m.attr("OfflineSpeakerDiarizationConfig") = py::none();
   m.attr("OfflineSpeakerDiarization") = py::none();
+  m.attr("SpeakerSegmentationConfig") = py::none();
+  m.attr("SpeakerSegmentationSpan") = py::none();
+  m.attr("SpeakerSegmentation") = py::none();
+  m.attr("CONTINUE") = py::none();
+  m.attr("SPEAKER_COUNT_CHANGED") = py::none();
+  m.attr("SINGLE_SPEAKER_CHANGED") = py::none();
+  m.attr("INPUT_FINISHED") = py::none();
 #endif
 
   PybindAlsa(&m);
