@@ -16,7 +16,8 @@ Process audio samples.
 Args:
   sample_rate:
     Sample rate of the input samples. If it is different from the one
-    expected by the model, we will do resampling inside.
+    expected by the model, supported backends resample it internally.
+    MaliG720 requires exactly 16000 Hz and rejects other rates.
   waveform:
     A 1-D float32 tensor containing audio samples. It must be normalized
     to the range [-1, 1].

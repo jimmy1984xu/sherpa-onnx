@@ -1,0 +1,72 @@
+[
+  {
+    "path": "third_party/transai-mali-g720/v2/runner.cc",
+    "source_sha256": "fce55bd0b58e6139e837c5ca0bf534385edb302735ebf8c6bc8ca7dad63d4af8",
+    "sha256": "7a27886b388b96dadb4958213e708931f060cef6d71950f757a898051aef5bd2",
+    "source_package": "parakeet_v2_mail_g720_mmul_v2",
+    "source_relative": "sdk/android/source/sherpa-g720/v2_gpu_tdt/runner.cc"
+  },
+  {
+    "path": "third_party/transai-mali-g720/v2/sdk.cc",
+    "source_sha256": "0c88ac94d80a8250e7e098fc920caf53ae6421ab3b4e9f1a457f1335247bdfd8",
+    "sha256": "a7b99d3ab60c7184d76fc5b519a7d44fda1c1b3042df9ad32e8d9108c5ee803d",
+    "source_package": "parakeet_v2_mail_g720_mmul_v2",
+    "source_relative": "sdk/android/source/sherpa-g720/v2_gpu_tdt/sdk.cc"
+  },
+  {
+    "path": "third_party/transai-mali-g720/v2/tdt.cl",
+    "source_sha256": "743479a21ed45a430c67db3876f155b47b3c5924fab70ade369a627f85abc1e7",
+    "sha256": "777d7731e27192a943ae862f8c7d6aca1c4a221a39fedca29e3933bed396a99d",
+    "source_package": "parakeet_v2_mail_g720_mmul_v2",
+    "source_relative": "sdk/android/source/sherpa-g720/v2_gpu_tdt/tdt.cl"
+  },
+  {
+    "path": "third_party/transai-mali-g720/v2/multi.cl",
+    "source_sha256": "d34819f84c0a35b3b93d88613504e72edf3a3fef3d1a7a18c91226ab90bfe776",
+    "sha256": "a6abe0b4ebc1f2b636c83f0f3ec82151a765914fd27eb96478f893c2bdf85b0b",
+    "source_package": "parakeet_v2_mail_g720_mmul_v2",
+    "source_relative": "sdk/android/source/sherpa-g720/v2_gpu_tdt/multi.cl"
+  },
+  {
+    "path": "third_party/transai-mali-g720/v2/sdk.exports",
+    "source_sha256": "512d42bc9670dfd001e3bd7e2041da0c0a6ac1434c842ded7c7d740c41f207cf",
+    "sha256": "7ecd130e50e78f2f4ad257bf6df23e8f170a34a7b0322d33fec0888384d8d067",
+    "source_package": "parakeet_v2_mail_g720_mmul_v2",
+    "source_relative": "sdk/android/source/sherpa-g720/v2_gpu_tdt/sdk.exports"
+  },
+  {
+    "path": "third_party/transai-mali-g720/v3/runner.cc",
+    "source_sha256": "97298f2919a188395ed88331710086e553f5868bf5638fb27cfe09d718fdf79e",
+    "sha256": "9dbd86495eabfb5f110eec9bb86a2f2b36305b7e91e7cc30e43958bc286d99ab",
+    "source_package": "parakeet_v3_mail_g720_mmul_v1",
+    "source_relative": "sdk/android/source/sherpa-g720/v3_gpu_tdt/runner.cc"
+  },
+  {
+    "path": "third_party/transai-mali-g720/v3/sdk.cc",
+    "source_sha256": "2b3f6b3ddddaf042840b07710ae3462c30aedb92e803fb80c9b187bad1ce3976",
+    "sha256": "3cd618a41ec1fb3d819fbc443cbe8ff61758be27ee38070937fbbad774a47b5c",
+    "source_package": "parakeet_v3_mail_g720_mmul_v1",
+    "source_relative": "sdk/android/source/sherpa-g720/v3_gpu_tdt/sdk.cc"
+  },
+  {
+    "path": "third_party/transai-mali-g720/v3/tdt.cl",
+    "source_sha256": "7d5857af27523ed63dbcd862ece01b5add620b8fdc08c3337d7f8eca821ab85a",
+    "sha256": "e4651c5cc027d1301c4acc34a9a8b9d28873b3ddb4d8f7ea9c00e2ed590bff31",
+    "source_package": "parakeet_v3_mail_g720_mmul_v1",
+    "source_relative": "sdk/android/source/sherpa-g720/v3_gpu_tdt/tdt.cl"
+  },
+  {
+    "path": "third_party/transai-mali-g720/v3/multi.cl",
+    "source_sha256": "69e8f64edef500e39b99b854c2bdeabfd65c6708cbdbfa37c1ba1d35fafaf975",
+    "sha256": "821f4143a397c67bf91abeacc2b9faaeeb2111f4e07e0ace07e81c9c68137b64",
+    "source_package": "parakeet_v3_mail_g720_mmul_v1",
+    "source_relative": "sdk/android/source/sherpa-g720/v3_gpu_tdt/multi.cl"
+  },
+  {
+    "path": "third_party/transai-mali-g720/v3/sdk.exports",
+    "source_sha256": "5cc62e8be1585e31e89026d86abf543922951b9e21c4818156d8ccdfb349b49e",
+    "sha256": "7ecd130e50e78f2f4ad257bf6df23e8f170a34a7b0322d33fec0888384d8d067",
+    "source_package": "parakeet_v3_mail_g720_mmul_v1",
+    "source_relative": "sdk/android/source/sherpa-g720/v3_gpu_tdt/sdk.exports"
+  }
+]

@@ -770,6 +770,8 @@ static sherpa_onnx::OfflineRecognizerConfig GetOfflineRecognizerConfig(
 
 const SherpaOnnxOfflineRecognizer *SherpaOnnxCreateOfflineRecognizer(
     const SherpaOnnxOfflineRecognizerConfig *config) {
+  if (!config) return nullptr;
+  try {
   sherpa_onnx::OfflineRecognizerConfig recognizer_config =
       GetOfflineRecognizerConfig(config);
 
@@ -778,12 +780,16 @@ const SherpaOnnxOfflineRecognizer *SherpaOnnxCreateOfflineRecognizer(
     return nullptr;
   }
 
-  SherpaOnnxOfflineRecognizer *recognizer = new SherpaOnnxOfflineRecognizer;
+  auto recognizer = std::make_unique<SherpaOnnxOfflineRecognizer>();
 
   recognizer->impl =
       std::make_unique<sherpa_onnx::OfflineRecognizer>(recognizer_config);
 
-  return recognizer;
+  return recognizer.release();
+  } catch (const std::exception &e) {
+    SHERPA_ONNX_LOGE("Create offline recognizer: %s", e.what());
+    return nullptr;
+  }
 }
 
 void SherpaOnnxOfflineRecognizerSetConfig(
@@ -792,7 +798,11 @@ void SherpaOnnxOfflineRecognizerSetConfig(
   if (!recognizer || !config) return;
   sherpa_onnx::OfflineRecognizerConfig recognizer_config =
       GetOfflineRecognizerConfig(config);
-  recognizer->impl->SetConfig(recognizer_config);
+  try {
+    recognizer->impl->SetConfig(recognizer_config);
+  } catch (const std::exception &e) {
+    SHERPA_ONNX_LOGE("Set offline config rejected: %s", e.what());
+  }
 }
 
 void SherpaOnnxDestroyOfflineRecognizer(
@@ -812,9 +822,14 @@ const SherpaOnnxOfflineStream *SherpaOnnxCreateOfflineStream(
 const SherpaOnnxOfflineStream *SherpaOnnxCreateOfflineStreamWithHotwords(
     const SherpaOnnxOfflineRecognizer *recognizer, const char *hotwords) {
   if (!recognizer) return nullptr;
+  try {
   SherpaOnnxOfflineStream *stream =
       new SherpaOnnxOfflineStream(recognizer->impl->CreateStream(hotwords));
   return stream;
+  } catch (const std::exception &e) {
+    SHERPA_ONNX_LOGE("Create stream rejected: %s", e.what());
+    return nullptr;
+  }
 }
 
 void SherpaOnnxDestroyOfflineStream(const SherpaOnnxOfflineStream *stream) {
@@ -826,7 +841,13 @@ void SherpaOnnxAcceptWaveformOffline(const SherpaOnnxOfflineStream *stream,
                                      int32_t sample_rate, const float *samples,
                                      int32_t n) {
   if (!stream) return;
-  stream->impl->AcceptWaveform(sample_rate, samples, n);
+  try {
+    stream->impl->AcceptWaveform(sample_rate, samples, n);
+  } catch (const std::exception &e) {
+    if (stream->impl->GetOption("mali_g720.stream") != "1") throw;
+    stream->impl->SetResult({});
+    stream->impl->SetOption("mali_g720.error", e.what());
+  }
 }
 
 void SherpaOnnxOfflineStreamSetOption(const SherpaOnnxOfflineStream *stream,
@@ -851,7 +872,14 @@ void SherpaOnnxDecodeOfflineStream(
     const SherpaOnnxOfflineRecognizer *recognizer,
     const SherpaOnnxOfflineStream *stream) {
   if (!recognizer || !stream) return;
-  recognizer->impl->DecodeStream(stream->impl.get());
+  try {
+    recognizer->impl->DecodeStream(stream->impl.get());
+  } catch (const std::exception &e) {
+    if (stream->impl->GetOption("mali_g720.stream") != "1") throw;
+    stream->impl->SetResult({});
+    stream->impl->SetOption("mali_g720.error", e.what());
+    SHERPA_ONNX_LOGE("MaliG720 decode: %s", e.what());
+  }
 }
 
 void SherpaOnnxDecodeMultipleOfflineStreams(
@@ -862,12 +890,21 @@ void SherpaOnnxDecodeMultipleOfflineStreams(
   for (int32_t i = 0; i != n; ++i) {
     ss[i] = streams[i]->impl.get();
   }
-  recognizer->impl->DecodeStreams(ss.data(), n);
+  try {
+    recognizer->impl->DecodeStreams(ss.data(), n);
+  } catch (const std::exception &e) {
+    for (auto s : ss) {
+      if (s->GetOption("mali_g720.stream") != "1") throw;
+      s->SetResult({});
+      s->SetOption("mali_g720.error", e.what());
+    }
+  }
 }
 
 const SherpaOnnxOfflineRecognizerResult *SherpaOnnxGetOfflineStreamResult(
     const SherpaOnnxOfflineStream *stream) {
   if (!stream) return nullptr;
+  if (!stream->impl->GetOption("mali_g720.error").empty()) return nullptr;
   const sherpa_onnx::OfflineRecognitionResult &result =
       stream->impl->GetResult();
   const auto &text = result.text;

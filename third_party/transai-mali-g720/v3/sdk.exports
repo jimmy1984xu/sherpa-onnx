@@ -1,0 +1,4 @@
+TRANSAI_GPU_TDT_SCORED_1 {
+  global: transai_parakeet_gpu_create; transai_parakeet_gpu_recognize_ex; transai_parakeet_gpu_destroy;
+  local: *;
+};

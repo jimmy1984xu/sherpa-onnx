@@ -70,6 +70,7 @@ struct MoonshineTag {};
 
 // It is based on Wav2Vec, accepting raw audio samples as input
 struct OmnilingualAsrTag {};
+struct MaliG720Tag {};
 
 class OfflineStream {
  public:
@@ -80,12 +81,14 @@ class OfflineStream {
   explicit OfflineStream(CEDTag tag);
   explicit OfflineStream(MoonshineTag tag);
   explicit OfflineStream(OmnilingualAsrTag tag);
+  explicit OfflineStream(MaliG720Tag tag);
   ~OfflineStream();
 
   /**
      @param sampling_rate The sampling_rate of the input waveform. If it does
                           not equal to  config.sampling_rate, we will do
-                          resampling inside.
+                          resampling inside for supported backends.
+                          MaliG720 requires exactly 16000 Hz and rejects other rates.
      @param waveform Pointer to a 1-D array of size n. It must be normalized to
                      the range [-1, 1].
      @param n Number of entries in waveform

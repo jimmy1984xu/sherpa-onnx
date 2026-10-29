@@ -3,6 +3,11 @@
 // Copyright (c)  2023  Xiaomi Corporation
 
 #include "sherpa-onnx/csrc/offline-recognizer-impl.h"
+#include <stdexcept>
+#include "sherpa-onnx/csrc/mali-g720/config.h"
+#if defined(SHERPA_ONNX_ENABLE_MALI_G720)
+#include "sherpa-onnx/csrc/mali-g720/offline-recognizer.h"
+#endif
 #include "sherpa-onnx/csrc/ort-env.h"
 
 #include <memory>
@@ -75,6 +80,13 @@ namespace sherpa_onnx {
 
 std::unique_ptr<OfflineRecognizerImpl> OfflineRecognizerImpl::Create(
     const OfflineRecognizerConfig &config) {
+  if (IsMaliG720(config.model_config.provider)) {
+#if defined(SHERPA_ONNX_ENABLE_MALI_G720)
+    return CreateMaliG720Recognizer(config);
+#else
+    throw std::runtime_error("MaliG720 backend disabled; no fallback");
+#endif
+  }
   if (config.model_config.provider == "rknn") {
 #if SHERPA_ONNX_ENABLE_RKNN
     if (!config.model_config.sense_voice.model.empty()) {
@@ -422,6 +434,10 @@ std::unique_ptr<OfflineRecognizerImpl> OfflineRecognizerImpl::Create(
 template <typename Manager>
 std::unique_ptr<OfflineRecognizerImpl> OfflineRecognizerImpl::Create(
     Manager *mgr, const OfflineRecognizerConfig &config) {
+  if (IsMaliG720(config.model_config.provider)) {
+    // GPU artifacts must be real filesystem paths, extracted from assets first.
+    return Create(config);
+  }
   if (config.model_config.provider == "rknn") {
 #if SHERPA_ONNX_ENABLE_RKNN
     if (!config.model_config.sense_voice.model.empty()) {
