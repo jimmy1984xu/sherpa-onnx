@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <iostream>
 #include "mali_loader.h"
+#include "program_binary.h"
 #include <cstdlib>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -45,14 +46,6 @@ size_t RoundUp(size_t value, size_t alignment) {
   return (value + alignment - 1) / alignment * alignment;
 }
 
-std::string ReadTextFile(const std::string& path) {
-  std::ifstream input(path, std::ios::binary);
-  if (!input) return {};
-  std::ostringstream output;
-  output << input.rdbuf();
-  return output.str();
-}
-
 template <typename Value>
 bool SetArg(decltype(&clSetKernelArg) set_arg, cl_kernel kernel, cl_uint index,
             const Value& value) {
@@ -63,10 +56,6 @@ bool SetArg(decltype(&clSetKernelArg) set_arg, cl_kernel kernel, cl_uint index,
 
 struct OpenClRuntime::Api {
   void* library = nullptr;
-  decltype(&clCreateProgramWithSource) create_program = nullptr;
-  decltype(&clBuildProgram) build_program = nullptr;
-  decltype(&clGetProgramInfo) get_program_info = nullptr;
-  decltype(&clGetProgramBuildInfo) get_build_info = nullptr;
   decltype(&clCreateKernel) create_kernel = nullptr;
   decltype(&clCreateBuffer) create_buffer = nullptr;
   decltype(&clEnqueueWriteBuffer) enqueue_write = nullptr;
@@ -86,10 +75,6 @@ struct OpenClRuntime::Api {
     if (library == nullptr) return;
 #define LOAD(name, field) \
   field = reinterpret_cast<decltype(field)>(dlsym(library, name))
-    LOAD("clCreateProgramWithSource", create_program);
-    LOAD("clBuildProgram", build_program);
-    LOAD("clGetProgramInfo", get_program_info);
-    LOAD("clGetProgramBuildInfo", get_build_info);
     LOAD("clCreateKernel", create_kernel);
     LOAD("clCreateBuffer", create_buffer);
     LOAD("clEnqueueWriteBuffer", enqueue_write);
@@ -111,9 +96,7 @@ struct OpenClRuntime::Api {
   }
 
   bool valid() const {
-    return create_program != nullptr && build_program != nullptr &&
-           get_program_info != nullptr &&
-           get_build_info != nullptr && create_kernel != nullptr &&
+    return create_kernel != nullptr &&
            create_buffer != nullptr && enqueue_write != nullptr &&
             enqueue_read != nullptr &&
            set_arg != nullptr && set_kernel_exec_info != nullptr &&
@@ -306,23 +289,10 @@ std::unique_ptr<OpenClRuntime> OpenClRuntime::Create(
   }
 
   const size_t separator = weights_path.find_last_of('/');
-  const std::string kernel_path =
-      (separator == std::string::npos ? std::string() :
-                                       weights_path.substr(0, separator + 1)) +
-      "teacher_kernels.cl";
-  const std::string source = ReadTextFile(kernel_path);
-  if (source.empty()) {
-    *error = "TAIENC6 OpenCL kernel artifact is missing";
-    return nullptr;
-  }
-  const char* source_address = source.data();
-  const size_t source_size = source.size();
-  runtime->program_ = runtime->api_->create_program(
-      context, 1, &source_address, &source_size, &status);
-  if (status != CL_SUCCESS || runtime->program_ == nullptr) {
-    *error = "TAIENC6 OpenCL program creation failed";
-    return nullptr;
-  }
+  const std::string program_directory=weights_path.substr(0,separator);
+  const auto executable=[&](const std::string& options) {
+    return transai::aot::Load(runtime->api_->library,context,queue,program_directory,options);
+  };
   std::string build_options="-cl-std=CL2.0 -DTAI_DENSE_LX="+std::to_string(runtime->dense_lx_)+" -DTAI_DENSE_LY="+std::to_string(runtime->dense_ly_)+" -DTAI_SM="+std::to_string(runtime->small_m_)+" -DTAI_SN="+std::to_string(runtime->small_n_)+" -DTAI_BCAST_K="+std::to_string(runtime->bcast_k_)+(nemo_padding?" -DTAI_NEMO_ZERO_HALO=1":"");
 
   const int registers=choice("TRANSAI_G720_MMUL_REGISTERS",0,{0,32,64});
@@ -340,31 +310,7 @@ std::unique_ptr<OpenClRuntime> OpenClRuntime::Create(
     }
   }
   std::cerr<<"G720_BUILD_OPTIONS "<<build_options<<std::endl;
-  status = runtime->api_->build_program(runtime->program_, 0, nullptr,
-                                        build_options.c_str(), nullptr, nullptr);
-  if (status != CL_SUCCESS) {
-    size_t device_bytes = 0;
-    runtime->api_->get_program_info(runtime->program_, CL_PROGRAM_DEVICES, 0,
-                                    nullptr, &device_bytes);
-    std::vector<cl_device_id> devices(device_bytes / sizeof(cl_device_id));
-    if (!devices.empty()) {
-      runtime->api_->get_program_info(runtime->program_, CL_PROGRAM_DEVICES,
-                                      device_bytes, devices.data(), nullptr);
-    }
-    size_t log_size = 0;
-    const cl_device_id device = devices.empty() ? nullptr : devices.front();
-    runtime->api_->get_build_info(runtime->program_, device,
-                                  CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_size);
-    std::string log(log_size, '\0');
-    if (log_size != 0) {
-      runtime->api_->get_build_info(runtime->program_, device,
-                                    CL_PROGRAM_BUILD_LOG, log.size(),
-                                    log.data(), nullptr);
-    }
-    *error = "TAIENC6 OpenCL program build failed (" +
-             std::to_string(status) + "): " + log;
-    return nullptr;
-  }
+  runtime->program_=executable(build_options);
   if (!runtime->CreateKernels(error) || !runtime->AllocateWorkspace(error)) {
     return nullptr;
   }
@@ -382,12 +328,6 @@ std::unique_ptr<OpenClRuntime> OpenClRuntime::Create(
     if (runtime->small_m_ != 4 || runtime->small_n_ != 4) {
       *error="shape tile policy requires primary 4x4"; return nullptr;
     }
-    runtime->alternate_program_=runtime->api_->create_program(context,1,&source_address,&source_size,&status);
-    if(status!=CL_SUCCESS || !runtime->alternate_program_) {
-      *error="alternate MMUL program creation failed"; return nullptr;
-    }
-    std::swap(runtime->program_,runtime->alternate_program_);
-    runtime->kernels_.swap(runtime->alternate_kernels_);
     auto alternate_options=build_options;
     const auto marker=alternate_options.find("-DTAI_SM=4 ");
     if(marker==std::string::npos) { *error="missing immutable primary tile option";return nullptr; }
@@ -401,27 +341,23 @@ std::unique_ptr<OpenClRuntime> OpenClRuntime::Create(
     if(k_marker==std::string::npos) { *error="missing primary RHS chunk option";return nullptr; }
     alternate_options.replace(k_marker,original_k.size(),"-DTAI_BCAST_K="+std::to_string(alternate_k)+" ");
     std::cerr<<"G720_ALTERNATE_BUILD_OPTIONS "<<alternate_options<<std::endl;
-    status=runtime->api_->build_program(runtime->program_,0,nullptr,alternate_options.c_str(),nullptr,nullptr);
-    if(status!=CL_SUCCESS) {
-      *error="alternate MMUL program build failed: "+std::to_string(status);return nullptr;
-    }
+    runtime->alternate_program_=executable(alternate_options);
+    std::swap(runtime->program_,runtime->alternate_program_);
+    runtime->kernels_.swap(runtime->alternate_kernels_);
     if(!runtime->CreateKernels(error))return nullptr;
     std::swap(runtime->program_,runtime->alternate_program_);
     runtime->kernels_.swap(runtime->alternate_kernels_);
     std::cerr<<"G720_SHAPE_TILE limit="<<runtime->shape_tile_limit_<<" primary=4x4 alternate="
              <<runtime->alternate_m_<<"x"<<runtime->alternate_n_<<" shared_weights_workspace=1"<<std::endl;
     if (runtime->adaptive_tile_n_ && !runtime->row_reuse_pad_) {
-      runtime->fallback_program_=runtime->api_->create_program(context,1,&source_address,&source_size,&status);
-      if(status!=CL_SUCCESS || !runtime->fallback_program_) { *error="fallback MMUL program creation failed";return nullptr; }
-      std::swap(runtime->program_,runtime->fallback_program_);
-      runtime->kernels_.swap(runtime->fallback_kernels_);
       auto fallback_options=build_options;
       const auto fm=fallback_options.find("-DTAI_SM=4 ");
       if(fm==std::string::npos) { *error="missing fallback tile option";return nullptr; }
       fallback_options.replace(fm,11,"-DTAI_SM=8 ");
       std::cerr<<"G720_FALLBACK_BUILD_OPTIONS "<<fallback_options<<std::endl;
-      status=runtime->api_->build_program(runtime->program_,0,nullptr,fallback_options.c_str(),nullptr,nullptr);
-      if(status!=CL_SUCCESS) { *error="fallback MMUL build failed: "+std::to_string(status);return nullptr; }
+      runtime->fallback_program_=executable(fallback_options);
+      std::swap(runtime->program_,runtime->fallback_program_);
+      runtime->kernels_.swap(runtime->fallback_kernels_);
       if(!runtime->CreateKernels(error))return nullptr;
       std::swap(runtime->program_,runtime->fallback_program_);
       runtime->kernels_.swap(runtime->fallback_kernels_);
@@ -430,15 +366,12 @@ std::unique_ptr<OpenClRuntime> OpenClRuntime::Create(
   }
   if(runtime->tiny_limit_!=0) {
     if(runtime->small_m_!=4 || runtime->small_n_!=4 || !runtime->shape_tile_limit_) { *error="tiny tile requires primary4x4 and shape policy";return nullptr; }
-    runtime->tiny_program_=runtime->api_->create_program(context,1,&source_address,&source_size,&status);
-    if(status!=CL_SUCCESS || !runtime->tiny_program_) { *error="tiny MMUL program creation failed";return nullptr; }
-    std::swap(runtime->program_,runtime->tiny_program_);runtime->kernels_.swap(runtime->tiny_kernels_);
     auto options=build_options;const auto marker=options.find("-DTAI_SM=4 ");
     if(marker==std::string::npos) { *error="tiny primary option missing";return nullptr; }
     options.replace(marker,11,"-DTAI_SM=2 ");
     std::cerr<<"G720_TINY_BUILD_OPTIONS "<<options<<std::endl;
-    status=runtime->api_->build_program(runtime->program_,0,nullptr,options.c_str(),nullptr,nullptr);
-    if(status!=CL_SUCCESS) { *error="tiny MMUL build failed: "+std::to_string(status);return nullptr; }
+    runtime->tiny_program_=executable(options);
+    std::swap(runtime->program_,runtime->tiny_program_);runtime->kernels_.swap(runtime->tiny_kernels_);
     if(!runtime->CreateKernels(error))return nullptr;
     std::swap(runtime->program_,runtime->tiny_program_);runtime->kernels_.swap(runtime->tiny_kernels_);
   }

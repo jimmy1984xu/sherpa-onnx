@@ -1,4 +1,5 @@
 #include "mali_loader.h"
+#include "program_binary.h"
 
 #include "dispatch/opencl_runtime.h"
 
@@ -42,8 +43,7 @@ struct Cl {
   E(clEnqueueMarkerWithWaitList) E(clReleaseEvent) E(clGetPlatformIDs)
       E(clGetDeviceIDs) E(clGetDeviceInfo) E(clCreateContext)
           E(clCreateCommandQueue) E(clCreateBuffer) E(clEnqueueWriteBuffer)
-              E(clEnqueueReadBuffer) E(clFinish) E(clCreateProgramWithSource)
-                  E(clBuildProgram) E(clGetProgramBuildInfo) E(clCreateKernel)
+              E(clEnqueueReadBuffer) E(clFinish) E(clCreateKernel)
                       E(clSetKernelArg) E(clEnqueueNDRangeKernel)
                           E(clGetKernelWorkGroupInfo) E(clReleaseMemObject)
                               E(clReleaseKernel) E(clReleaseProgram)
@@ -146,25 +146,6 @@ struct Gpu {
     Check(cl.clEnqueueWriteBuffer(queue, weights, CL_TRUE, 0, w.size(),
                                   w.data(), 0, nullptr, nullptr),
           "weights");
-    auto layout = Read<char>(dir + "/tdt_layout.clh"),
-         shader = Read<char>(dir + "/tdt.cl");
-    auto fl = Read<char>(dir + "/frontend_layout.clh");
-    std::string source(fl.begin(), fl.end());
-    source.append(layout.begin(), layout.end());
-    source.append(shader.begin(), shader.end());
-    std::string tail(shader.begin(), shader.end());
-    tail = tail.substr(tail.find("__attribute__"));
-    source.append("\n#undef TDT_KERNEL\n#define TDT_KERNEL tdt_tail\n#undef "
-                  "TDT_RESUME\n#define TDT_RESUME 1\n");
-    source.append(tail);
-    auto multi = Read<char>(dir + "/multi.cl");
-    source.append(multi.begin(), multi.end());
-    auto front_source = Read<char>(dir + "/frontend.cl");
-    source.append(front_source.begin(), front_source.end());
-    const char *ptr = source.data();
-    size_t size = source.size();
-    program = cl.clCreateProgramWithSource(ctx, 1, &ptr, &size, &status);
-    Check(status, "program");
     if (getenv("TRANSAI_TDT_WG"))
       wg = atoi(getenv("TRANSAI_TDT_WG"));
     if (wg < 64 || wg > 1024 || (wg & (wg - 1)))
@@ -173,16 +154,7 @@ struct Gpu {
                           (getenv("TRANSAI_TDT_NATIVE") ? " -DNATIVE_MATH=1"
                                                         : " -DNATIVE_MATH=0");
     options += getenv("MALI_G720_SCORE_TRACE") ? " -DMALI_SCORE_TRACE=1" : " -DMALI_SCORE_TRACE=0";
-    status = cl.clBuildProgram(program, 1, &device, options.c_str(), nullptr,
-                               nullptr);
-    size_t logsize = 0;
-    cl.clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, nullptr,
-                             &logsize);
-    std::string log(logsize, '\0');
-    cl.clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, logsize,
-                             log.data(), nullptr);
-    std::cerr << "BUILD " << status << " " << log << std::endl;
-    Check(status, "build");
+    program = transai::aot::Load(cl.lib, ctx, queue, dir, options);
     tdt = cl.clCreateKernel(
         program, MultiEnabled() ? "tdt_tail" : "tdt_persistent",
         &status);

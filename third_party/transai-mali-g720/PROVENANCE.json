@@ -2,7 +2,7 @@
   {
     "path": "third_party/transai-mali-g720/v2/runner.cc",
     "source_sha256": "fce55bd0b58e6139e837c5ca0bf534385edb302735ebf8c6bc8ca7dad63d4af8",
-    "sha256": "7a27886b388b96dadb4958213e708931f060cef6d71950f757a898051aef5bd2",
+    "sha256": "f41459b3964289fa7128078cd642dc57b35c557ccacac692e171de9b74b09d7b",
     "source_package": "parakeet_v2_mail_g720_mmul_v2",
     "source_relative": "sdk/android/source/sherpa-g720/v2_gpu_tdt/runner.cc"
   },
@@ -37,7 +37,7 @@
   {
     "path": "third_party/transai-mali-g720/v3/runner.cc",
     "source_sha256": "97298f2919a188395ed88331710086e553f5868bf5638fb27cfe09d718fdf79e",
-    "sha256": "9dbd86495eabfb5f110eec9bb86a2f2b36305b7e91e7cc30e43958bc286d99ab",
+    "sha256": "853c741e5a6258da8430e50d330f86433e36b3bea63f92acf742f50863a7ad99",
     "source_package": "parakeet_v3_mail_g720_mmul_v1",
     "source_relative": "sdk/android/source/sherpa-g720/v3_gpu_tdt/runner.cc"
   },
