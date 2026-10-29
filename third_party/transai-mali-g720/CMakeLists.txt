@@ -16,6 +16,7 @@ set_target_properties(transai-mali-g720-core PROPERTIES
   CXX_STANDARD_REQUIRED ON
 )
 target_include_directories(transai-mali-g720-core PUBLIC
+  "${CMAKE_SOURCE_DIR}"
   "${CMAKE_CURRENT_SOURCE_DIR}"
   "${CMAKE_CURRENT_SOURCE_DIR}/core"
   "${CMAKE_CURRENT_SOURCE_DIR}/core/generated"
