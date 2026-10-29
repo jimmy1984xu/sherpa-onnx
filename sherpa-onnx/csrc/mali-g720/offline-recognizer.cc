@@ -1,7 +1,7 @@
 #include "sherpa-onnx/csrc/mali-g720/offline-recognizer.h"
 #include "sherpa-onnx/csrc/mali-g720/config.h"
 #include "sherpa-onnx/csrc/mali-g720/gpu-abi.h"
-#include "sherpa-onnx/csrc/mali-g720/asset-hashes.h"
+#include "sherpa-onnx/csrc/mali-g720/model-manifest.h"
 #include "sherpa-onnx/csrc/mali-g720/sha256.h"
 #include "sherpa-onnx/csrc/symbol-table.h"
 #include <dlfcn.h>
@@ -21,15 +21,7 @@ class MaliG720Recognizer final : public OfflineRecognizerImpl {
       throw std::invalid_argument("MaliG720 supports frozen16k greedy TDT only; no fallback");
     int version = MaliG720Version(c.model_config);
     blank_ = version == 2 ? 1024 : 8192;
-    for (const auto &asset : kMaliG720Assets) {
-      if (asset.version != version) continue;
-      std::string role=asset.role;
-      std::string path = role == "tokens" ? c.model_config.tokens :
-          MaliG720Parent(role == "encoder" ? c.model_config.transducer.encoder_filename :
-                        c.model_config.transducer.decoder_filename) + "/" + asset.name;
-      if (MaliG720Sha256(path) != asset.sha256)
-        throw std::invalid_argument("MaliG720 asset SHA256 mismatch: " + path);
-    }
+    ValidateMaliG720Manifest(c.model_config, version);
     symbols_ = SymbolTable(c.model_config.tokens);
     if (symbols_.NumSymbols() != blank_ + 1 || !symbols_.Contains("<blk>") ||
         symbols_["<blk>"] != blank_) throw std::invalid_argument("MaliG720 vocabulary mismatch");
