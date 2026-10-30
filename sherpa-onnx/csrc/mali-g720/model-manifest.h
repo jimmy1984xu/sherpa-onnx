@@ -1,14 +1,15 @@
 #ifndef SHERPA_ONNX_CSRC_MALI_G720_MODEL_MANIFEST_H_
 #define SHERPA_ONNX_CSRC_MALI_G720_MODEL_MANIFEST_H_
 #include <map>
+#include "sherpa-onnx/csrc/mali-g720/init-timer.h"
 #include <set>
 #include "nlohmann/json.hpp"
 #include "sherpa-onnx/csrc/mali-g720/config.h"
-#include "sherpa-onnx/csrc/mali-g720/sha256.h"
 
 namespace sherpa_onnx {
-// The runtime binds to an architecture; each model carries its own asset identities.
+// Bundled assets are hashed by the offline delivery verifier, not at recognizer initialization.
 inline void ValidateMaliG720Manifest(const OfflineModelConfig &c, int version) {
+  MaliG720InitTimer timer("manifest");
   const std::string root = MaliG720Parent(MaliG720Parent(c.transducer.encoder_filename));
   std::ifstream stream(root + "/model.json");
   if (!stream) throw std::invalid_argument("MaliG720 missing model.json: " + root);
@@ -42,21 +43,20 @@ inline void ValidateMaliG720Manifest(const OfflineModelConfig &c, int version) {
       throw std::invalid_argument("MaliG720 invalid AOT executable description: "+key);
   }
   if (compiled!=programs) throw std::invalid_argument("MaliG720 incomplete AOT executable set");
+  timer.Mark("parse_contract");
   std::set<std::string> observed;
   for (const auto &asset : manifest.at("assets")) {
     const std::string role = asset.at("role"), name = asset.at("name");
     const std::string key = role + "/" + name;
-    const std::string digest = asset.at("sha256");
-    if (!required.count(key) || !observed.insert(key).second || digest.size() != 64 ||
-        digest.find_first_not_of("0123456789abcdef") != std::string::npos)
+    if (!required.count(key) || !observed.insert(key).second)
       throw std::invalid_argument("MaliG720 invalid/duplicate model asset: " + key);
     const std::string path = role == "tokens" ? c.tokens :
         MaliG720Parent(role == "encoder" ? c.transducer.encoder_filename :
                       c.transducer.decoder_filename) + "/" + name;
     std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file || file.tellg() < 0 || static_cast<uint64_t>(file.tellg()) != asset.at("bytes").get<uint64_t>() ||
-        MaliG720Sha256(path) != digest)
-      throw std::invalid_argument("MaliG720 model asset size/SHA256 mismatch: " + path);
+    if (!file || file.tellg() < 0 || static_cast<uint64_t>(file.tellg()) != asset.at("bytes").get<uint64_t>())
+      throw std::invalid_argument("MaliG720 model asset size mismatch: " + path);
+    timer.Mark("asset/"+key);
   }
   if (observed != required) throw std::invalid_argument("MaliG720 incomplete model manifest");
 }

@@ -2,7 +2,6 @@
 #include "sherpa-onnx/csrc/mali-g720/config.h"
 #include "sherpa-onnx/csrc/mali-g720/gpu-abi.h"
 #include "sherpa-onnx/csrc/mali-g720/model-manifest.h"
-#include "sherpa-onnx/csrc/mali-g720/sha256.h"
 #include "sherpa-onnx/csrc/symbol-table.h"
 #include <dlfcn.h>
 #include <cmath>
@@ -19,15 +18,19 @@ class MaliG720Recognizer final : public OfflineRecognizerImpl {
         c.blank_penalty != 0 || !c.hotwords_file.empty() || !c.lm_config.model.empty() ||
         !c.ctc_fst_decoder_config.graph.empty() || c.feat_config.sampling_rate != 16000)
       throw std::invalid_argument("MaliG720 supports frozen16k greedy TDT only; no fallback");
+    MaliG720InitTimer timer("recognizer");
     int version = MaliG720Version(c.model_config);
     blank_ = version == 2 ? 1024 : 8192;
     ValidateMaliG720Manifest(c.model_config, version);
+    timer.Mark("manifest");
     symbols_ = SymbolTable(c.model_config.tokens);
     if (symbols_.NumSymbols() != blank_ + 1 || !symbols_.Contains("<blk>") ||
         symbols_["<blk>"] != blank_) throw std::invalid_argument("MaliG720 vocabulary mismatch");
+    timer.Mark("vocabulary");
     const std::string name = "libtransai_parakeet_gpu_v" + std::to_string(version) + ".so";
     library_ = dlopen(name.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!library_) throw std::runtime_error(std::string("MaliG720 dlopen: ") + dlerror());
+    timer.Mark("dlopen");
     try {
       auto create = Load<int (*)(const char *, const char *, void **, char *, size_t)>(
           "transai_parakeet_gpu_create");
@@ -37,6 +40,7 @@ class MaliG720Recognizer final : public OfflineRecognizerImpl {
       if (create(MaliG720Parent(c.model_config.transducer.encoder_filename).c_str(),
                  MaliG720Parent(c.model_config.transducer.decoder_filename).c_str(),
                  &handle_, error, sizeof(error))) throw std::runtime_error(error);
+      timer.Mark("gpu_create");
     } catch (...) { dlclose(library_); library_ = nullptr; throw; }
   }
   ~MaliG720Recognizer() override {
