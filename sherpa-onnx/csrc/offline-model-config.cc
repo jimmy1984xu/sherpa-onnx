@@ -2,6 +2,7 @@
 //
 // Copyright (c)  2023  Xiaomi Corporation
 #include "sherpa-onnx/csrc/offline-model-config.h"
+#include "sherpa-onnx/csrc/mali-g720/config.h"
 
 #include <string>
 
@@ -43,7 +44,7 @@ void OfflineModelConfig::Register(ParseOptions *po) {
                "true to print model information while loading it.");
 
   po->Register("provider", &provider,
-               "Specify a provider to use: cpu, cuda, coreml");
+               "Specify a provider to use: cpu, cuda, coreml, MaliG720");
 
   po->Register("model-type", &model_type,
                "Specify it to reduce model initialization time. "
@@ -65,6 +66,11 @@ void OfflineModelConfig::Register(ParseOptions *po) {
 }
 
 bool OfflineModelConfig::Validate() const {
+  if (IsMaliG720(provider)) return ValidateMaliG720(*this);
+  if (MaliG720Version(*this)) {
+    SHERPA_ONNX_LOGE("MaliG720 profiles require provider=MaliG720");
+    return false;
+  }
   // For RK NPU, we reinterpret num_threads:
   //
   // For RK3588 only

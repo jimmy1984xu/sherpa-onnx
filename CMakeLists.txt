@@ -54,6 +54,10 @@ option(SHERPA_ONNX_ENABLE_JNI "Whether to build JNI internface" OFF)
 option(SHERPA_ONNX_ENABLE_C_API "Whether to build C API" ON)
 option(SHERPA_ONNX_ENABLE_WEBSOCKET "Whether to build webscoket server/client" ON)
 option(SHERPA_ONNX_ENABLE_GPU "Enable ONNX Runtime GPU support" OFF)
+option(SHERPA_ONNX_ENABLE_MALI_G720 "Enable standalone Parakeet Mali-G720 backend (Android arm64)" OFF)
+if(SHERPA_ONNX_ENABLE_MALI_G720 AND NOT (ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a"))
+  message(FATAL_ERROR "MaliG720 requires Android arm64-v8a; use OFF on other platforms")
+endif()
 option(SHERPA_ONNX_ENABLE_DIRECTML "Enable ONNX Runtime DirectML support" OFF)
 option(SHERPA_ONNX_LINK_D3D "Whether static ONNX runtime lib with DML" OFF)
 
@@ -600,6 +604,10 @@ if(SHERPA_ONNX_ENABLE_SANITIZER)
   set(CMAKE_EXECUTABLE_LINKER_FLAGS "${CMAKE_EXECUTABLE_LINKER_FLAGS} ${flags}")
 
   add_compile_options(-fno-omit-frame-pointer)
+endif()
+
+if(SHERPA_ONNX_ENABLE_MALI_G720)
+  add_subdirectory(third_party/transai-mali-g720)
 endif()
 
 add_subdirectory(sherpa-onnx)

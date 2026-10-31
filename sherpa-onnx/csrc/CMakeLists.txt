@@ -348,6 +348,12 @@ endif()
 
 # Always static build
 add_library(sherpa-onnx-core STATIC ${sources})
+if(SHERPA_ONNX_ENABLE_MALI_G720)
+  target_sources(sherpa-onnx-core PRIVATE mali-g720/offline-recognizer.cc)
+  add_dependencies(sherpa-onnx-core transai_parakeet_gpu_v2 transai_parakeet_gpu_v3)
+  target_compile_definitions(sherpa-onnx-core PUBLIC SHERPA_ONNX_ENABLE_MALI_G720=1)
+  target_link_libraries(sherpa-onnx-core ${CMAKE_DL_LIBS})
+endif()
 
 
 if(WIN32 AND SHERPA_ONNX_LINK_D3D)

@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -112,7 +113,23 @@ class OfflineStream::Impl {
     config_.sampling_rate = 16000;
   }
 
+  explicit Impl(MaliG720Tag /*tag*/) : is_mali_g720_(true) {
+    config_.sampling_rate = 16000;
+  }
+
   void AcceptWaveform(int32_t sampling_rate, const float *waveform, int32_t n) {
+    if (is_mali_g720_) {
+      r_ = {};
+      options_["mali_g720.error"] = "";
+      samples_.clear();
+      if (sampling_rate != 16000 || n < 1 || n > 480000 || !waveform)
+        throw std::invalid_argument("MaliG720 requires mono16k float PCM, 1..480000 samples");
+      for (int32_t i = 0; i < n; ++i)
+        if (!std::isfinite(waveform[i]) || waveform[i] < -1 || waveform[i] > 1)
+          throw std::invalid_argument("MaliG720 requires finite normalized PCM");
+      samples_.assign(waveform, waveform + n);
+      return;
+    }
     if (config_.normalize_samples) {
       AcceptWaveformImpl(sampling_rate, waveform, n);
     } else {
@@ -177,6 +194,7 @@ class OfflineStream::Impl {
   }
 
   int32_t FeatureDim() const {
+    if (is_mali_g720_) return samples_.size();
     if (is_moonshine_ || is_omnilingual_asr_) {
       return samples_.size();
     }
@@ -185,6 +203,7 @@ class OfflineStream::Impl {
   }
 
   std::vector<float> GetFrames() const {
+    if (is_mali_g720_) return samples_;
     if (is_moonshine_ || is_omnilingual_asr_) {
       return samples_;
     }
@@ -311,8 +330,9 @@ class OfflineStream::Impl {
   bool is_ced_ = false;
   bool is_moonshine_ = false;
   bool is_omnilingual_asr_ = false;
+  bool is_mali_g720_ = false;
 
-  // used only when (is_moonshine_ || is_omnilingual_asr_) == true
+  // Raw waveform storage for Moonshine, Omnilingual ASR and MaliG720.
   std::vector<float> samples_;
 
   std::unordered_map<std::string, std::string> options_;
@@ -334,6 +354,8 @@ OfflineStream::OfflineStream(OmnilingualAsrTag tag)
     : impl_(std::make_unique<Impl>(tag)) {}
 
 OfflineStream::~OfflineStream() = default;
+OfflineStream::OfflineStream(MaliG720Tag tag)
+    : impl_(std::make_unique<Impl>(tag)) {}
 
 void OfflineStream::AcceptWaveform(int32_t sampling_rate, const float *waveform,
                                    int32_t n) const {
