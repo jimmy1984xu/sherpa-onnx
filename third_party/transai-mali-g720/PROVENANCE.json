@@ -2,14 +2,14 @@
   {
     "path": "third_party/transai-mali-g720/v2/runner.cc",
     "source_sha256": "fce55bd0b58e6139e837c5ca0bf534385edb302735ebf8c6bc8ca7dad63d4af8",
-    "sha256": "f41459b3964289fa7128078cd642dc57b35c557ccacac692e171de9b74b09d7b",
+    "sha256": "5052e81c89e760ff6a608f8601d3c7e15677319794d64ac4bbdf8ddacf8ed4ff",
     "source_package": "parakeet_v2_mail_g720_mmul_v2",
     "source_relative": "sdk/android/source/sherpa-g720/v2_gpu_tdt/runner.cc"
   },
   {
     "path": "third_party/transai-mali-g720/v2/sdk.cc",
     "source_sha256": "0c88ac94d80a8250e7e098fc920caf53ae6421ab3b4e9f1a457f1335247bdfd8",
-    "sha256": "a7b99d3ab60c7184d76fc5b519a7d44fda1c1b3042df9ad32e8d9108c5ee803d",
+    "sha256": "7011952c21075f89329b7ab0c6e8f58eebb9a728a979ac560792cc98e7bd72ee",
     "source_package": "parakeet_v2_mail_g720_mmul_v2",
     "source_relative": "sdk/android/source/sherpa-g720/v2_gpu_tdt/sdk.cc"
   },
@@ -30,21 +30,21 @@
   {
     "path": "third_party/transai-mali-g720/v2/sdk.exports",
     "source_sha256": "512d42bc9670dfd001e3bd7e2041da0c0a6ac1434c842ded7c7d740c41f207cf",
-    "sha256": "7ecd130e50e78f2f4ad257bf6df23e8f170a34a7b0322d33fec0888384d8d067",
+    "sha256": "8df097c4f775f866a0221bee5c69c7d1f97fde913ad399c5509324562a4801c6",
     "source_package": "parakeet_v2_mail_g720_mmul_v2",
     "source_relative": "sdk/android/source/sherpa-g720/v2_gpu_tdt/sdk.exports"
   },
   {
     "path": "third_party/transai-mali-g720/v3/runner.cc",
     "source_sha256": "97298f2919a188395ed88331710086e553f5868bf5638fb27cfe09d718fdf79e",
-    "sha256": "853c741e5a6258da8430e50d330f86433e36b3bea63f92acf742f50863a7ad99",
+    "sha256": "78b4a694153f669720775aa4de42099012fbc66d7c070e35eaa75691195e5ac1",
     "source_package": "parakeet_v3_mail_g720_mmul_v1",
     "source_relative": "sdk/android/source/sherpa-g720/v3_gpu_tdt/runner.cc"
   },
   {
     "path": "third_party/transai-mali-g720/v3/sdk.cc",
     "source_sha256": "2b3f6b3ddddaf042840b07710ae3462c30aedb92e803fb80c9b187bad1ce3976",
-    "sha256": "3cd618a41ec1fb3d819fbc443cbe8ff61758be27ee38070937fbbad774a47b5c",
+    "sha256": "8ddef63480a0fe0bc64712e02ba97ad0d2485e4168e3f9479b28c7cd3127a285",
     "source_package": "parakeet_v3_mail_g720_mmul_v1",
     "source_relative": "sdk/android/source/sherpa-g720/v3_gpu_tdt/sdk.cc"
   },
@@ -65,8 +65,53 @@
   {
     "path": "third_party/transai-mali-g720/v3/sdk.exports",
     "source_sha256": "5cc62e8be1585e31e89026d86abf543922951b9e21c4818156d8ccdfb349b49e",
-    "sha256": "7ecd130e50e78f2f4ad257bf6df23e8f170a34a7b0322d33fec0888384d8d067",
+    "sha256": "8df097c4f775f866a0221bee5c69c7d1f97fde913ad399c5509324562a4801c6",
     "source_package": "parakeet_v3_mail_g720_mmul_v1",
     "source_relative": "sdk/android/source/sherpa-g720/v3_gpu_tdt/sdk.exports"
+  },
+  {
+    "path": "third_party/transai-mali-g720/beam.cl",
+    "sha256": "1f48f21025e716a07e88faec9f5c7bff28e08164cf80443ad46442fb76ba222c",
+    "origin": "TransAI GPU hotword implementation"
+  },
+  {
+    "path": "third_party/transai-mali-g720/beam-math.clh",
+    "sha256": "6eaa78ebe17d98dfa99ee2624b51bc30f958fb61ff855779661629b60903927a",
+    "origin": "TransAI GPU hotword implementation"
+  },
+  {
+    "path": "third_party/transai-mali-g720/beam-runtime.h",
+    "sha256": "71853a6267e84d4373423d48f9172d382f40155ae9e6cb7d33d156055da0afcd",
+    "origin": "TransAI GPU hotword implementation"
+  },
+  {
+    "path": "third_party/transai-mali-g720/beam-sdk.inc",
+    "sha256": "d96a19477622bc96a9a83a7d6c1c89889de193de54bc61be0122a5ac10d3eb0a",
+    "origin": "TransAI GPU hotword implementation"
+  },
+  {
+    "path": "third_party/transai-mali-g720/beam-programs.json",
+    "sha256": "964bdf43d579bfc401c3f7a369ae598d5f22277efb9762cdc73647ee7b4d633b",
+    "origin": "TransAI GPU hotword implementation"
+  },
+  {
+    "path": "third_party/transai-mali-g720/v2/beam.clbin",
+    "sha256": "14356b892a738b2b697e8fe6ce51600296d84fe8082a234908d2d691f42bd0b5",
+    "origin": "TransAI GPU hotword implementation"
+  },
+  {
+    "path": "third_party/transai-mali-g720/v3/beam.clbin",
+    "sha256": "570fa8a24ea2226d532048c6ec22ac678125b45a9df4892145d7467993ace7cc",
+    "origin": "TransAI GPU hotword implementation"
+  },
+  {
+    "path": "third_party/transai-mali-g720/v2/tdt-layout.clh",
+    "sha256": "010ed941685e6de8fc1452736aaa5c41f11e52b1db2b4e10652721105d77cca8",
+    "origin": "TransAI GPU hotword implementation"
+  },
+  {
+    "path": "third_party/transai-mali-g720/v3/tdt-layout.clh",
+    "sha256": "4cc3f87580c28d03a4b1b4fec27de71ba024563c05c6c793264d0c1e6818d95b",
+    "origin": "TransAI GPU hotword implementation"
   }
 ]

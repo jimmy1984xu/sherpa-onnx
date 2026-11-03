@@ -113,7 +113,8 @@ class OfflineStream::Impl {
     config_.sampling_rate = 16000;
   }
 
-  explicit Impl(MaliG720Tag /*tag*/) : is_mali_g720_(true) {
+  explicit Impl(MaliG720Tag /*tag*/, ContextGraphPtr graph)
+      : context_graph_(std::move(graph)), is_mali_g720_(true) {
     config_.sampling_rate = 16000;
   }
 
@@ -354,8 +355,8 @@ OfflineStream::OfflineStream(OmnilingualAsrTag tag)
     : impl_(std::make_unique<Impl>(tag)) {}
 
 OfflineStream::~OfflineStream() = default;
-OfflineStream::OfflineStream(MaliG720Tag tag)
-    : impl_(std::make_unique<Impl>(tag)) {}
+OfflineStream::OfflineStream(MaliG720Tag tag, ContextGraphPtr graph)
+    : impl_(std::make_unique<Impl>(tag, std::move(graph))) {}
 
 void OfflineStream::AcceptWaveform(int32_t sampling_rate, const float *waveform,
                                    int32_t n) const {
