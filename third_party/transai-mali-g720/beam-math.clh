@@ -1,0 +1,48 @@
+#pragma OPENCL EXTENSION cl_khr_fp16 : enable
+#pragma OPENCL EXTENSION cl_arm_integer_dot_product_int8 : enable
+#pragma OPENCL EXTENSION cl_arm_integer_dot_product_accumulate_int8 : enable
+#pragma OPENCL FP_CONTRACT OFF
+#define H 640
+#define G 2560
+#define WG 128
+inline float pf(__global const uchar *restrict w, ulong off, int i) {
+  return ((__global const float *)(w + off))[i];
+}
+inline int pi(__global const uchar *restrict w, ulong off, int i) {
+  return ((__global const int *)(w + off))[i];
+}
+
+// One work-group owns all recurrent state. No cross-group spin/barrier.
+inline void quant(__local float *x, __local char4 *q, __local float *scale,
+                  __local int *zp, __local float *lo, __local float *hi) {
+  int l = get_local_id(0);
+  float a = 0, b = 0;
+  for (int i = l; i < H; i += WG) {
+    a = fmin(a, x[i]);
+    b = fmax(b, x[i]);
+  }
+  lo[l] = a;
+  hi[l] = b;
+  barrier(CLK_LOCAL_MEM_FENCE);
+  for (int s = WG / 2; s; s /= 2) {
+    if (l < s) {
+      lo[l] = fmin(lo[l], lo[l + s]);
+      hi[l] = fmax(hi[l], hi[l + s]);
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+  }
+  if (l == 0) {
+    float v = (hi[0] - lo[0]) / 255.0f;
+    scale[0] = v == 0 ? 1.0f : v;
+    zp[0] = clamp(convert_int_rte(-lo[0] / scale[0]), 0, 255);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  for (int i = l; i < H / 4; i += WG) {
+    int4 v = convert_int4_rte(vload4(i, x) / scale[0]) + (int4)(zp[0]);
+    v = clamp(v, (int4)(0), (int4)(255)) - (int4)(128);
+    q[i] = convert_char4(v);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+}
+
+inline float sigmoid(float x) { return 1.0f / (1.0f + exp(-x)); }

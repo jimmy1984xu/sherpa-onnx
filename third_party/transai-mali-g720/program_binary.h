@@ -1,7 +1,11 @@
 #pragma once
 #include <CL/cl.h>
+#include "sherpa-onnx/csrc/mali-g720/aot-file.h"
 #include <CL/cl_ext.h>
 #include <dlfcn.h>
+#include <array>
+#include <iomanip>
+#include <sstream>
 #include <chrono>
 #include <fstream>
 #include <iostream>
@@ -9,7 +13,7 @@
 #include <string>
 #include <vector>
 #include "nlohmann/json.hpp"
-#include "sherpa-onnx/csrc/mali-g720/sha256.h"
+#include "sherpa-onnx/csrc/mali-g720/init-timer.h"
 
 namespace transai::aot {
 using Json=nlohmann::json;
@@ -36,12 +40,13 @@ inline Json Target(void* library,cl_device_id device) {
 }
 inline cl_program Load(void* library,cl_context context,cl_command_queue queue,
                        const std::string& directory,const std::string& options) {
+  sherpa_onnx::MaliG720InitTimer timer("binary");
   const auto start=std::chrono::steady_clock::now();
   const auto slash=directory.find_last_of('/');Require(slash!=std::string::npos,"invalid model directory");
   const std::string role=directory.substr(slash+1),root=directory.substr(0,slash);
   Require(role=="encoder"||role=="gpu","invalid program role");
-  std::ifstream input(root+"/model.json");Require(bool(input),"missing compiled model manifest");
-  const Json model=Json::parse(input);Require(model.at("format")==2,"compiled model format 2 required");
+  auto file=File::Open(root);
+  const Json &model=file->manifest();Require(model.at("format")==2,"compiled model format 2 required");
   const auto& aot=model.at("aot");Require(aot.at("format")==1,"unsupported executable format");
   auto queue_info=Entry<decltype(&clGetCommandQueueInfo)>(library,"clGetCommandQueueInfo");
   cl_device_id device=nullptr;Require(queue_info(queue,CL_QUEUE_DEVICE,sizeof(device),&device,nullptr)==CL_SUCCESS,"queue device");
@@ -59,28 +64,31 @@ inline cl_program Load(void* library,cl_context context,cl_command_queue queue,
     Require(asset==nullptr,"duplicate executable asset");asset=&item;
   }
   Require(asset!=nullptr,"executable is not a model asset");
+  timer.Mark("manifest_target_select");
   const std::string path=directory+"/"+name;
-  std::ifstream binary(path,std::ios::binary|std::ios::ate);
-  Require(bool(binary)&&binary.tellg()>0,"missing or empty executable: "+path);
-  const auto length=static_cast<size_t>(binary.tellg());
+  const auto region=file->Asset(role+"/"+name);
+  const auto length=static_cast<size_t>(region.bytes);
   Require(length<=64U*1024U*1024U&&length==asset->at("bytes").get<size_t>(),"executable size mismatch");
-  Require(sherpa_onnx::MaliG720Sha256(path)==asset->at("sha256").get<std::string>(),"executable SHA mismatch");
-  std::vector<unsigned char> bytes(length);binary.seekg(0);binary.read(reinterpret_cast<char*>(bytes.data()),length);
-  Require(bool(binary),"executable read failed");const unsigned char* data=bytes.data();cl_int status=0,binary_status=0;
+  timer.Mark("size_check");
+  std::vector<unsigned char> bytes(length);file->Read(region,bytes.data());
+  const unsigned char* data=bytes.data();cl_int status=0,binary_status=0;
   auto create=Entry<decltype(&clCreateProgramWithBinary)>(library,"clCreateProgramWithBinary");
   auto build=Entry<decltype(&clBuildProgram)>(library,"clBuildProgram");
   auto get_build=Entry<decltype(&clGetProgramBuildInfo)>(library,"clGetProgramBuildInfo");
   auto release=Entry<decltype(&clReleaseProgram)>(library,"clReleaseProgram");
+  timer.Mark("read_symbols");
   cl_program program=create(context,1,&device,&length,&data,&binary_status,&status);
   if(status!=CL_SUCCESS||binary_status!=CL_SUCCESS||!program) {
     if(program)release(program);throw std::runtime_error("MaliG720 AOT executable rejected: "+std::to_string(status)+"/"+std::to_string(binary_status));
   }
+  timer.Mark("create_binary");
   // Finalize an already executable binary; this path never submits OpenCL source.
   status=build(program,1,&device,nullptr,nullptr,nullptr);
   cl_program_binary_type type=CL_PROGRAM_BINARY_TYPE_NONE;
   if(status!=CL_SUCCESS||get_build(program,device,CL_PROGRAM_BINARY_TYPE,sizeof(type),&type,nullptr)!=CL_SUCCESS||type!=CL_PROGRAM_BINARY_TYPE_EXECUTABLE) {
     release(program);throw std::runtime_error("MaliG720 AOT executable finalization failed: "+std::to_string(status));
   }
+  timer.Mark("finalize");
   const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
   std::cerr<<"AOT_LOAD role="<<role<<" file="<<name<<" ms="<<ms<<" source_compiles=0"<<std::endl;
   return program;

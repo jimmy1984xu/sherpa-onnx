@@ -7,9 +7,11 @@
 #include <iostream>
 #include "mali_loader.h"
 #include "program_binary.h"
+#include "sherpa-onnx/csrc/mali-g720/init-timer.h"
 #include <cstdlib>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -111,6 +113,7 @@ struct OpenClRuntime::Api {
 std::unique_ptr<OpenClRuntime> OpenClRuntime::Create(
     cl_context context, cl_command_queue queue, const BytecodeReader& bytecode,
     const std::string& weights_path, bool diagnostic, bool nemo_padding, std::string* error) {
+  sherpa_onnx::MaliG720InitTimer timer("encoder");
   if (context == nullptr || queue == nullptr || error == nullptr) return nullptr;
   auto runtime = std::unique_ptr<OpenClRuntime>(new OpenClRuntime());
   runtime->api_ = std::make_unique<Api>();
@@ -239,12 +242,13 @@ std::unique_ptr<OpenClRuntime> OpenClRuntime::Create(
     *error = "TAIENC6 weight payload exceeds OpenCL address space";
     return nullptr;
   }
+  timer.Mark("contract");
+  uint64_t weight_offset=0;
   if (bytecode.has_external_payload()) {
-    runtime->weights_fd_ = open(weights_path.c_str(), O_RDONLY | O_CLOEXEC);
-    struct stat file_status {};
-    if (runtime->weights_fd_ < 0 ||
-        fstat(runtime->weights_fd_, &file_status) != 0 ||
-        file_status.st_size != static_cast<off_t>(weight_bytes)) {
+    transai::aot::Slice slice(weights_path);
+    weight_offset=slice.region.offset;
+    runtime->weights_fd_ = dup(slice.file->fd());
+    if (runtime->weights_fd_ < 0 || slice.region.bytes != weight_bytes) {
       *error = "TAIENC6 external weight file contract mismatch";
       return nullptr;
     }
@@ -258,28 +262,29 @@ std::unique_ptr<OpenClRuntime> OpenClRuntime::Create(
              std::to_string(status);
     return nullptr;
   }
+  timer.Mark("weight_alloc");
   if (bytecode.has_external_payload()) {
-    constexpr size_t kUploadChunkBytes = 16U * 1024U * 1024U;
-    std::vector<uint8_t> staging(kUploadChunkBytes);
-    size_t offset = 0;
-    while (offset < static_cast<size_t>(weight_bytes)) {
-      const size_t bytes = std::min(
-          staging.size(), static_cast<size_t>(weight_bytes) - offset);
-      const ssize_t read_bytes = pread(
-          runtime->weights_fd_, staging.data(), bytes,
-          static_cast<off_t>(offset));
-      if (read_bytes != static_cast<ssize_t>(bytes) ||
-          runtime->api_->enqueue_write(
-              queue, runtime->weights_, CL_TRUE, offset, bytes, staging.data(),
-              0, nullptr, nullptr) != CL_SUCCESS) {
-        *error = "TAIENC6 external weight upload failed at byte " +
-                 std::to_string(offset);
-        return nullptr;
-      }
-      offset += bytes;
+    const size_t bytes=static_cast<size_t>(weight_bytes);
+    const auto page=static_cast<uint64_t>(sysconf(_SC_PAGESIZE));
+    const uint64_t aligned=weight_offset/page*page;
+    const size_t delta=static_cast<size_t>(weight_offset-aligned),mapped_bytes=bytes+delta;
+    void* mapped=mmap(nullptr,mapped_bytes,PROT_READ,MAP_PRIVATE,runtime->weights_fd_,static_cast<off_t>(aligned));
+    if(mapped==MAP_FAILED) {
+      *error="TAIENC6 external weight mapping failed";
+      return nullptr;
     }
+    timer.Mark("weight_map");
+    // Blocking upload completes all host reads before the read-only mapping is released.
+    const cl_int upload_status=runtime->api_->enqueue_write(
+        queue,runtime->weights_,CL_TRUE,0,bytes,static_cast<const unsigned char*>(mapped)+delta,0,nullptr,nullptr);
+    munmap(mapped,mapped_bytes);
     close(runtime->weights_fd_);
-    runtime->weights_fd_ = -1;
+    runtime->weights_fd_=-1;
+    timer.Mark("weight_upload");
+    if(upload_status!=CL_SUCCESS) {
+      *error="TAIENC6 external weight upload failed: "+std::to_string(upload_status);
+      return nullptr;
+    }
   } else if (runtime->api_->enqueue_write(
                  queue, runtime->weights_, CL_TRUE, 0,
                  static_cast<size_t>(weight_bytes), bytecode.payload(), 0,
@@ -288,6 +293,7 @@ std::unique_ptr<OpenClRuntime> OpenClRuntime::Create(
     return nullptr;
   }
 
+  timer.Mark("weight_upload_complete");
   const size_t separator = weights_path.find_last_of('/');
   const std::string program_directory=weights_path.substr(0,separator);
   const auto executable=[&](const std::string& options) {
@@ -311,9 +317,11 @@ std::unique_ptr<OpenClRuntime> OpenClRuntime::Create(
   }
   std::cerr<<"G720_BUILD_OPTIONS "<<build_options<<std::endl;
   runtime->program_=executable(build_options);
-  if (!runtime->CreateKernels(error) || !runtime->AllocateWorkspace(error)) {
-    return nullptr;
-  }
+  timer.Mark("primary_program");
+  if (!runtime->CreateKernels(error)) return nullptr;
+  timer.Mark("primary_kernels");
+  if (!runtime->AllocateWorkspace(error)) return nullptr;
+  timer.Mark("workspace");
   runtime->shape_tile_limit_ = choice("TRANSAI_G720_SHAPE_TILE_LIMIT",0,{0,32,64,96,112,128,192});
   runtime->alternate_m_ = choice("TRANSAI_G720_ALT_M",8,{4,8});
   runtime->alternate_n_ = choice("TRANSAI_G720_ALT_N",4,{4,8});
@@ -375,6 +383,7 @@ std::unique_ptr<OpenClRuntime> OpenClRuntime::Create(
     if(!runtime->CreateKernels(error))return nullptr;
     std::swap(runtime->program_,runtime->tiny_program_);runtime->kernels_.swap(runtime->tiny_kernels_);
   }
+  timer.Mark("variant_programs_kernels");
   return runtime;
 }
 

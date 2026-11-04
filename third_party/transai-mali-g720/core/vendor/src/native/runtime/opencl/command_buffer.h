@@ -27,7 +27,7 @@ class CommandBuffer {
 
   void Add(const CommandDispatch& dispatch);
   void Finalize();
-  cl_event Enqueue();
+  cl_event Enqueue(bool return_event = true);
 
  private:
   void* library_ = nullptr;

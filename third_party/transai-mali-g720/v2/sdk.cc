@@ -1,6 +1,8 @@
 #include "gpu-abi.h"
 #include "runner.cc"
 #include <mutex>
+#define MALI_G720_VOCAB_SIZE 1025
+#include "../beam-runtime.h"
 
 namespace {
 void Error(char* target,size_t capacity,const char* message) {
@@ -27,6 +29,7 @@ void Defaults() {
 }
 struct Session {
   Gpu gpu;
+  std::unique_ptr<BeamGpu> beam;
   std::mutex mutex;
   std::vector<int16_t> input;
   Session(const char* encoder,const char* tdt):gpu(encoder,tdt){input.reserve(480000);}
@@ -43,3 +46,5 @@ API int transai_parakeet_gpu_create(const char* encoder,const char* tdt,
 }
 #define MALI_G720_TRACE_LOGITS_BYTES 4100
 #include "../scored-sdk.inc"
+
+#include "../beam-sdk.inc"

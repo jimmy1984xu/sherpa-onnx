@@ -26,4 +26,3 @@
 
 - [./sherpa-onnx-vad-microphone.cc](./sherpa-onnx-vad-microphone.cc)
   Use silero VAD to detect speeches with a microphone.
-

@@ -81,7 +81,7 @@ class OfflineStream {
   explicit OfflineStream(CEDTag tag);
   explicit OfflineStream(MoonshineTag tag);
   explicit OfflineStream(OmnilingualAsrTag tag);
-  explicit OfflineStream(MaliG720Tag tag);
+  explicit OfflineStream(MaliG720Tag tag, ContextGraphPtr context_graph = {});
   ~OfflineStream();
 
   /**

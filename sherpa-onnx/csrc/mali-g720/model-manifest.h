@@ -1,6 +1,7 @@
 #ifndef SHERPA_ONNX_CSRC_MALI_G720_MODEL_MANIFEST_H_
 #define SHERPA_ONNX_CSRC_MALI_G720_MODEL_MANIFEST_H_
 #include <map>
+#include "sherpa-onnx/csrc/mali-g720/aot-file.h"
 #include "sherpa-onnx/csrc/mali-g720/init-timer.h"
 #include <set>
 #include "nlohmann/json.hpp"
@@ -10,10 +11,9 @@ namespace sherpa_onnx {
 // Bundled assets are hashed by the offline delivery verifier, not at recognizer initialization.
 inline void ValidateMaliG720Manifest(const OfflineModelConfig &c, int version) {
   MaliG720InitTimer timer("manifest");
-  const std::string root = MaliG720Parent(MaliG720Parent(c.transducer.encoder_filename));
-  std::ifstream stream(root + "/model.json");
-  if (!stream) throw std::invalid_argument("MaliG720 missing model.json: " + root);
-  const auto manifest = nlohmann::json::parse(stream);
+  const std::string root=c.transducer.encoder_filename;
+  const auto file=transai::aot::File::Open(root);
+  const auto &manifest=file->manifest();
   const auto &a = manifest.at("architecture");
   const int vocab = version == 2 ? 1024 : 8192;
   if (manifest.at("format") != 2 || a.at("family") != "parakeet-tdt" ||
@@ -50,12 +50,9 @@ inline void ValidateMaliG720Manifest(const OfflineModelConfig &c, int version) {
     const std::string key = role + "/" + name;
     if (!required.count(key) || !observed.insert(key).second)
       throw std::invalid_argument("MaliG720 invalid/duplicate model asset: " + key);
-    const std::string path = role == "tokens" ? c.tokens :
-        MaliG720Parent(role == "encoder" ? c.transducer.encoder_filename :
-                      c.transducer.decoder_filename) + "/" + name;
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file || file.tellg() < 0 || static_cast<uint64_t>(file.tellg()) != asset.at("bytes").get<uint64_t>())
-      throw std::invalid_argument("MaliG720 model asset size mismatch: " + path);
+    const std::string path=(role=="tokens"?"":role+"/")+name;
+    if(file->Asset(path).bytes!=asset.at("bytes").get<uint64_t>())
+      throw std::invalid_argument("MaliG720 model asset size mismatch: "+path);
     timer.Mark("asset/"+key);
   }
   if (observed != required) throw std::invalid_argument("MaliG720 incomplete model manifest");

@@ -122,9 +122,9 @@ void CommandBuffer::Finalize() {
   Check(finalize_(command_buffer_), "clFinalizeCommandBufferKHR");
 }
 
-cl_event CommandBuffer::Enqueue() {
+cl_event CommandBuffer::Enqueue(bool return_event) {
   cl_event event = nullptr;
-  Check(enqueue_(0, nullptr, command_buffer_, 0, nullptr, &event),
+  Check(enqueue_(0, nullptr, command_buffer_, 0, nullptr, return_event ? &event : nullptr),
         "clEnqueueCommandBufferKHR");
   return event;
 }

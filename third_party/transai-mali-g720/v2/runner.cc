@@ -1,5 +1,6 @@
 #include "mali_loader.h"
 #include "program_binary.h"
+#include "sherpa-onnx/csrc/mali-g720/init-timer.h"
 
 #include "dispatch/opencl_runtime.h"
 
@@ -18,18 +19,7 @@ double Ms(Clock::time_point t) {
   return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
 }
 template <class T> std::vector<T> Read(const std::string &p) {
-  std::ifstream f(p, std::ios::binary | std::ios::ate);
-  if (!f)
-    throw std::runtime_error("missing " + p);
-  size_t n = f.tellg();
-  if (n % sizeof(T))
-    throw std::runtime_error("size " + p);
-  std::vector<T> v(n / sizeof(T));
-  f.seekg(0);
-  f.read((char *)v.data(), n);
-  if (!f)
-    throw std::runtime_error("read " + p);
-  return v;
+  return transai::aot::Read<T>(p);
 }
 void Check(cl_int s, const char *p) {
   if (s)
@@ -54,6 +44,7 @@ struct Cl {
   }
 };
 struct Gpu {
+  std::shared_ptr<transai::aot::File> aot_file;
   Cl cl;
   cl_context ctx{};
   cl_command_queue queue{};
@@ -76,11 +67,31 @@ struct Gpu {
       getenv("TRANSAI_TDT_BLOCK") ? atoi(getenv("TRANSAI_TDT_BLOCK")) : 8;
   int wg = 256;
   bool profiling = getenv("TRANSAI_TDT_PROFILE") != nullptr;
-  cl_event enc_begin{}, enc_end{}, tdt_end{};
+  cl_event front_begin{}, enc_begin{}, enc_end{}, tdt_end{};
   double gpu_encoder_ms = 0, gpu_tdt_ms = 0, submit_ms = 0, wait_ms = 0;
   int valid_storage = 0;
   bool batch_created = false;
-  Gpu(const std::string &base, const std::string &dir) {
+  std::unique_ptr<transai::opencl::CommandBuffer> RecordTdtBatch(int rounds) {
+        auto batch=std::make_unique<transai::opencl::CommandBuffer>(queue);
+        const size_t global[] = {5120, (size_t)wg, 2560, (size_t)wg,
+                                 640,  (size_t)wg, 1088, (size_t)wg};
+        for (int step = 0; step < rounds; ++step)
+          for (int j = 0; j < phases.size(); ++j) {
+            transai::opencl::CommandDispatch d;
+            d.kernel = phases[j];
+            d.global[0] = global[j];
+            d.local[0] =
+                (j == 0 || (phases.size() > 2 && (j == 2 || j == 4 || j == 6)))
+                    ? 64
+                    : wg;
+            batch->Add(d);
+          }
+        batch->Finalize();
+    return batch;
+  }
+  Gpu(const std::string &base, const std::string &dir)
+      : aot_file(transai::aot::File::Open(base.substr(0,base.size()-8))) {
+    sherpa_onnx::MaliG720InitTimer timer("gpu");
     if (getenv("MALI_G720_SCORE_TRACE")) result.resize((191104+1025*4)/4);
     auto cleanup = [](Gpu *p) { p->Cleanup(); };
     std::unique_ptr<Gpu, decltype(cleanup)> rollback(this, cleanup);
@@ -113,6 +124,7 @@ struct Gpu {
     queue = cl.clCreateCommandQueue(
         ctx, device, profiling ? CL_QUEUE_PROFILING_ENABLE : 0, &status);
     Check(status, "queue");
+    timer.Mark("context_queue");
     auto alloc = [&](size_t n) {
       auto b = cl.clCreateBuffer(ctx, CL_MEM_READ_WRITE, n, nullptr, &status);
       Check(status, "buffer");
@@ -137,7 +149,9 @@ struct Gpu {
     enc = alloc(375 * 640 * 2);
     packet = alloc(result.size() * 4);
     debug = alloc((5 * 640 + 1030) * 4);
-    auto w = Read<uint8_t>(dir + "/tdt_weights.bin");
+    timer.Mark("frontend_buffers_upload");
+    transai::aot::Mapping w(dir + "/tdt_weights.bin");
+    timer.Mark("tdt_read");
     if (w.size() != 16593568)
       throw std::runtime_error("TDT weight size mismatch");
     weights = cl.clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
@@ -146,6 +160,7 @@ struct Gpu {
     Check(cl.clEnqueueWriteBuffer(queue, weights, CL_TRUE, 0, w.size(),
                                   w.data(), 0, nullptr, nullptr),
           "weights");
+    timer.Mark("tdt_alloc_upload");
     if (getenv("TRANSAI_TDT_WG"))
       wg = atoi(getenv("TRANSAI_TDT_WG"));
     if (wg < 64 || wg > 1024 || (wg & (wg - 1)))
@@ -155,6 +170,7 @@ struct Gpu {
                                                         : " -DNATIVE_MATH=0");
     options += getenv("MALI_G720_SCORE_TRACE") ? " -DMALI_SCORE_TRACE=1" : " -DMALI_SCORE_TRACE=0";
     program = transai::aot::Load(cl.lib, ctx, queue, dir, options);
+    timer.Mark("program");
     tdt = cl.clCreateKernel(
         program, MultiEnabled() ? "tdt_tail" : "tdt_persistent",
         &status);
@@ -212,34 +228,24 @@ struct Gpu {
       }
       if (block_steps < 1 || block_steps > 256 || 256 % block_steps)
         throw std::runtime_error("invalid block");
-      for (int b = 0; b < 256 / block_steps; ++b) {
-        auto batch = std::make_unique<transai::opencl::CommandBuffer>(queue);
-        const size_t global[] = {5120, (size_t)wg, 2560, (size_t)wg,
-                                 640,  (size_t)wg, 1088, (size_t)wg};
-        for (int step = 0; step < block_steps; ++step)
-          for (int j = 0; j < phases.size(); ++j) {
-            transai::opencl::CommandDispatch d;
-            d.kernel = phases[j];
-            d.global[0] = global[j];
-            d.local[0] =
-                (j == 0 || (phases.size() > 2 && (j == 2 || j == 4 || j == 6)))
-                    ? 64
-                    : wg;
-            batch->Add(d);
-          }
-        batch->Finalize();
-        batches.push_back(std::move(batch));
-      }
+      const int pct=getenv("TRANSAI_TDT_BUDGET")?atoi(getenv("TRANSAI_TDT_BUDGET")):70;
+      const int max_steps=std::clamp(((375*pct/100+23)/8)*8,0,256);
+      const int max_blocks=(max_steps+block_steps-1)/block_steps;
+      for(int power=1;power<=max_blocks;power*=2)
+        batches.push_back(RecordTdtBatch(block_steps*power));
     }
+    timer.Mark("kernels_bind");
     plan_bytes = Read<uint8_t>(base + "/encoder.full.nemo.plan.taig720");
     std::string error;
     if (!BytecodeReader::Parse(plan_bytes.data(), plan_bytes.size(), &plan,
                                &error))
       throw std::runtime_error(error);
+    timer.Mark("plan_read_parse");
     core = OpenClRuntime::Create(
         ctx, queue, plan, base + "/encoder.weights.bin", false, true, &error);
     if (!core)
       throw std::runtime_error(error);
+    timer.Mark("encoder_create");
     core->SetDeferredWait(true);
     std::cerr << "GPU_CONTRACT cpu_frontend=0 encoder_d2h=0 cpu_encoder=0 "
                  "cpu_decoder=0 cpu_token_to_text=0 initial_pcm_uploads=1 "
@@ -273,10 +279,11 @@ struct Gpu {
       Check(cl.clEnqueueNDRangeKernel(queue, init, 1, nullptr, &g, &g, 0,
                                       nullptr, nullptr),
             "init enqueue");
-      for (int i = 0; i < (steps + block_steps - 1) / block_steps; ++i) {
-        auto e = batches[i]->Enqueue();
-        if (e)
-          cl.clReleaseEvent(e);
+      int blocks=(steps+block_steps-1)/block_steps;
+      for(int bit=0;blocks>0;blocks>>=1,++bit) if(blocks&1) {
+        while(batches.size()<=static_cast<size_t>(bit))
+          batches.push_back(RecordTdtBatch(block_steps*(1<<batches.size())));
+        batches[bit]->Enqueue(false);
       }
     }
     Check(cl.clSetKernelArg(tdt, 6, sizeof(cl_mem), &state), "state arg");
@@ -309,31 +316,32 @@ struct Gpu {
                                  result.data(), 0, nullptr, nullptr),
           "final read");
     wait_ms = Ms(wait_begin);
-    if (profiling) {
-      auto end = [&](cl_event e) {
-        cl_ulong v = 0;
-        Check(cl.clGetEventProfilingInfo(e, CL_PROFILING_COMMAND_END, sizeof(v),
-                                         &v, nullptr),
-              "event time");
-        return v;
-      };
-      gpu_tdt_ms = (end(tdt_end) - end(enc_end)) / 1e6;
-      if (enc_begin)
-        gpu_encoder_ms = (end(enc_end) - end(enc_begin)) / 1e6;
-      for (auto e : {enc_begin, enc_end, tdt_end})
-        if (e)
-          cl.clReleaseEvent(e);
-      enc_begin = enc_end = tdt_end = nullptr;
-    }
+    if (profiling) FinishProfile();
+
     if (result[1] < 0 || result[1] > 3750)
       throw std::runtime_error("token capacity");
     if (result[0])
       throw std::runtime_error("GPU TDT status " + std::to_string(result[0]));
   }
 
+  void FinishProfile() {
+    auto end = [&](cl_event e) {
+      cl_ulong value=0;
+      Check(cl.clGetEventProfilingInfo(e,CL_PROFILING_COMMAND_END,sizeof(value),&value,nullptr),"profile event");
+      return value;
+    };
+    gpu_encoder_ms=(end(enc_end)-end(enc_begin))/1e6;
+    gpu_tdt_ms=(end(tdt_end)-end(enc_end))/1e6;
+    double front_ms=(end(enc_begin)-end(front_begin))/1e6;
+    std::cerr<<"GPU_PROFILE frontend_ms="<<front_ms<<" encoder_ms="<<gpu_encoder_ms
+             <<" decoder_text_ms="<<gpu_tdt_ms<<" rounds="<<(result[2]&0xffff)<<" tokens="<<result[1]<<"\n";
+    for(auto e:{front_begin,enc_begin,enc_end,tdt_end})if(e)cl.clReleaseEvent(e);
+    front_begin=enc_begin=enc_end=tdt_end=nullptr;
+  }
   void EncodePcm(const std::vector<int16_t> &pcm) {
     if (pcm.empty() || pcm.size() > 480000)
       throw std::runtime_error("PCM outside1..480000");
+    if (profiling) Check(cl.clEnqueueMarkerWithWaitList(queue,0,nullptr,&front_begin),"front marker");
     int count = pcm.size();
     Check(cl.clEnqueueWriteBuffer(queue, pcm_buffer, CL_FALSE, 0,
                                   pcm.size() * 2, pcm.data(), 0, nullptr,
@@ -400,3 +408,4 @@ struct Gpu {
   }
   ~Gpu() { Cleanup(); }
 };
+

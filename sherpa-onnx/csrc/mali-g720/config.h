@@ -18,10 +18,10 @@ inline int MaliG720Version(const OfflineModelConfig &c) {
   if (c.model_type == "parakeet_v3_mali_g720") return 3;
   return 0;
 }
-inline std::string MaliG720Parent(const std::string &p) {
-  auto pos = p.find_last_of("/\\");
-  return pos == std::string::npos ? "." : p.substr(0, pos);
-}
+
+
+
+
 inline bool ValidateMaliG720(const OfflineModelConfig &c) {
 #if !defined(SHERPA_ONNX_ENABLE_MALI_G720)
   SHERPA_ONNX_LOGE("MaliG720 backend was not enabled in this build; no fallback");
@@ -29,11 +29,14 @@ inline bool ValidateMaliG720(const OfflineModelConfig &c) {
 #else
   if (!MaliG720Version(c) || c.num_threads < 1 ||
       !c.transducer.joiner_filename.empty()) return false;
-  for (const auto &p : {c.transducer.encoder_filename,
-                         c.transducer.decoder_filename, c.tokens}) {
-    std::ifstream f(p, std::ios::binary);
-    if (!f) { SHERPA_ONNX_LOGE("MaliG720 missing file: %s", p.c_str()); return false; }
+  const auto &path=c.transducer.encoder_filename;
+  if(path.size()<5 || path.substr(path.size()-4)!=".aot" ||
+     !c.transducer.decoder_filename.empty() || !c.tokens.empty()) {
+    SHERPA_ONNX_LOGE("MaliG720 requires encoder=<model.aot>, empty decoder/tokens");
+    return false;
   }
+  std::ifstream file(path,std::ios::binary);
+  if(!file) { SHERPA_ONNX_LOGE("MaliG720 missing AOT file: %s",path.c_str());return false; }
   // Other model fields must not silently select an unrelated backend.
   if (!c.paraformer.model.empty() || !c.nemo_ctc.model.empty() ||
       !c.whisper.encoder.empty()) return false;
