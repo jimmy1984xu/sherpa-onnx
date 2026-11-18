@@ -36,6 +36,7 @@ class OfflineCtTransformerModel {
    *  - punctuation_ids: A 2-D tensor of shape (N, T).
    */
   Ort::Value Forward(Ort::Value text, Ort::Value text_len) const;
+  void ForwardInto(Ort::Value text, Ort::Value text_len, Ort::Value *output) const;
 
   /** Return an allocator for allocating memory
    */

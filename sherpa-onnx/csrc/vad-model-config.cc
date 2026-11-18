@@ -24,13 +24,19 @@ void VadModelConfig::Register(ParseOptions *po) {
 
   po->Register("vad-provider", &provider,
                "Specify a provider to run the VAD model. Supported values: "
-               "cpu, cuda, coreml");
+               "cpu, cuda, coreml, neon (Silero VAD AOT on Android arm64)");
 
   po->Register("vad-debug", &debug,
                "true to display debug information when loading vad models");
 }
 
 bool VadModelConfig::Validate() const {
+  if (provider == "neon" &&
+      (silero_vad.model.empty() || !EndsWith(silero_vad.model, ".aot"))) {
+    SHERPA_ONNX_LOGE("--vad-provider=neon requires a Silero VAD .aot model");
+    return false;
+  }
+
   if (provider != "rknn") {
     if (!silero_vad.model.empty() && EndsWith(silero_vad.model, ".rknn")) {
       SHERPA_ONNX_LOGE(

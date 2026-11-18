@@ -6,6 +6,7 @@
 #include "sherpa-onnx/csrc/ort-env.h"
 
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -26,15 +27,45 @@
 #include "sherpa-onnx/csrc/speaker-embedding-extractor-nemo-model-meta-data.h"
 #include "sherpa-onnx/csrc/text-utils.h"
 
+#ifdef SHERPA_ONNX_ENABLE_TITANET_NEON
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+
+#include "sherpa-onnx/csrc/neon-ort-session.h"
+#endif
+
 namespace sherpa_onnx {
+
+#ifdef SHERPA_ONNX_ENABLE_TITANET_NEON
+void RegisterTitaNetNeonOps(Ort::SessionOptions &options);
+#endif
 
 class SpeakerEmbeddingExtractorNeMoModel::Impl {
  public:
   explicit Impl(const SpeakerEmbeddingExtractorConfig &config)
       : config_(config),
         env_(CreateOrtEnv()),
-        sess_opts_(GetSessionOptions(config)),
+        sess_opts_(MakeSessionOptions(config)),
         allocator_{} {
+#ifdef SHERPA_ONNX_ENABLE_TITANET_NEON
+    if (config.provider == "neon") {
+      const auto file = transai::aot::File::Open(config.model);
+      const auto &manifest = file->manifest();
+      const auto &architecture = manifest.at("architecture");
+      if (architecture.at("family") != "titanet-large" ||
+          architecture.at("version") != 1 ||
+          architecture.at("precision") != "w8a8" ||
+          manifest.at("aot").at("format") != 1 ||
+          file->Asset("speaker/model.onnx").bytes > 128 * 1024 * 1024) {
+        throw std::runtime_error("Expected a TitaNet-Large NEON v1.0 AOT");
+      }
+      transai::aot::RequireMappedOrtGraph(*file);
+      transai::aot::SetMappedOrtGraphOptions(sess_opts_);
+      model_mapping_ = std::make_unique<transai::aot::Mapping>(config.model + "/speaker/model.onnx");
+      Init(model_mapping_->data(), model_mapping_->size());
+      return;
+    }
+#endif
     sess_ = std::make_unique<Ort::Session>(
         env_, SHERPA_ONNX_TO_ORT_PATH(config.model), sess_opts_);
     Init(nullptr, 0);
@@ -71,7 +102,24 @@ class SpeakerEmbeddingExtractorNeMoModel::Impl {
   }
 
  private:
-  void Init(void *model_data, size_t model_data_length) {
+  static Ort::SessionOptions MakeSessionOptions(
+      const SpeakerEmbeddingExtractorConfig &config) {
+    if (config.provider != "neon") {
+      return GetSessionOptions(config);
+    }
+#ifdef SHERPA_ONNX_ENABLE_TITANET_NEON
+    if (!(getauxval(AT_HWCAP2) & HWCAP2_I8MM)) {
+      throw std::runtime_error("TitaNet NEON requires Arm I8MM");
+    }
+    auto options = GetSessionOptions(config.num_threads, "cpu");
+    RegisterTitaNetNeonOps(options);
+    return options;
+#else
+    throw std::runtime_error("TitaNet NEON requires an Android arm64 build");
+#endif
+  }
+
+  void Init(const void *model_data, size_t model_data_length) {
     if (model_data) {
       sess_ = std::make_unique<Ort::Session>(
           env_, model_data, model_data_length, sess_opts_);
@@ -85,6 +133,12 @@ class SpeakerEmbeddingExtractorNeMoModel::Impl {
     GetInputNames(sess_.get(), &input_names_, &input_names_ptr_);
 
     GetOutputNames(sess_.get(), &output_names_, &output_names_ptr_);
+    if (config_.provider == "neon" &&
+        (input_names_.size() != 2 || output_names_.size() != 2 ||
+         sess_->GetOutputTypeInfo(1).GetTensorTypeAndShapeInfo()
+                 .GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT)) {
+      throw std::runtime_error("Invalid TitaNet NEON tensor interface");
+    }
 
     // get meta data
     Ort::ModelMetadata meta_data = sess_->GetModelMetadata();
@@ -131,6 +185,9 @@ class SpeakerEmbeddingExtractorNeMoModel::Impl {
   Ort::SessionOptions sess_opts_;
   Ort::AllocatorWithDefaultOptions allocator_;
 
+#ifdef SHERPA_ONNX_ENABLE_TITANET_NEON
+  std::unique_ptr<transai::aot::Mapping> model_mapping_;
+#endif
   std::unique_ptr<Ort::Session> sess_;
 
   std::vector<std::string> input_names_;

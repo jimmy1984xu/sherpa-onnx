@@ -141,6 +141,10 @@ static ModelType GetModelType(char *model_data, size_t model_data_length,
 std::unique_ptr<SpeakerEmbeddingExtractorImpl>
 SpeakerEmbeddingExtractorImpl::Create(
     const SpeakerEmbeddingExtractorConfig &config) {
+  if (config.provider == "neon") {
+    return std::make_unique<SpeakerEmbeddingExtractorNeMoImpl>(config);
+  }
+
   ModelType model_type = ModelType::kUnknown;
 
   {
@@ -167,6 +171,10 @@ template <typename Manager>
 std::unique_ptr<SpeakerEmbeddingExtractorImpl>
 SpeakerEmbeddingExtractorImpl::Create(
     Manager *mgr, const SpeakerEmbeddingExtractorConfig &config) {
+  if (config.provider == "neon") {
+    return Create(config);
+  }
+
   ModelType model_type = ModelType::kUnknown;
 
   {

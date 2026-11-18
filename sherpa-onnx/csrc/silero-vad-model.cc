@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -26,19 +27,28 @@
 #include "sherpa-onnx/csrc/session.h"
 #include "sherpa-onnx/csrc/text-utils.h"
 
+#ifdef SHERPA_ONNX_ENABLE_SILERO_NEON
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+
+#include "sherpa-onnx/csrc/mali-g720/aot-file.h"
+#endif
+
 namespace sherpa_onnx {
+
+#ifdef SHERPA_ONNX_ENABLE_SILERO_NEON
+void RegisterSileroNeonOp(Ort::SessionOptions &options);
+#endif
 
 class SileroVadModel::Impl {
  public:
   explicit Impl(const VadModelConfig &config)
       : config_(config),
         env_(CreateOrtEnv()),
-        sess_opts_(GetSessionOptions(config)),
+        sess_opts_(MakeSessionOptions(config)),
         allocator_{},
         sample_rate_(config.sample_rate) {
-    sess_ = std::make_unique<Ort::Session>(
-        env_, SHERPA_ONNX_TO_ORT_PATH(config.silero_vad.model), sess_opts_);
-    Init(nullptr, 0);
+    InitFromPath();
 
     if (sample_rate_ != 16000) {
       SHERPA_ONNX_LOGE("Expected sample rate 16000. Given: %d",
@@ -56,11 +66,15 @@ class SileroVadModel::Impl {
   Impl(Manager *mgr, const VadModelConfig &config)
       : config_(config),
         env_(CreateOrtEnv()),
-        sess_opts_(GetSessionOptions(config)),
+        sess_opts_(MakeSessionOptions(config)),
         allocator_{},
         sample_rate_(config.sample_rate) {
-    auto buf = ReadFile(mgr, config.silero_vad.model);
-    Init(buf.data(), buf.size());
+    if (config.provider == "neon") {
+      InitFromPath();
+    } else {
+      auto buf = ReadFile(mgr, config.silero_vad.model);
+      Init(buf.data(), buf.size());
+    }
 
     if (sample_rate_ != 16000) {
       SHERPA_ONNX_LOGE("Expected sample rate 16000. Given: %d",
@@ -192,7 +206,55 @@ class SileroVadModel::Impl {
   }
 
  private:
-  void Init(void *model_data, size_t model_data_length) {
+  static Ort::SessionOptions MakeSessionOptions(const VadModelConfig &config) {
+    if (config.provider != "neon") {
+      return GetSessionOptions(config);
+    }
+#ifdef SHERPA_ONNX_ENABLE_SILERO_NEON
+    constexpr unsigned long required = HWCAP_ASIMDDP | HWCAP_ASIMDFHM;
+    if ((getauxval(AT_HWCAP) & required) != required) {
+      throw std::runtime_error("Silero NEON requires Arm dot-product and FP16 FML");
+    }
+    if (config.sample_rate != 16000 || config.silero_vad.window_size != 512) {
+      throw std::runtime_error("Silero NEON requires 16 kHz and a 512-sample hop");
+    }
+    // The frozen graph is a single fused operator.
+    Ort::SessionOptions options;
+    options.SetIntraOpNumThreads(config.num_threads)
+        .SetInterOpNumThreads(config.num_threads)
+        .SetGraphOptimizationLevel(ORT_DISABLE_ALL);
+    RegisterSileroNeonOp(options);
+    return options;
+#else
+    throw std::runtime_error("Silero NEON requires an Android arm64 build");
+#endif
+  }
+
+  void InitFromPath() {
+    const auto &path = config_.silero_vad.model;
+#ifdef SHERPA_ONNX_ENABLE_SILERO_NEON
+    if (config_.provider == "neon") {
+      const auto file = transai::aot::File::Open(path);
+      const auto &manifest = file->manifest();
+      const auto &architecture = manifest.at("architecture");
+      if (architecture.at("family") != "silero-vad" ||
+          architecture.at("version") != 1 ||
+          architecture.at("precision") != "w8-lstm-recurrent" ||
+          manifest.at("aot").at("format") != 1 ||
+          file->Asset("vad/model.onnx").bytes > 8 * 1024 * 1024) {
+        throw std::runtime_error("Expected a Silero VAD NEON v1.0 AOT");
+      }
+      const transai::aot::Mapping model(path + "/vad/model.onnx");
+      Init(model.data(), model.size());
+      return;
+    }
+#endif
+    sess_ = std::make_unique<Ort::Session>(
+        env_, SHERPA_ONNX_TO_ORT_PATH(path), sess_opts_);
+    Init(nullptr, 0);
+  }
+
+  void Init(const void *model_data, size_t model_data_length) {
     if (model_data) {
       sess_ = std::make_unique<Ort::Session>(
           env_, model_data, model_data_length, sess_opts_);
@@ -231,7 +293,32 @@ class SileroVadModel::Impl {
     Reset();
   }
 
+  struct NeonBuffers {
+    Ort::MemoryInfo memory =
+        Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+    std::array<Ort::Value, 3> inputs{Ort::Value{nullptr}, Ort::Value{nullptr},
+                                     Ort::Value{nullptr}};
+    std::array<Ort::Value, 2> outputs{Ort::Value{nullptr}, Ort::Value{nullptr}};
+
+    NeonBuffers(OrtAllocator *allocator, int64_t *sample_rate) {
+      constexpr int64_t rate_shape[] = {1};
+      constexpr int64_t state_shape[] = {2, 1, 128};
+      constexpr int64_t prob_shape[] = {1, 1};
+      inputs[1] = Ort::Value::CreateTensor<float>(allocator, state_shape, 3);
+      inputs[2] = Ort::Value::CreateTensor(memory, sample_rate, 1, rate_shape, 1);
+      outputs[0] = Ort::Value::CreateTensor<float>(allocator, prob_shape, 2);
+      outputs[1] = Ort::Value::CreateTensor<float>(allocator, state_shape, 3);
+    }
+  };
+
   void ResetV5() {
+    if (config_.provider == "neon") {
+      if (!neon_buffers_) {
+        neon_buffers_ = std::make_unique<NeonBuffers>(allocator_, &sample_rate_);
+      }
+      Fill<float>(&neon_buffers_->inputs[1], 0);
+      return;
+    }
     // 2 - number of LSTM layer
     // 1 - batch size
     // 128 - hidden dim
@@ -388,6 +475,19 @@ class SileroVadModel::Impl {
   }
 
   float RunV5(const float *samples, int32_t n) {
+    if (neon_buffers_) {
+      auto &buffers = *neon_buffers_;
+      const int64_t shape[] = {1, n};
+      buffers.inputs[0] = Ort::Value::CreateTensor(
+          buffers.memory, const_cast<float *>(samples), n, shape, 2);
+      sess_->Run(Ort::RunOptions{nullptr}, input_names_ptr_.data(),
+                 buffers.inputs.data(), buffers.inputs.size(),
+                 output_names_ptr_.data(), buffers.outputs.data(),
+                 buffers.outputs.size());
+      std::swap(buffers.inputs[1], buffers.outputs[1]);
+      return buffers.outputs[0].GetTensorData<float>()[0];
+    }
+
     auto memory_info =
         Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
 
@@ -466,6 +566,7 @@ class SileroVadModel::Impl {
 
   std::vector<Ort::Value> states_;
   int64_t sample_rate_;
+  std::unique_ptr<NeonBuffers> neon_buffers_;
   int32_t min_silence_samples_;
   int32_t min_speech_samples_;
 

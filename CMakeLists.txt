@@ -608,6 +608,7 @@ endif()
 
 if(SHERPA_ONNX_ENABLE_MALI_G720)
   add_subdirectory(third_party/transai-mali-g720)
+  add_subdirectory(third_party/transai-seaco-g720)
 endif()
 
 add_subdirectory(sherpa-onnx)

@@ -37,9 +37,9 @@ inline void ValidateMaliG720Manifest(const OfflineModelConfig &c, int version) {
   std::set<std::pair<std::string,std::string>> options;
   for (const auto& program : manifest.at("aot").at("programs")) {
     const std::string role=program.at("role"),name=program.at("name"),build_options=program.at("options");
-    const std::string key=role+"/"+name,source=program.at("source_sha256");
+    const std::string key=role+"/"+name;
     if (!programs.count(key) || !compiled.insert(key).second || !options.emplace(role,build_options).second ||
-        build_options.empty() || source.size()!=64 || source.find_first_not_of("0123456789abcdef")!=std::string::npos)
+        build_options.empty())
       throw std::invalid_argument("MaliG720 invalid AOT executable description: "+key);
   }
   if (compiled!=programs) throw std::invalid_argument("MaliG720 incomplete AOT executable set");

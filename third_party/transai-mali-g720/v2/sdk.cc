@@ -21,7 +21,7 @@ void Defaults() {
       {"TRANSAI_G720_ADAPTIVE_TILE_N","1"},{"TRANSAI_G720_ROW_REUSE_PAD","1"},
       {"TRANSAI_G720_PROJECTION_DIRECT_LIMIT","32"},{"TRANSAI_G720_TINY_LIMIT","64"},
       {"TRANSAI_G720_BCAST_K","256"},{"TRANSAI_G720_ALT_BCAST_K","64"},
-      {"TRANSAI_TDT_WG","512"},{"TRANSAI_TDT_MULTI","1"},
+      {"TRANSAI_TDT_MULTI","1"},
       {"TRANSAI_TDT_BLOCK","8"},{"TRANSAI_TDT_BUDGET","50"}
     };
     for(auto [name,value]:values)if(!getenv(name))setenv(name,value,0);

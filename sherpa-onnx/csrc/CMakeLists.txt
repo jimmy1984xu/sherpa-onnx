@@ -348,8 +348,59 @@ endif()
 
 # Always static build
 add_library(sherpa-onnx-core STATIC ${sources})
+if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
+  # Build the frozen VAD FFT without the ASR KissFFT target's fast-math flags.
+  # Prefix its symbols so both implementations can coexist in the C API library.
+  get_target_property(silero_fft_dir kissfft SOURCE_DIR)
+  set(silero_fft "${silero_fft_dir}/kiss_fft.c" "${silero_fft_dir}/kiss_fftr.c")
+  foreach(source IN LISTS silero_fft)
+    if(NOT EXISTS "${source}")
+      message(FATAL_ERROR "Missing Silero KissFFT source: ${source}")
+    endif()
+  endforeach()
+  set(silero_fft_symbols kiss_fft_alloc kiss_fft kiss_fft_stride kiss_fft_cleanup
+    kiss_fft_next_fast_size kiss_fftr_alloc kiss_fftr kiss_fftri)
+  foreach(symbol IN LISTS silero_fft_symbols)
+    set_property(SOURCE silero-vad-neon-ops.cc ${silero_fft} APPEND
+      PROPERTY COMPILE_DEFINITIONS "${symbol}=silero_${symbol}")
+  endforeach()
+  target_sources(sherpa-onnx-core PRIVATE silero-vad-neon-ops.cc ${silero_fft})
+  target_compile_definitions(sherpa-onnx-core PRIVATE SHERPA_ONNX_ENABLE_SILERO_NEON=1)
+  set_source_files_properties(silero-vad-neon-ops.cc PROPERTIES COMPILE_OPTIONS
+    "-march=armv8.6-a+fp16fml+dotprod;-mtune=cortex-a720;-fno-lto")
+  set_source_files_properties(${silero_fft} PROPERTIES COMPILE_OPTIONS
+    "-fno-fast-math;-fno-lto")
+  target_link_libraries(sherpa-onnx-core kissfft)
+
+  enable_language(ASM)
+  set(titanet_kai "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/titanet-kleidiai")
+  set(titanet_matmul "${titanet_kai}/kai/ukernels/matmul")
+  set(titanet_i8mm "${titanet_matmul}/matmul_clamp_f32_qai8dxp_qsi8cxp/kai_matmul_clamp_f32_qai8dxp4x8_qsi8cxp4x8_16x4_neon_i8mm")
+  set(titanet_kernels titanet-neon-ops.cc
+    "${titanet_matmul}/pack/kai_lhs_quant_pack_qai8dxp_f32.c"
+    "${titanet_matmul}/pack/kai_rhs_pack_nxk_qsi8cxp_qsi8cx_neon.c"
+    "${titanet_i8mm}.c" "${titanet_i8mm}_asm.S")
+  foreach(source IN LISTS titanet_kernels)
+    if(NOT EXISTS "${source}" AND NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
+      message(FATAL_ERROR "Missing TitaNet KleidiAI source: ${source}")
+    endif()
+  endforeach()
+  install(FILES "${titanet_kai}/LICENSE" DESTINATION lib/licenses/titanet-kleidiai)
+  target_sources(sherpa-onnx-core PRIVATE ${titanet_kernels})
+  set_source_files_properties(${titanet_kernels} PROPERTIES
+    COMPILE_OPTIONS "-march=armv8.6-a+i8mm;-fno-lto"
+    INCLUDE_DIRECTORIES "${titanet_kai};${titanet_matmul}")
+  target_sources(sherpa-onnx-core PRIVATE ct-transformer-neon-ops.cc)
+  set_source_files_properties(ct-transformer-neon-ops.cc PROPERTIES
+    COMPILE_OPTIONS "-march=armv8.6-a+dotprod+i8mm+fp16;-mtune=cortex-a720;-fno-lto"
+    INCLUDE_DIRECTORIES "${titanet_kai};${titanet_matmul}")
+  set_property(SOURCE offline-ct-transformer-model.cc APPEND
+    PROPERTY COMPILE_DEFINITIONS SHERPA_ONNX_ENABLE_CT_TRANSFORMER_NEON=1)
+  set_property(SOURCE speaker-embedding-extractor-nemo-model.cc APPEND
+    PROPERTY COMPILE_DEFINITIONS SHERPA_ONNX_ENABLE_TITANET_NEON=1)
+endif()
 if(SHERPA_ONNX_ENABLE_MALI_G720)
-  target_sources(sherpa-onnx-core PRIVATE mali-g720/offline-recognizer.cc)
+  target_sources(sherpa-onnx-core PRIVATE mali-g720/offline-recognizer.cc mali-g720/seaco-recognizer.cc)
   target_compile_definitions(sherpa-onnx-core PUBLIC SHERPA_ONNX_ENABLE_MALI_G720=1)
   target_link_libraries(sherpa-onnx-core ${CMAKE_DL_LIBS})
 endif()

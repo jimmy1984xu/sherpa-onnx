@@ -80,7 +80,7 @@ class File {
       for(int i=32;i<64;++i) if(header[i]) throw std::runtime_error("MaliG720 AOT reserved header");
       std::string index(static_cast<size_t>(index_bytes),'\0');Read({64,index_bytes},index.data());
       const auto data=nlohmann::json::parse(index);
-      if(data.at("format")!=1 || data.at("entries").size()!=11)
+      if(data.at("format")!=1 || data.at("entries").empty() || data.at("entries").size()>64)
         throw std::runtime_error("MaliG720 AOT invalid index");
       uint64_t end=64+index_bytes;
       for(const auto &item:data.at("entries")) {
@@ -95,12 +95,33 @@ class File {
       }
       if(end!=total) throw std::runtime_error("MaliG720 AOT trailing/missing payload");
       manifest_=nlohmann::json::parse(Text("model.json"));
-      if(manifest_.at("format")!=2 || manifest_.at("assets").size()!=10)
-        throw std::runtime_error("MaliG720 AOT compiled manifest required");
+      const auto family=manifest_.at("architecture").at("family").get<std::string>();
+      const bool seaco=family=="seaco-paraformer";
+      const bool silero=family=="silero-vad";
+      const bool titanet=family=="titanet-large";
+      const bool nemotron=family=="nemotron-diarization";
+      const bool punctuation=family=="ct-transformer";
+      const bool language=family=="voxlingua107";
+      const std::vector<std::string> required=language?std::vector<std::string>{
+        "model.json","language/model.onnx","language/lang_map.json"}:punctuation?std::vector<std::string>{
+        "model.json","punctuation/model.onnx"}:nemotron?std::vector<std::string>{
+        "model.json","diarization/embed.onnx","diarization/step_int8.onnx",
+        "diarization/mel_filters.bin","diarization/silence_embeds.bin"}:titanet?std::vector<std::string>{
+        "model.json","speaker/model.onnx"}:silero?std::vector<std::string>{
+        "model.json","vad/model.onnx"}:seaco?std::vector<std::string>{
+        "model.json","seaco/plan.json","seaco/weights.bin","seaco/program.clbin",
+        "seaco/target.json","seaco/hotwords.json","tokenizer/tokens.json","tokenizer/seg_dict"}:
+        std::vector<std::string>{"model.json","tokens.txt","encoder/encoder.full.nemo.plan.taig720",
+        "encoder/encoder.weights.bin","encoder/encoder_primary.clbin","encoder/encoder_alternate.clbin",
+        "encoder/encoder_tiny.clbin","gpu/frontend.bin","gpu/tdt_weights.bin","gpu/frontend_tdt.clbin","gpu/frontend_tdt_trace.clbin"};
+      if((!language && !punctuation && !nemotron && !titanet && !silero && !seaco && family!="parakeet-tdt") || manifest_.at("format")!=2 ||
+         manifest_.at("assets").size()!=required.size()-1 || entries_.size()!=required.size())
+        throw std::runtime_error("AOT compiled manifest required");
+      for(const auto &name:required) Asset(name);
       std::map<std::string,bool> seen;
       for(const auto &asset:manifest_.at("assets")) {
         const std::string role=asset.at("role"),name=asset.at("name");
-        if((role!="tokens"&&role!="encoder"&&role!="gpu") || name.empty() ||
+        if((role!="tokens"&&role!="encoder"&&role!="gpu"&&role!="seaco"&&role!="tokenizer"&&role!="vad"&&role!="speaker"&&role!="diarization"&&role!="punctuation"&&role!="language") || name.empty() ||
            name.find_first_of("/\\")!=std::string::npos || name=="." || name=="..")
           throw std::runtime_error("MaliG720 AOT invalid asset name");
         const std::string key=(role=="tokens"?"":role+"/")+name;

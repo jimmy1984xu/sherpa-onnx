@@ -161,15 +161,10 @@ struct Gpu {
                                   w.data(), 0, nullptr, nullptr),
           "weights");
     timer.Mark("tdt_alloc_upload");
-    if (getenv("TRANSAI_TDT_WG"))
-      wg = atoi(getenv("TRANSAI_TDT_WG"));
-    if (wg < 64 || wg > 1024 || (wg & (wg - 1)))
-      throw std::runtime_error("invalid workgroup");
-    std::string options = "-cl-std=CL2.0 -DWG=" + std::to_string(wg) +
-                          (getenv("TRANSAI_TDT_NATIVE") ? " -DNATIVE_MATH=1"
-                                                        : " -DNATIVE_MATH=0");
-    options += getenv("MALI_G720_SCORE_TRACE") ? " -DMALI_SCORE_TRACE=1" : " -DMALI_SCORE_TRACE=0";
-    program = transai::aot::Load(cl.lib, ctx, queue, dir, options);
+    wg = 512;
+    const char *program_name = getenv("MALI_G720_SCORE_TRACE")
+        ? "frontend_tdt_trace.clbin" : "frontend_tdt.clbin";
+    program = transai::aot::Load(cl.lib, ctx, queue, dir, program_name);
     timer.Mark("program");
     tdt = cl.clCreateKernel(
         program, MultiEnabled() ? "tdt_tail" : "tdt_persistent",

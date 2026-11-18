@@ -10,6 +10,9 @@ struct BeamGpu {
   std::vector<std::unique_ptr<transai::opencl::CommandBuffer>> batches;
   std::vector<cl_mem> buffers;
   int beam_size=0;
+#if MALI_G720_VOCAB_SIZE == 8193
+  double prefix_ratio=0.5;
+#endif
   std::vector<int32_t> graph_cache;
   explicit BeamGpu(Gpu &g) : gpu(g) {
     using namespace transai::aot;
@@ -43,6 +46,9 @@ struct BeamGpu {
   }
   void ReleaseBuffers() {
     batches.clear();
+#if MALI_G720_VOCAB_SIZE == 8193
+    prefix_ratio=0.5;
+#endif
     for(auto b:buffers)gpu.cl.clReleaseMemObject(b);
     buffers.clear();beam_size=0;graph_cache.clear();
   }
@@ -98,26 +104,50 @@ struct BeamGpu {
     Check(gpu.cl.clSetKernelArg(kernel,12,4,&beam),"GPU tail paths");
     Check(gpu.cl.clSetKernelArg(kernel,13,4,&blank_penalty),"GPU tail penalty");
     Check(gpu.cl.clSetKernelArg(kernel,14,4,&trace),"GPU tail trace");
+#if MALI_G720_VOCAB_SIZE == 8193
+    // Learn only from completed requests' existing final packet. Cold start
+    // retains the original budget; completed medical searches add no work.
+    int blocks=std::clamp((int(frame_bound*prefix_ratio)+16+7)/8,1,50);
+    if(batches.empty())batches.resize(26);
+    {
+#else
     if(batches.empty()) {
+#endif
       // Pair original eight-round blocks, with a separate eight-round remainder.
-      for(int b=0;b<14;++b) {
+      for(int b=0;b<(MALI_G720_VOCAB_SIZE==8193?26:14);++b) {
+#if MALI_G720_VOCAB_SIZE == 8193
+        if(batches[b] || !(b<blocks/2 || (b==25 && (blocks&1))))continue;
+#endif
         auto batch=std::make_unique<transai::opencl::CommandBuffer>(gpu.queue);
         auto group=[&](cl_kernel k){transai::opencl::CommandDispatch d;d.kernel=k;d.global[0]=128*beam;d.local[0]=128;batch->Add(d);};
         auto mmul=[&](cl_kernel k,int columns,int pairs){transai::opencl::CommandDispatch d;d.kernel=k;d.dimensions=3;d.global[0]=((columns+63)/64)*64;d.global[1]=(beam+3)/4;d.global[2]=pairs;d.local[0]=64;d.local[1]=d.local[2]=1;batch->Add(d);};
-        for(int i=0;i<(b==13?8:16);++i){
+        for(int i=0;i<(b==(MALI_G720_VOCAB_SIZE==8193?25:13)?8:16);++i){
           group(step);mmul(rec,2560,2);group(cell0);mmul(x1,2560,1);group(cell1);
           mmul(pred,640,1);group(joint);mmul(logits,MALI_G720_VOCAB_SIZE+5,1);
-          transai::opencl::CommandDispatch d;d.kernel=expand;d.global[0]=512*beam;d.local[0]=512;batch->Add(d);
+          transai::opencl::CommandDispatch d;d.kernel=expand;
+#if MALI_G720_VOCAB_SIZE == 1025
+          d.global[0]=64*beam;d.local[0]=64;
+#else
+          d.global[0]=512*beam;d.local[0]=512;
+#endif
+          batch->Add(d);
           d.kernel=select;d.global[0]=128;d.local[0]=128;batch->Add(d);
         }
-        batch->Finalize();batches.push_back(std::move(batch));
+        batch->Finalize();
+#if MALI_G720_VOCAB_SIZE == 8193
+        batches[b]=std::move(batch);
+#else
+        batches.push_back(std::move(batch));
+#endif
       }
     }
     size_t global=256,init_group=128;
     Check(gpu.cl.clEnqueueNDRangeKernel(gpu.queue,initialize,1,nullptr,&init_group,&init_group,0,nullptr,nullptr),"GPU beam initialize");
+#if MALI_G720_VOCAB_SIZE != 8193
     int blocks=std::clamp((frame_bound/2+16+7)/8,1,26);
+#endif
     for(int i=0;i<blocks/2;++i)batches[i]->Enqueue(false);
-    if(blocks&1)batches[13]->Enqueue(false);
+    if(blocks&1)batches[MALI_G720_VOCAB_SIZE==8193?25:13]->Enqueue(false);
     Check(gpu.cl.clEnqueueNDRangeKernel(gpu.queue,kernel,1,nullptr,&global,&global,0,nullptr,nullptr),"GPU beam tail");
     size_t one=1;
     Check(gpu.cl.clEnqueueNDRangeKernel(gpu.queue,gpu.text_kernel,1,nullptr,&one,&one,0,nullptr,nullptr),"GPU beam text");
@@ -125,6 +155,9 @@ struct BeamGpu {
     Check(gpu.cl.clEnqueueReadBuffer(gpu.queue,gpu.packet,CL_TRUE,0,gpu.result.size()*4,gpu.result.data(),0,nullptr,nullptr),"GPU beam final packet");
     if(gpu.profiling)gpu.FinishProfile();
     if(gpu.result[0]||gpu.result[1]<0||gpu.result[1]>3750)throw std::runtime_error("GPU beam status "+std::to_string(gpu.result[0]));
+#if MALI_G720_VOCAB_SIZE == 8193
+    prefix_ratio=std::max(prefix_ratio,std::clamp(double(gpu.result[2]-16)/std::max(1,frame_bound),0.5,1.0));
+#endif
     std::cerr<<"GPU_BEAM cpu_search=0 cpu_context_graph=0 cpu_model=0 encoder_d2h=0 final_packet_reads=1 paths="<<beam
              <<" max_active="<<(uint32_t(gpu.result[3])>>24)<<" evaluations="<<(gpu.result[3]&0xffffff)
              <<" rounds="<<gpu.result[2]<<" all_tdt_affine_mmul=1 parallel_groups="<<beam<<" command_buffer_blocks="<<blocks<<"\n";
