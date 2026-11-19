@@ -68,7 +68,7 @@ fi
 
 echo "ANDROID_NDK: $ANDROID_NDK"
 sleep 1
-onnxruntime_version=1.24.3
+onnxruntime_version=1.28.2
 
 if [ $BUILD_SHARED_LIBS == ON ]; then
   if [ ! -f $onnxruntime_version/jni/arm64-v8a/libonnxruntime.so ]; then
