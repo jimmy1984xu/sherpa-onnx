@@ -18,7 +18,7 @@ __attribute__((reqd_work_group_size(WG,1,1))) __kernel void beam_init(
  __global BeamHyp *active,__global BeamControl *control,__global const half *encoder,int beam) {
  int l=get_local_id(0);
  for(int i=l;i<5*H;i+=WG)states[i]=0;
- if(!l){out[0]=0;out[1]=0;BeamHyp first={0,0,0,VOCAB-1,1,0,-1,0,0,0,0,0};active[0]=first;
+ if(!l){out[0]=0;out[1]=0;BeamHyp first={0,0,0,VOCAB-1,1,0,-1,0,0,0,0,0};if(beam>1)first.update|=2;active[0]=first;
  BeamControl initial={1,0,0,0,0,0,1,0};*control=initial;}
  barrier(CLK_GLOBAL_MEM_FENCE);
  for(int i=l;i<meta[2]*H;i+=WG)if(!isfinite(convert_float(encoder[i])))atomic_or(out,2);
@@ -34,7 +34,7 @@ __attribute__((reqd_work_group_size(WG,1,1))) __kernel void beam_prepare(
  int row=get_group_id(0),l=get_local_id(0);if(!beam_enabled(active,control,row))return;
  for(int i=l;i<5*H;i+=WG)states[(beam+row)*5*H+i]=states[row*5*H+i];
  if(!l)atomic_inc(&control->evaluations);
- if(!active[row].update)return;
+ if(!(active[row].update&1))return;
  __local float x[H],lo[WG],hi[WG],scale[1];__local int zp[1];__local char4 packed[160];
  for(int bank=0;bank<2;++bank){
   for(int i=l;i<H;i+=WG)x[i]=states[row*5*H+bank*H+i];
@@ -47,7 +47,7 @@ __attribute__((reqd_work_group_size(WG,1,1))) __kernel void beam_cell(
  __global float *states,__global const BeamHyp *active,__global const BeamControl *control,
  __global const float *gates,__global char4 *q,__global float *scales,__global int *zps,
  int beam,int bank) {
- int row=get_group_id(0),l=get_local_id(0);if(!beam_enabled(active,control,row)||!active[row].update)return;
+ int row=get_group_id(0),l=get_local_id(0);if(!beam_enabled(active,control,row)||!(active[row].update&1))return;
  __local float x[H],lo[WG],hi[WG],scale[1];__local int zp[1];__local char4 packed[160];
  int base=(beam+row)*5*H,gate=(bank*beam+row)*G;
  for(int i=l;i<H;i+=WG){float c=sigmoid(gates[gate+H+i])*states[base+(bank+2)*H+i]+sigmoid(gates[gate+i])*tanh(gates[gate+2*H+i]);
@@ -78,12 +78,12 @@ __attribute__((reqd_work_group_size(64,1,1))) __kernel void beam_affine(
  // where none of those rows needs this affine transform.
  int row_base=get_global_id(1)*4,needed=0;
  for(int r=0;r<4;++r)needed|=beam_enabled(active,control,row_base+r) &&
-   (operation==3 || active[row_base+r].update);
+   (operation==3 || (active[row_base+r].update&1));
  if(!needed)return;
  int lane=get_global_id(0)&15,x=lane&3,y=lane>>2;
  int row=get_global_id(1)*4+y,column=(get_global_id(0)>>4)*16+x*4;
  int second=operation==0?get_global_id(2):0;
- int enabled=beam_enabled(active,control,row) && (operation==3 || active[row].update);
+ int enabled=beam_enabled(active,control,row) && (operation==3 || (active[row].update&1));
  ulong W,S,B,SUM;int N,PAD,bank;
  if(operation==0){W=second?H1_W:H0_W;S=second?H1_S:H0_S;B=second?H1_B:H0_B;SUM=second?H1_SUM:H0_SUM;N=PAD=G;bank=second;}
  else if(operation==1){W=X1_W;S=X1_S;B=X1_B;SUM=X1_SUM;N=PAD=G;bank=0;}
@@ -108,80 +108,172 @@ __attribute__((reqd_work_group_size(64,1,1))) __kernel void beam_affine(
 }
 // Each candidate gets its own work-group so independent vocabularies use
 // multiple GPU cores; only the following small kernel performs global pruning.
-__attribute__((reqd_work_group_size(512,1,1))) __kernel void beam_expand(
+#if VOCAB == 1025
+#define EXPAND_THREADS 64
+#else
+#define EXPAND_THREADS 512
+#endif
+__attribute__((reqd_work_group_size(EXPAND_THREADS,1,1))) __kernel void beam_expand(
  __global const BeamHyp *active,__global BeamHyp *candidates,
  __global float *all_logits,__global const int *graph,__global const BeamControl *control,
  int beam,float blank_penalty) {
  int a=get_group_id(0),l=get_local_id(0);
  if(control->finished || a>=control->size)return;
  BeamHyp hyp=active[a];
- for(int k=l;k<beam+1;k+=512)candidates[a*(beam+1)+k].score=-INFINITY;
+ for(int k=l;k<beam+1;k+=EXPAND_THREADS)candidates[a*(beam+1)+k].score=-INFINITY;
  if(hyp.frame>control->frame || hyp.on_frame>=10){
   if(!l){if(hyp.on_frame>=10 && hyp.frame==control->frame){++hyp.frame;hyp.on_frame=0;}
    hyp.emit=0;hyp.slot=a;candidates[a*(beam+1)]=hyp;}
   return;
  }
- __local int duration,indices[512];
- __local float best[512],sums[512],normalizer,duration_score;
+ __local int duration,blank_duration,greedy_token,indices[EXPAND_THREADS];
+ __local float best[EXPAND_THREADS],sums[EXPAND_THREADS],normalizer,duration_score,blank_duration_score;
  int stride=graph[1]+1,table_count=graph[0]*stride;
  __global const int *map=graph+4,*next=map+VOCAB;
  __global const float *bonus=(__global const float *)(next+table_count);
   __global float *logits=all_logits+a*(2*VOCAB+5);
-      float maximum=-INFINITY;
-      for(int o=l;o<VOCAB;o+=512) maximum=fmax(maximum,logits[o]);
-      best[l]=maximum;
+      float maximum=-INFINITY;int maximum_id=2147483647;
+      for(int o=l;o<VOCAB;o+=EXPAND_THREADS)if(logits[o]>maximum||(logits[o]==maximum&&o<maximum_id)){maximum=logits[o];maximum_id=o;}
+      best[l]=maximum;indices[l]=maximum_id;
       barrier(CLK_LOCAL_MEM_FENCE);
-      for(int n=512/2;n;n/=2) {
-        if(l<n) best[l]=fmax(best[l],best[l+n]);
+      for(int n=EXPAND_THREADS/2;n;n/=2) {
+        if(l<n&&(best[l+n]>best[l]||(best[l+n]==best[l]&&indices[l+n]<indices[l]))){best[l]=best[l+n];indices[l]=indices[l+n];}
         barrier(CLK_LOCAL_MEM_FENCE);
       }
       float sum=0;
-      for(int o=l;o<VOCAB;o+=512) sum+=exp(logits[o]-best[0]);
+      for(int o=l;o<VOCAB;o+=EXPAND_THREADS) sum+=exp(logits[o]-best[0]);
       sums[l]=sum;
       barrier(CLK_LOCAL_MEM_FENCE);
-      for(int n=512/2;n;n/=2) {
+      for(int n=EXPAND_THREADS/2;n;n/=2) {
         if(l<n) sums[l]+=sums[l+n];
         barrier(CLK_LOCAL_MEM_FENCE);
       }
       if(!l) {
-        normalizer=best[0]+log(sums[0]); duration=0;
+        normalizer=best[0]+log(sums[0]);greedy_token=indices[0]; duration=0;
         for(int i=1;i<5;++i) if(logits[VOCAB+i]>logits[VOCAB+duration]) duration=i;
         float total=0,maximum=logits[VOCAB+duration];
         for(int i=0;i<5;++i) total+=exp(logits[VOCAB+i]-maximum);
         duration_score=-log(total);
+        blank_duration=1;for(int i=2;i<5;++i)if(logits[VOCAB+i]>logits[VOCAB+blank_duration])blank_duration=i;
+        blank_duration_score=duration_score+logits[VOCAB+blank_duration]-maximum;
       }
       barrier(CLK_LOCAL_MEM_FENCE);
+
+ if((hyp.update&2)){
+  if(!l){int y=greedy_token,d=y==VOCAB-1?max(1,duration):duration;BeamHyp child=hyp;
+   child.score+=logits[y]-normalizer+duration_score+logits[VOCAB+d]-logits[VOCAB+duration];child.slot=beam+a;child.duration=d;child.emit=y==VOCAB-1?0:y+1;child.acoustic=logits[y]-normalizer;
+   if(y==VOCAB-1){child.frame+=d;child.on_frame=0;child.update=2;}
+   else{child.frame+=d;child.on_frame=d?0:hyp.on_frame+1;child.token=y;child.update=3;child.context=next[hyp.context*stride+map[y]];++child.count;}
+   candidates[a*(beam+1)+beam]=child;
+  }
+  barrier(CLK_GLOBAL_MEM_FENCE|CLK_LOCAL_MEM_FENCE);
+ }
+
+#if VOCAB == 8193
+      if (beam == 4) {
+        // Retain each lane's top four. Every global top-four entry must
+        // belong to one such list. Rank ties by the original token ID.
+        float ranks[4] = {-INFINITY, -INFINITY, -INFINITY, -INFINITY};
+        int tokens[4] = {2147483647, 2147483647, 2147483647, 2147483647};
+        for (int o = l; o < VOCAB; o += EXPAND_THREADS) {
+          float acoustic = logits[o] - normalizer;
+          float value = acoustic + (o == VOCAB-1 ? -blank_penalty+blank_duration_score-duration_score : bonus[hyp.context*stride+map[o]]);
+          int token = o;
+          #pragma unroll
+          for (int j = 0; j < 4; ++j) {
+            if (value > ranks[j] || (value == ranks[j] && token < tokens[j])) {
+              float displaced = ranks[j];
+              int displaced_token = tokens[j];
+              ranks[j] = value;
+              tokens[j] = token;
+              value = displaced;
+              token = displaced_token;
+            }
+          }
+        }
+        for (int k = 0; k < 4; ++k) {
+          best[l] = ranks[0];
+          indices[l] = tokens[0];
+          barrier(CLK_LOCAL_MEM_FENCE);
+          for (int n = EXPAND_THREADS/2; n; n /= 2) {
+            if (l < n && (best[l+n] > best[l] || (best[l+n] == best[l] && indices[l+n] < indices[l]))) {
+              best[l] = best[l+n];
+              indices[l] = indices[l+n];
+            }
+            barrier(CLK_LOCAL_MEM_FENCE);
+          }
+          int y = indices[0];
+          if (tokens[0] == y) {
+            ranks[0]=ranks[1];ranks[1]=ranks[2];ranks[2]=ranks[3];ranks[3]=-INFINITY;
+            tokens[0]=tokens[1];tokens[1]=tokens[2];tokens[2]=tokens[3];tokens[3]=2147483647;
+          }
+          if (l == 0) {
+            BeamHyp child = hyp;child.update&=1;
+            child.score += best[0] + duration_score;
+            child.slot = beam+a;
+            child.duration = y == VOCAB-1 ? blank_duration : duration;
+            child.emit = y == VOCAB-1 ? 0 : y+1;
+            child.acoustic = logits[y] - normalizer;
+            if (y == VOCAB-1) {
+              child.frame += blank_duration;child.on_frame=0;child.update=0;
+
+            } else {
+              child.frame += duration;child.on_frame=duration?0:hyp.on_frame+1;
+              child.token=y;child.update=1;
+child.context=next[hyp.context*stride+map[y]];
+
+              ++child.count;
+            }
+            candidates[a*(beam+1)+k] = child;
+          }
+          barrier(CLK_LOCAL_MEM_FENCE);
+        }
+        return;
+      }
+#endif
       // The first VOCAB entries hold unbiased log probabilities; the second
       // bank is scratch for context-boosted top-k ranking.
-      for(int o=l;o<VOCAB;o+=512) {
+      for(int o=l;o<VOCAB;o+=EXPAND_THREADS) {
         float acoustic=logits[o]-normalizer;
         int transition=hyp.context*stride+map[o];
-        float reward=o==VOCAB-1?-blank_penalty:bonus[transition];
+        float reward=o==VOCAB-1?-blank_penalty+blank_duration_score-duration_score:bonus[transition];
         logits[o]=acoustic; logits[VOCAB+5+o]=acoustic+reward;
       }
       barrier(CLK_GLOBAL_MEM_FENCE);
       for(int k=0;k<beam;++k) {
         float value=-INFINITY;int index=2147483647;
-        for(int o=l;o<VOCAB;o+=512) {
+        for(int o=l;o<VOCAB;o+=EXPAND_THREADS) {
           float v=logits[VOCAB+5+o];
           if(v>value || (v==value && o<index)) { value=v;index=o; }
         }
         best[l]=value;indices[l]=index;
         barrier(CLK_LOCAL_MEM_FENCE);
-        for(int n=512/2;n;n/=2) {
+        for(int n=EXPAND_THREADS/2;n;n/=2) {
           if(l<n && (best[l+n]>best[l] || (best[l+n]==best[l] && indices[l+n]<indices[l]))) {
             best[l]=best[l+n];indices[l]=indices[l+n];
           }
           barrier(CLK_LOCAL_MEM_FENCE);
         }
         if(!l) {
-          int y=indices[0];BeamHyp child=hyp;
+          int y=indices[0];BeamHyp child=hyp;child.update&=1;
           child.score+=best[0]+duration_score;child.slot=beam+a;
-          child.duration=duration;child.emit=y==VOCAB-1?0:y+1;child.acoustic=logits[y];
-          if(y==VOCAB-1) { child.frame+=max(1,duration);child.on_frame=0;child.update=0; }
+          child.duration=y==VOCAB-1?blank_duration:duration;child.emit=y==VOCAB-1?0:y+1;child.acoustic=logits[y];
+          if(y==VOCAB-1) { child.frame+=blank_duration;child.on_frame=0;child.update=0;
+#if VOCAB == 1025
+child.update|=(hyp.update&4);
+#endif
+ }
           else {
             child.frame+=duration;child.on_frame=duration?0:hyp.on_frame+1;
-            child.token=y;child.update=1;child.context=next[hyp.context*stride+map[y]];
+            child.token=y;child.update=1;
+#if VOCAB == 1025
+child.update|=(hyp.update&4);
+#endif
+child.context=next[hyp.context*stride+map[y]];
+#if VOCAB == 1025
+if(child.context==0&&bonus[hyp.context*stride+map[y]]>0)child.update|=4;
+#endif
+
             ++child.count;
           }
           candidates[a*(beam+1)+k]=child;
@@ -197,8 +289,9 @@ __attribute__((reqd_work_group_size(128,1,1))) __kernel void beam_select(
  int l=get_local_id(0),frames=meta[2];if(control->finished)return;
  __local int selection[MAX_BEAM],size,nodes;
   if(!l){nodes=control->nodes;int count=control->size*(beam+1);size=min(beam,count);
-   for(int k=0;k<size;++k){int selected=-1;float value=-INFINITY;
-    for(int i=0;i<count;++i){int used=0;for(int j=0;j<k;++j)used|=selection[j]==i;
+   int anchor=-1;for(int i=0;i<count;++i)if((candidates[i].update&2)&&isfinite(candidates[i].score)){anchor=i;break;}
+   for(int k=0;k<size;++k){if(k==0&&anchor>=0){selection[k]=anchor;continue;}int selected=-1;float value=-INFINITY;
+    for(int i=0;i<count;++i){if(!isfinite(candidates[i].score))continue;int used=0;for(int j=0;j<k;++j)used|=selection[j]==i; if(anchor>=0){BeamHyp x=candidates[i],y=candidates[anchor];used|=(x.path==y.path&&x.emit==y.emit&&x.frame==y.frame);}
      if(!used&&(selected<0||candidates[i].score>value)){selected=i;value=candidates[i].score;}}
     if(!isfinite(value)){size=k;break;}selection[k]=selected;
    }
@@ -237,7 +330,13 @@ inline void fast_affine(__global const uchar *w,__local const char4 *q,
  __global const BeamControl *control,__global float *states,__global float *gates,
  __global float *all_logits,__global int *out,int beam,int base,int operation,int trace) {
  int l=get_local_id(0),lane=l&15,tx=lane&3,ty=lane>>2,row=base+ty;
- int enabled=beam_enabled(active,control,row) && (operation==3 || active[row].update);
+ // All work-items make the same decision. No recurrent matrix is needed
+ // when every row is blank, waiting at a later frame, or already complete.
+ int needed=operation==3;
+ for(int r=0;r<4&&!needed;++r)
+  needed=beam_enabled(active,control,base+r)&&(active[base+r].update&1);
+ if(!needed)return;
+ int enabled=beam_enabled(active,control,row) && (operation==3 || (active[row].update&1));
  int passes=operation==0?2:1;
  for(int second=0;second<passes;++second) {
   ulong W,S,B,SUM;int N,PAD,bank;
@@ -270,8 +369,8 @@ __attribute__((reqd_work_group_size(256,1,1))) __kernel void beam_fast(
  __global PathNode *paths,__global float *all_logits,__global const int *graph,
  __global BeamControl *control,__global float *gates,int beam,float blank_penalty,int trace) {
  int l=get_local_id(0),group=l/64,lane=l%64,frames=meta[2];
- __local float x[4*H],lo[256],hi[256],scales[12],best[256],sums[256],normalizer[4],duration_score[4];
- __local char4 packed[12*160];__local int zps[12],indices[256],duration[4],selection[MAX_BEAM],size,nodes,any;
+ __local float x[4*H],lo[256],hi[256],scales[12],best[256],sums[256],normalizer[4],duration_score[4],blank_duration_score[4];
+ __local char4 packed[12*160];__local int zps[12],indices[256],duration[4],blank_duration[4],greedy_token[4],selection[MAX_BEAM],size,nodes,any;
  int stride=graph[1]+1,table_count=graph[0]*stride;
  __global const int *map=graph+4,*next=map+VOCAB;
  __global const float *bonus=(__global const float *)(next+table_count),*finalize=bonus+table_count;
@@ -290,7 +389,7 @@ __attribute__((reqd_work_group_size(256,1,1))) __kernel void beam_fast(
     for(int i=lane;i<H;i+=64){
      float value=0;
      if(enabled){int state=(beam+row)*5*H,gate=(bank*beam+row)*G;
-      if(active[row].update){float c=sigmoid(gates[gate+H+i])*states[state+(bank+2)*H+i]+sigmoid(gates[gate+i])*tanh(gates[gate+2*H+i]);
+      if((active[row].update&1)){float c=sigmoid(gates[gate+H+i])*states[state+(bank+2)*H+i]+sigmoid(gates[gate+i])*tanh(gates[gate+2*H+i]);
        states[state+(bank+2)*H+i]=c;value=sigmoid(gates[gate+3*H+i])*tanh(c);states[state+bank*H+i]=value;}
       else value=states[state+bank*H+i];
      }
@@ -311,36 +410,59 @@ __attribute__((reqd_work_group_size(256,1,1))) __kernel void beam_fast(
    for(int k=lane;k<beam+1;k+=64)if(valid)candidates[row*(beam+1)+k].score=-INFINITY;
    if(valid&&!enabled&&!lane){if(h.frame==control->frame&&h.on_frame>=10){++h.frame;h.on_frame=0;}h.emit=0;h.slot=row;candidates[row*(beam+1)]=h;}
    __global float *logits=all_logits+(valid?row:0)*(2*VOCAB+5);
-   float maximum=-INFINITY;
-   for(int o=lane;o<VOCAB;o+=64)maximum=fmax(maximum,enabled?logits[o]:0);
-   best[l]=maximum;barrier(CLK_LOCAL_MEM_FENCE);
-   for(int n=32;n;n/=2){if(lane<n)best[l]=fmax(best[l],best[l+n]);barrier(CLK_LOCAL_MEM_FENCE);}
+   float maximum=-INFINITY;int maximum_id=2147483647;
+   for(int o=lane;o<VOCAB;o+=64){float value=enabled?logits[o]:0;if(value>maximum||(value==maximum&&o<maximum_id)){maximum=value;maximum_id=o;}}
+   best[l]=maximum;indices[l]=maximum_id;barrier(CLK_LOCAL_MEM_FENCE);
+   for(int n=32;n;n/=2){if(lane<n&&(best[l+n]>best[l]||(best[l+n]==best[l]&&indices[l+n]<indices[l]))){best[l]=best[l+n];indices[l]=indices[l+n];}barrier(CLK_LOCAL_MEM_FENCE);}
    float sum=0;for(int o=lane;o<VOCAB;o+=64)sum+=exp((enabled?logits[o]:0)-best[group*64]);
    sums[l]=sum;barrier(CLK_LOCAL_MEM_FENCE);
    for(int n=32;n;n/=2){if(lane<n)sums[l]+=sums[l+n];barrier(CLK_LOCAL_MEM_FENCE);}
-   if(!lane){normalizer[group]=best[group*64]+log(sums[group*64]);duration[group]=0;
+   if(!lane){normalizer[group]=best[group*64]+log(sums[group*64]);greedy_token[group]=indices[group*64];duration[group]=0;
     if(enabled){for(int i=1;i<5;++i)if(logits[VOCAB+i]>logits[VOCAB+duration[group]])duration[group]=i;
-     float total=0,m=logits[VOCAB+duration[group]];for(int i=0;i<5;++i)total+=exp(logits[VOCAB+i]-m);duration_score[group]=-log(total);}}
+     float total=0,m=logits[VOCAB+duration[group]];for(int i=0;i<5;++i)total+=exp(logits[VOCAB+i]-m);duration_score[group]=-log(total);blank_duration[group]=1;for(int i=2;i<5;++i)if(logits[VOCAB+i]>logits[VOCAB+blank_duration[group]])blank_duration[group]=i;blank_duration_score[group]=duration_score[group]+logits[VOCAB+blank_duration[group]]-m;}}
    barrier(CLK_LOCAL_MEM_FENCE);
-   if(enabled)for(int o=lane;o<VOCAB;o+=64){float acoustic=logits[o]-normalizer[group];logits[o]=acoustic;logits[VOCAB+5+o]=acoustic+(o==VOCAB-1?-blank_penalty:bonus[h.context*stride+map[o]]);}
+
+   {
+    if(!lane&&enabled&&(h.update&2)){int y=greedy_token[group],d=y==VOCAB-1?max(1,duration[group]):duration[group];BeamHyp child=h;
+     child.score+=logits[y]-normalizer[group]+duration_score[group]+logits[VOCAB+d]-logits[VOCAB+duration[group]];child.slot=beam+row;child.duration=d;child.emit=y==VOCAB-1?0:y+1;child.acoustic=logits[y]-normalizer[group];
+     if(y==VOCAB-1){child.frame+=d;child.on_frame=0;child.update=2;}
+     else{child.frame+=d;child.on_frame=d?0:h.on_frame+1;child.token=y;child.update=3;child.context=next[h.context*stride+map[y]];++child.count;}
+     candidates[row*(beam+1)+beam]=child;
+    }
+    barrier(CLK_LOCAL_MEM_FENCE|CLK_GLOBAL_MEM_FENCE);
+   }
+   if(enabled)for(int o=lane;o<VOCAB;o+=64){float acoustic=logits[o]-normalizer[group];logits[o]=acoustic;logits[VOCAB+5+o]=acoustic+(o==VOCAB-1?-blank_penalty+blank_duration_score[group]-duration_score[group]:bonus[h.context*stride+map[o]]);}
    barrier(CLK_GLOBAL_MEM_FENCE);
    for(int k=0;k<beam;++k){
     float value=-INFINITY;int index=2147483647;
     if(enabled)for(int o=lane;o<VOCAB;o+=64){float v=logits[VOCAB+5+o];if(v>value||(v==value&&o<index)){value=v;index=o;}}
     best[l]=value;indices[l]=index;barrier(CLK_LOCAL_MEM_FENCE);
     for(int n=32;n;n/=2){if(lane<n&&(best[l+n]>best[l]||(best[l+n]==best[l]&&indices[l+n]<indices[l]))){best[l]=best[l+n];indices[l]=indices[l+n];}barrier(CLK_LOCAL_MEM_FENCE);}
-    if(!lane&&enabled){int y=indices[group*64],d=duration[group];BeamHyp child=h;
-     child.score+=best[group*64]+duration_score[group];child.slot=beam+row;child.duration=d;child.emit=y==VOCAB-1?0:y+1;child.acoustic=logits[y];
-     if(y==VOCAB-1){child.frame+=max(1,d);child.on_frame=0;child.update=0;}
-     else {child.frame+=d;child.on_frame=d?0:h.on_frame+1;child.token=y;child.update=1;child.context=next[h.context*stride+map[y]];++child.count;}
+    if(!lane&&enabled){int y=indices[group*64],d=duration[group];BeamHyp child=h;child.update&=1;
+     child.score+=best[group*64]+duration_score[group];child.slot=beam+row;child.duration=y==VOCAB-1?blank_duration[group]:d;child.emit=y==VOCAB-1?0:y+1;child.acoustic=logits[y];
+     if(y==VOCAB-1){child.frame+=blank_duration[group];child.on_frame=0;child.update=0;
+#if VOCAB == 1025
+child.update|=(h.update&4);
+#endif
+}
+     else {child.frame+=d;child.on_frame=d?0:h.on_frame+1;child.token=y;child.update=1;
+#if VOCAB == 1025
+child.update|=(h.update&4);
+#endif
+child.context=next[h.context*stride+map[y]];
+#if VOCAB == 1025
+if(child.context==0&&bonus[h.context*stride+map[y]]>0)child.update|=4;
+#endif
+++child.count;}
      candidates[row*(beam+1)+k]=child;logits[VOCAB+5+y]=-INFINITY;
     }
     barrier(CLK_LOCAL_MEM_FENCE|CLK_GLOBAL_MEM_FENCE);
    }
   }
   if(!l){nodes=control->nodes;int count=control->size*(beam+1);size=min(beam,count);
-   for(int k=0;k<size;++k){int selected=-1;float value=-INFINITY;
-    for(int i=0;i<count;++i){int used=0;for(int j=0;j<k;++j)used|=selection[j]==i;
+   int anchor=-1;for(int i=0;i<count;++i)if((candidates[i].update&2)&&isfinite(candidates[i].score)){anchor=i;break;}
+   for(int k=0;k<size;++k){if(k==0&&anchor>=0){selection[k]=anchor;continue;}int selected=-1;float value=-INFINITY;
+    for(int i=0;i<count;++i){if(!isfinite(candidates[i].score))continue;int used=0;for(int j=0;j<k;++j)used|=selection[j]==i; if(anchor>=0){BeamHyp x=candidates[i],y=candidates[anchor];used|=(x.path==y.path&&x.emit==y.emit&&x.frame==y.frame);}
      if(!used&&(selected<0||candidates[i].score>value)){selected=i;value=candidates[i].score;}}
     if(!isfinite(value)){size=k;break;}selection[k]=selected;
    }
@@ -361,7 +483,26 @@ __attribute__((reqd_work_group_size(256,1,1))) __kernel void beam_fast(
   barrier(CLK_LOCAL_MEM_FENCE|CLK_GLOBAL_MEM_FENCE);
  }
  if(!l){int selected=0;float best_score=-INFINITY;
-  for(int i=0;i<control->size;++i){float score=active[i].score+finalize[active[i].context];if(score>best_score){selected=i;best_score=score;}}
+#if VOCAB == 8193
+ // The acoustic trajectory bounds the length reward: extra tokens must win
+ // on probability/context score rather than only increasing the divisor.
+ int length_limit=(beam>1&&(active[0].update&2))?max(1,active[0].count):MAX_TOKENS;
+ int acoustic_end=(beam>1&&(active[0].update&2)&&active[0].path>=0)?paths[active[0].path].frame:-1;
+#endif
+
+  for(int i=0;i<control->size;++i){
+#if VOCAB == 1025
+if(graph[1]&&!(active[i].update&6))continue;
+#endif
+#if VOCAB == 8193
+// A longer candidate may extend recognized audio beyond the acoustic
+// trajectory. Reward that coverage; cap length-only insertions within it.
+int covered_later=active[i].path>=0&&paths[active[i].path].frame>acoustic_end;
+float score=(active[i].score+finalize[active[i].context])/max(1,covered_later?active[i].count:min(active[i].count,length_limit));
+#else
+float score=(active[i].score+finalize[active[i].context])/max(1,active[i].count);
+#endif
+if(score>best_score){selected=i;best_score=score;}}
   BeamHyp h=active[selected];out[1]=min(h.count,MAX_TOKENS);out[2]=control->rounds;out[3]=(int)(((uint)control->max_active<<24)|(uint)control->evaluations);
   __global float *scores=(__global float *)((__global uchar *)out+SCORE_OFFSET);int path=h.path;
   for(int i=out[1]-1;i>=0;--i){PathNode n=paths[path];out[8+3*i]=n.token;out[9+3*i]=n.frame;out[10+3*i]=n.duration;scores[i]=n.acoustic;path=n.parent;}

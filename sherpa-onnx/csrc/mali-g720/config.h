@@ -16,6 +16,7 @@ inline bool IsMaliG720(std::string provider) {
 inline int MaliG720Version(const OfflineModelConfig &c) {
   if (c.model_type == "parakeet_v2_mali_g720") return 2;
   if (c.model_type == "parakeet_v3_mali_g720") return 3;
+  if (c.model_type == "seaco_paraformer_mali_g720") return 1;
   return 0;
 }
 

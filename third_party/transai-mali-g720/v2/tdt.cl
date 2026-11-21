@@ -82,19 +82,7 @@ inline int dot640(__global const uchar *restrict w, ulong off, int n, int out,
   }
   return a.x + a.y + a.z + a.w + (128 - zp) * pi(w, sum, out);
 }
-#if NATIVE_MATH
-inline float sigmoid(float x) { return 1.0f / (1.0f + native_exp(-x)); }
-inline float fast_tanh(float x) {
-  float a = fabs(x);
-  if (a < 0.0001f)
-    return x;
-  float e = native_exp(-2.0f * a);
-  return copysign((1.0f - e) / (1.0f + e), x);
-}
-#define tanh fast_tanh
-#else
 inline float sigmoid(float x) { return 1.0f / (1.0f + exp(-x)); }
-#endif
 inline int4 gates_dot(__global const uchar *restrict w, ulong off, int i,
                       __local char4 *q, int zp, ulong sum) {
   __global const char4 *matrix = (__global const char4 *)(w + off);

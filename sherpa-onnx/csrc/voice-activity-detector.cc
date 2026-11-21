@@ -91,22 +91,15 @@ class VoiceActivityDetector::Impl {
       is_speech = is_speech || this_window_is_speech;
     }
 
-    last_ = std::vector<float>(
-        p, static_cast<const float *>(last_.data()) + last_.size());
+    last_.erase(last_.begin(), last_.begin() + k * window_shift);
 
     if (is_speech) {
       if (start_ == -1) {
         // beginning of speech
         start_ = ComputeSpeechStart();
-        cur_segment_.start = start_;
       }
-      int32_t num_samples = buffer_.Tail() - start_ - 1;
-      cur_segment_.samples = buffer_.Get(start_, num_samples);
     } else {
       // non-speech
-
-      cur_segment_.start = -1;
-      cur_segment_.samples.clear();
 
       if (start_ != -1 && buffer_.Size()) {
         // end of speech, save the speech segment
@@ -165,8 +158,6 @@ class VoiceActivityDetector::Impl {
 
     start_ = -1;
 
-    cur_segment_.start = -1;
-    cur_segment_.samples.clear();
     last_segment_end_ = 0;
   }
 
@@ -192,14 +183,19 @@ class VoiceActivityDetector::Impl {
     buffer_.Pop(end - buffer_.Head());
     start_ = -1;
 
-    cur_segment_.start = -1;
-    cur_segment_.samples.clear();
     last_segment_end_ = end;
   }
 
   bool IsSpeechDetected() const { return start_ != -1; }
 
-  SpeechSegment CurrentSpeechSegment() const { return cur_segment_; }
+  SpeechSegment CurrentSpeechSegment() const {
+    SpeechSegment segment;
+    segment.start = start_;
+    if (start_ != -1) {
+      segment.samples = buffer_.Get(start_, buffer_.Tail() - start_ - 1);
+    }
+    return segment;
+  }
 
   int32_t CurrentSegmentStart() const { return start_; }
 
@@ -287,9 +283,6 @@ class VoiceActivityDetector::Impl {
 
  private:
   std::queue<SpeechSegment> segments_;
-
-  // it is empty if no speech is detected
-  SpeechSegment cur_segment_;
 
   std::unique_ptr<VadModel> model_;
   VadModelConfig config_;

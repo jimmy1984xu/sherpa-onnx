@@ -1469,11 +1469,18 @@ const SherpaOnnxVoiceActivityDetector *SherpaOnnxCreateVoiceActivityDetector(
     return nullptr;
   }
 
-  SherpaOnnxVoiceActivityDetector *p = new SherpaOnnxVoiceActivityDetector;
-  p->impl = std::make_unique<sherpa_onnx::VoiceActivityDetector>(
-      vad_config, buffer_size_in_seconds);
-
-  return p;
+  try {
+    auto p = std::make_unique<SherpaOnnxVoiceActivityDetector>();
+    p->impl = std::make_unique<sherpa_onnx::VoiceActivityDetector>(
+        vad_config, buffer_size_in_seconds);
+    return p.release();
+  } catch (const std::exception &e) {
+    if (vad_config.provider != "neon") {
+      throw;
+    }
+    SHERPA_ONNX_LOGE("Failed to create Silero NEON VAD: %s", e.what());
+    return nullptr;
+  }
 }
 
 void SherpaOnnxDestroyVoiceActivityDetector(
@@ -2396,6 +2403,10 @@ GetSpeakerEmbeddingExtractorConfig(
 const SherpaOnnxSpeakerEmbeddingExtractor *
 SherpaOnnxCreateSpeakerEmbeddingExtractor(
     const SherpaOnnxSpeakerEmbeddingExtractorConfig *config) {
+  if (!config) {
+    SHERPA_ONNX_LOGE("speaker embedding extractor config is nullptr");
+    return nullptr;
+  }
   auto c = GetSpeakerEmbeddingExtractorConfig(config);
 
   if (!c.Validate()) {
@@ -2403,11 +2414,17 @@ SherpaOnnxCreateSpeakerEmbeddingExtractor(
     return nullptr;
   }
 
-  auto p = new SherpaOnnxSpeakerEmbeddingExtractor;
-
-  p->impl = std::make_unique<sherpa_onnx::SpeakerEmbeddingExtractor>(c);
-
-  return p;
+  try {
+    auto p = std::make_unique<SherpaOnnxSpeakerEmbeddingExtractor>();
+    p->impl = std::make_unique<sherpa_onnx::SpeakerEmbeddingExtractor>(c);
+    return p.release();
+  } catch (const std::exception &e) {
+    if (c.provider != "neon") {
+      throw;
+    }
+    SHERPA_ONNX_LOGE("Failed to create TitaNet NEON extractor: %s", e.what());
+    return nullptr;
+  }
 }
 
 void SherpaOnnxDestroySpeakerEmbeddingExtractor(
@@ -2769,10 +2786,10 @@ const SherpaOnnxOfflinePunctuation *SherpaOnnxCreateOfflinePunctuation(
     return nullptr;
   }
 
-  SherpaOnnxOfflinePunctuation *punct = new SherpaOnnxOfflinePunctuation;
+  auto punct = std::make_unique<SherpaOnnxOfflinePunctuation>();
   punct->impl = std::make_unique<sherpa_onnx::OfflinePunctuation>(c);
 
-  return punct;
+  return punct.release();
 }
 
 void SherpaOnnxDestroyOfflinePunctuation(

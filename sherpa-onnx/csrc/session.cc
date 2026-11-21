@@ -54,8 +54,7 @@ static void ParseConfigFile(
   // For spacemit, the config file can contain the following
   // SPACEMIT_EP_USE_GLOBAL_INTRA_THREAD=1
   // ... and so on.
-  // # is treated as comment. Empty lines are ignored. The legacy key:value
-  // format is still supported for backward compatibility.
+  // # is treated as comment. Empty lines are ignored.
   // additionally, DEBUG=1 can be set to print all configs read from the file.
 
   std::ifstream is(config_path);

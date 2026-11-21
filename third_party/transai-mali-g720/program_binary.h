@@ -39,7 +39,7 @@ inline Json Target(void* library,cl_device_id device) {
               {"opencl_c_version",text(CL_DEVICE_OPENCL_C_VERSION)},{"driver_uuid",hex.str()}};
 }
 inline cl_program Load(void* library,cl_context context,cl_command_queue queue,
-                       const std::string& directory,const std::string& options) {
+                       const std::string& directory,const std::string& selector) {
   sherpa_onnx::MaliG720InitTimer timer("binary");
   const auto start=std::chrono::steady_clock::now();
   const auto slash=directory.find_last_of('/');Require(slash!=std::string::npos,"invalid model directory");
@@ -52,10 +52,15 @@ inline cl_program Load(void* library,cl_context context,cl_command_queue queue,
   cl_device_id device=nullptr;Require(queue_info(queue,CL_QUEUE_DEVICE,sizeof(device),&device,nullptr)==CL_SUCCESS,"queue device");
   Require(aot.at("target")==Target(library,device),"GPU/driver mismatch; compile for the target device before deployment");
   const Json* selected=nullptr;
-  for(const auto& program:aot.at("programs"))if(program.at("role")==role&&program.at("options")==options) {
-    Require(selected==nullptr,"duplicate executable options");selected=&program;
+  // Encoder plans select a specialization by compiler options. The TDT
+  // runtime selects its named executable and runs the fixed 512-lane launch.
+  const char *key=role=="gpu"?"name":"options";
+  for(const auto& program:aot.at("programs")) {
+    if(program.at("role")!=role||program.at(key)!=selector) continue;
+    Require(selected==nullptr,"duplicate executable selection");
+    selected=&program;
   }
-  Require(selected!=nullptr,"no executable for requested options: "+options);
+  Require(selected!=nullptr,"missing executable: "+selector);
   const std::string name=selected->at("name");
   Require(!name.empty()&&name.find('/')==std::string::npos&&name.find('\\')==std::string::npos&&
           name.size()>6&&name.substr(name.size()-6)==".clbin","invalid executable name");

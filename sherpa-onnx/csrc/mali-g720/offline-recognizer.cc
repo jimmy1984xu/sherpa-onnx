@@ -1,5 +1,6 @@
 #include "sherpa-onnx/csrc/mali-g720/offline-recognizer.h"
 #include "sherpa-onnx/csrc/mali-g720/config.h"
+#include "sherpa-onnx/csrc/mali-g720/seaco-recognizer.h"
 #include "sherpa-onnx/csrc/mali-g720/gpu-abi.h"
 #include "sherpa-onnx/csrc/mali-g720/model-manifest.h"
 #include "sherpa-onnx/csrc/symbol-table.h"
@@ -229,6 +230,7 @@ class MaliG720Recognizer final : public OfflineRecognizerImpl {
 };
 }
 std::unique_ptr<OfflineRecognizerImpl> CreateMaliG720Recognizer(const OfflineRecognizerConfig &c) {
+  if(MaliG720Version(c.model_config)==1)return CreateSeacoMaliG720Recognizer(c);
   return std::make_unique<MaliG720Recognizer>(c);
 }
 }

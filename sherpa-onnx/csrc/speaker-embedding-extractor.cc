@@ -20,6 +20,7 @@
 #include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/speaker-embedding-extractor-impl.h"
+#include "sherpa-onnx/csrc/text-utils.h"
 
 namespace sherpa_onnx {
 
@@ -32,7 +33,7 @@ void SpeakerEmbeddingExtractorConfig::Register(ParseOptions *po) {
                "true to print model information while loading it.");
 
   po->Register("provider", &provider,
-               "Specify a provider to use: cpu, cuda, coreml");
+               "Specify a provider to use: cpu, cuda, coreml, neon (TitaNet AOT on Android arm64)");
 }
 
 bool SpeakerEmbeddingExtractorConfig::Validate() const {
@@ -44,6 +45,11 @@ bool SpeakerEmbeddingExtractorConfig::Validate() const {
   if (!FileExists(model)) {
     SHERPA_ONNX_LOGE("speaker embedding extractor model: '%s' does not exist",
                      model.c_str());
+    return false;
+  }
+
+  if (provider == "neon" && !EndsWith(model, ".aot")) {
+    SHERPA_ONNX_LOGE("--provider=neon requires a TitaNet .aot model");
     return false;
   }
 

@@ -7,6 +7,8 @@
 #include "sherpa-onnx/csrc/macros.h"
 
 #include <memory>
+#include <cstring>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,15 +27,68 @@
 #include "sherpa-onnx/csrc/session.h"
 #include "sherpa-onnx/csrc/text-utils.h"
 
+#ifdef SHERPA_ONNX_ENABLE_CT_TRANSFORMER_NEON
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+
+#include "sherpa-onnx/csrc/mali-g720/aot-file.h"
+#include "sherpa-onnx/csrc/neon-ort-session.h"
+#endif
+
 namespace sherpa_onnx {
+#ifdef SHERPA_ONNX_ENABLE_CT_TRANSFORMER_NEON
+void RegisterCtTransformerNeonOps(Ort::SessionOptions &options);
+#endif
+
+static Ort::SessionOptions CtSessionOptions(
+    const OfflinePunctuationModelConfig &config) {
+  if (config.provider != "neon") {
+    return GetSessionOptions(config);
+  }
+#ifdef SHERPA_ONNX_ENABLE_CT_TRANSFORMER_NEON
+  if (!(getauxval(AT_HWCAP2) & HWCAP2_I8MM)) {
+    throw std::runtime_error("CT-Transformer NEON requires Arm I8MM");
+  }
+  auto options = GetSessionOptions(config.num_threads, "cpu");
+  RegisterCtTransformerNeonOps(options);
+  return options;
+#else
+  throw std::runtime_error("CT-Transformer NEON requires Android arm64");
+#endif
+}
 
 class OfflineCtTransformerModel::Impl {
  public:
   explicit Impl(const OfflinePunctuationModelConfig &config)
       : config_(config),
         env_(CreateOrtEnv()),
-        sess_opts_(GetSessionOptions(config)),
+        sess_opts_(CtSessionOptions(config)),
         allocator_{} {
+#ifdef SHERPA_ONNX_ENABLE_CT_TRANSFORMER_NEON
+    if (config.provider == "neon") {
+      const auto file = transai::aot::File::Open(config.ct_transformer);
+      const auto &manifest = file->manifest();
+      const auto &architecture = manifest.at("architecture");
+      const auto &aot = manifest.at("aot");
+      const auto &target = aot.at("target");
+      if (architecture.at("family") != "ct-transformer" ||
+          architecture.at("version") != 1 ||
+          architecture.at("precision") != "w8a8-u8-embedding" ||
+          aot.at("format") != 1 || !aot.at("programs").empty() ||
+          target.at("provider") != "neon" ||
+          target.at("abi") != "arm64-v8a" || target.at("isa") != "i8mm" ||
+          target.at("input") != "utf8-lines" ||
+          file->Asset("punctuation/model.onnx").bytes > 256 * 1024 * 1024) {
+        throw std::runtime_error("Expected a CT-Transformer NEON v1.0 AOT");
+      }
+      transai::aot::RequireMappedOrtGraph(*file);
+      transai::aot::SetMappedOrtGraphOptions(sess_opts_);
+      model_mapping_ = std::make_unique<transai::aot::Mapping>(
+          config.ct_transformer + "/punctuation/model.onnx");
+      Init(model_mapping_->data(), model_mapping_->size());
+      return;
+    }
+#endif
     sess_ = std::make_unique<Ort::Session>(
         env_, SHERPA_ONNX_TO_ORT_PATH(config_.ct_transformer), sess_opts_);
     Init(nullptr, 0);
@@ -43,8 +98,11 @@ class OfflineCtTransformerModel::Impl {
   Impl(Manager *mgr, const OfflinePunctuationModelConfig &config)
       : config_(config),
         env_(CreateOrtEnv()),
-        sess_opts_(GetSessionOptions(config)),
+        sess_opts_(CtSessionOptions(config)),
         allocator_{} {
+    if (config.provider == "neon") {
+      throw std::runtime_error("CT-Transformer NEON requires a filesystem AOT");
+    }
     auto buf = ReadFile(mgr, config_.ct_transformer);
     Init(buf.data(), buf.size());
   }
@@ -58,6 +116,12 @@ class OfflineCtTransformerModel::Impl {
     return std::move(ans[0]);
   }
 
+  void ForwardInto(Ort::Value text, Ort::Value text_len, Ort::Value *output) {
+    std::array<Ort::Value, 2> inputs = {std::move(text), std::move(text_len)};
+    sess_->Run({}, input_names_ptr_.data(), inputs.data(), inputs.size(),
+               output_names_ptr_.data(), output, 1);
+  }
+
   OrtAllocator *Allocator() { return allocator_; }
 
   const OfflineCtTransformerModelMetaData &GetModelMetadata() const {
@@ -65,7 +129,7 @@ class OfflineCtTransformerModel::Impl {
   }
 
  private:
-  void Init(void *model_data, size_t model_data_length) {
+  void Init(const void *model_data, size_t model_data_length) {
     if (model_data) {
       sess_ = std::make_unique<Ort::Session>(
           env_, model_data, model_data_length, sess_opts_);
@@ -85,15 +149,27 @@ class OfflineCtTransformerModel::Impl {
 
     Ort::AllocatorWithDefaultOptions allocator;  // used in the macro below
 
-    std::vector<std::string> tokens;
-    SHERPA_ONNX_READ_META_DATA_VEC_STRING_SEP(tokens, "tokens", "|");
-
     int32_t vocab_size = 0;
     SHERPA_ONNX_READ_META_DATA(vocab_size, "vocab_size");
-    if (static_cast<int32_t>(tokens.size()) != vocab_size) {
-      SHERPA_ONNX_LOGE("tokens.size() %d != vocab_size %d",
-                       static_cast<int32_t>(tokens.size()), vocab_size);
-      SHERPA_ONNX_EXIT(-1);
+    // Populate the final lookup directly, avoiding the temporary 272k-token
+    // vector and an additional copy of the full metadata string.
+    auto tokens = meta_data.LookupCustomMetadataMapAllocated("tokens", allocator);
+    if (!tokens || !tokens.get()[0] || vocab_size <= 0) {
+      throw std::runtime_error("Invalid CT-Transformer token metadata");
+    }
+    meta_data_.token2id.reserve(vocab_size);
+    int32_t token_count = 0;
+    for (const char *begin = tokens.get();;) {
+      if (token_count >= vocab_size) {
+        throw std::runtime_error("CT-Transformer vocabulary size mismatch");
+      }
+      const char *end = std::strchr(begin, '|');
+      meta_data_.token2id[std::string(begin, end ? end - begin : std::strlen(begin))] = token_count++;
+      if (!end) break;
+      begin = end + 1;
+    }
+    if (token_count != vocab_size) {
+      throw std::runtime_error("CT-Transformer vocabulary size mismatch");
     }
 
     SHERPA_ONNX_READ_META_DATA_VEC_STRING_SEP(meta_data_.id2punct,
@@ -107,12 +183,6 @@ class OfflineCtTransformerModel::Impl {
         sess_->GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape()[2];
 
     int32_t i = 0;
-    for (const auto &t : tokens) {
-      meta_data_.token2id[t] = i;
-      i += 1;
-    }
-
-    i = 0;
     for (const auto &p : meta_data_.id2punct) {
       meta_data_.punct2id[p] = i;
       i += 1;
@@ -145,6 +215,10 @@ class OfflineCtTransformerModel::Impl {
   Ort::SessionOptions sess_opts_;
   Ort::AllocatorWithDefaultOptions allocator_;
 
+#ifdef SHERPA_ONNX_ENABLE_CT_TRANSFORMER_NEON
+  // ORT initializers refer to this mapping until the session is destroyed.
+  std::unique_ptr<transai::aot::Mapping> model_mapping_;
+#endif
   std::unique_ptr<Ort::Session> sess_;
 
   std::vector<std::string> input_names_;
@@ -180,6 +254,11 @@ OfflineCtTransformerModel::~OfflineCtTransformerModel() = default;
 Ort::Value OfflineCtTransformerModel::Forward(Ort::Value text,
                                               Ort::Value text_len) const {
   return impl_->Forward(std::move(text), std::move(text_len));
+}
+
+void OfflineCtTransformerModel::ForwardInto(Ort::Value text, Ort::Value text_len,
+                                           Ort::Value *output) const {
+  impl_->ForwardInto(std::move(text), std::move(text_len), output);
 }
 
 OrtAllocator *OfflineCtTransformerModel::Allocator() const {
