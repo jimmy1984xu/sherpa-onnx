@@ -200,8 +200,16 @@ OfflineRecognitionResult Convert(const OfflineParaformerDecoderResult &src,
   bool mergeable = false;
 
   for (int32_t i = 0; i != src.tokens.size(); ++i) {
-    auto sym = sym_table[src.tokens[i]];
+    const int32_t token_id = static_cast<int32_t>(src.tokens[i]);
+    if (!sym_table.Contains(token_id)) {
+      continue;
+    }
+    auto sym = sym_table[token_id];
     r.tokens.push_back(sym);
+
+    if (sym.empty()) {
+      continue;
+    }
 
     if ((sym.back() != '@') || (sym.size() > 2 && sym[sym.size() - 2] != '@')) {
       // sym does not end with "@@"
@@ -230,7 +238,10 @@ OfflineRecognitionResult Convert(const OfflineParaformerDecoderResult &src,
         text.append(sym);
       }
     } else {
-      // this sym ends with @@
+      // this sym ends with @@ (need at least "x@@"; size 1 "@" is malformed)
+      if (sym.size() < 3) {
+        continue;
+      }
       sym = std::string(sym.data(), sym.size() - 2);
       if (mergeable) {
         text.append(sym);
@@ -439,7 +450,14 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
       f = ApplyLFR(f);
       ApplyCMVN(&f);
 
-      int32_t num_frames = static_cast<int32_t>(f.size()) / feat_dim;
+      int32_t num_frames = feat_dim > 0 ? static_cast<int32_t>(f.size()) / feat_dim : 0;
+      if (feat_dim <= 0 || static_cast<size_t>(num_frames) * feat_dim != f.size()) {
+        SHERPA_ONNX_LOGE(
+            "ParaformerDecode: stream=%d invalid feat layout lfr_elems=%zu "
+            "feat_dim=%d num_frames=%d",
+            i, f.size(), feat_dim, num_frames);
+        return;
+      }
       features_vec[i] = std::move(f);
 
       features_length_vec[i] = num_frames;
@@ -557,7 +575,6 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
                        results.size(), n);
       return;
     }
-
     for (int32_t i = 0; i != n; ++i) {
       auto r = Convert(results[i], symbol_table_);
       r.text = ApplyInverseTextNormalization(std::move(r.text));
