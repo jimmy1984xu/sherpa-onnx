@@ -34,8 +34,19 @@ static OnlineRecognizerResult Convert(const OnlineParaformerDecoderResult &src,
   bool mergeable = false;
 
   for (int32_t i = 0; i != src.tokens.size(); ++i) {
-    auto sym = sym_table[src.tokens[i]];
+    const int32_t token_id = static_cast<int32_t>(src.tokens[i]);
+    if (!sym_table.Contains(token_id)) {
+      SHERPA_ONNX_LOGE("ParaformerConvert: skip unknown token_id=%d", token_id);
+      continue;
+    }
+    auto sym = sym_table[token_id];
     r.tokens.push_back(sym);
+
+    if (sym.empty()) {
+      SHERPA_ONNX_LOGE("ParaformerConvert: skip empty symbol for token_id=%d",
+                       token_id);
+      continue;
+    }
 
     if ((sym.back() != '@') || (sym.size() > 2 && sym[sym.size() - 2] != '@')) {
       // sym does not end with "@@"
@@ -64,7 +75,12 @@ static OnlineRecognizerResult Convert(const OnlineParaformerDecoderResult &src,
         text.append(sym);
       }
     } else {
-      // this sym ends with @@
+      if (sym.size() < 3) {
+        SHERPA_ONNX_LOGE(
+            "ParaformerConvert: skip malformed @@ piece token_id=%d sym='%s'",
+            token_id, sym.c_str());
+        continue;
+      }
       sym = std::string(sym.data(), sym.size() - 2);
       if (mergeable) {
         text.append(sym);
