@@ -20,15 +20,28 @@ OfflineParaformerGreedySearchDecoder::Decode(
     OfflineStream ** /*ss*/, int32_t /*n*/
 ) {
   std::vector<int64_t> shape = log_probs.GetTensorTypeAndShapeInfo().GetShape();
-  int32_t batch_size = shape[0];
-  int32_t num_tokens = shape[1];
-  int32_t vocab_size = shape[2];
+  if (shape.size() != 3 || shape[0] <= 0 || shape[1] <= 0 || shape[2] <= 0) {
+    SHERPA_ONNX_LOGE("ParaformerGreedyDecode: invalid log_probs shape rank=%zu",
+                     shape.size());
+    return {};
+  }
+  int32_t batch_size = static_cast<int32_t>(shape[0]);
+  int32_t num_tokens = static_cast<int32_t>(shape[1]);
+  int32_t vocab_size = static_cast<int32_t>(shape[2]);
+  const size_t row_stride = static_cast<size_t>(num_tokens) * vocab_size;
+  const float *base = log_probs.GetTensorData<float>();
+  if (!base) {
+    SHERPA_ONNX_LOGE("ParaformerGreedyDecode: null log_probs data");
+    return {};
+  }
+  SHERPA_ONNX_LOGI(
+      "ParaformerGreedyDecode: batch=%d tokens=%d vocab=%d stride=%zu",
+      batch_size, num_tokens, vocab_size, row_stride);
 
   std::vector<OfflineParaformerDecoderResult> results(batch_size);
 
   for (int32_t i = 0; i != batch_size; ++i) {
-    const float *p =
-        log_probs.GetTensorData<float>() + i * num_tokens * vocab_size;
+    const float *p = base + static_cast<size_t>(i) * row_stride;
     for (int32_t k = 0; k != num_tokens; ++k) {
       auto max_idx = static_cast<int64_t>(
           std::distance(p, std::max_element(p, p + vocab_size)));
