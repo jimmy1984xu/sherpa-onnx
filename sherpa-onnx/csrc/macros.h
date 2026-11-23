@@ -34,8 +34,13 @@
                         __func__, static_cast<int32_t>(__LINE__));             \
     __android_log_print(ANDROID_LOG_WARN, "sherpa-onnx", ##__VA_ARGS__);       \
   } while (0)
+#define SHERPA_ONNX_LOGI(...)                                      \
+  do {                                                             \
+    __android_log_print(ANDROID_LOG_INFO, "sherpa-onnx-diag", ##__VA_ARGS__); \
+  } while (0)
 #elif defined(__OHOS__)
 #define SHERPA_ONNX_LOGE(...) OH_LOG_INFO(LOG_APP, ##__VA_ARGS__)
+#define SHERPA_ONNX_LOGI(...) OH_LOG_INFO(LOG_APP, ##__VA_ARGS__)
 #elif SHERPA_ONNX_ENABLE_WASM
 #define SHERPA_ONNX_LOGE(...)                                          \
   do {                                                                 \
@@ -46,6 +51,7 @@
                    __FILE__, __func__, static_cast<int>(__LINE__),     \
                    _buf);                                              \
   } while (0)
+#define SHERPA_ONNX_LOGI(...) fprintf(stdout, ##__VA_ARGS__)
 #else
 #define SHERPA_ONNX_LOGE(...)                        \
   do {                                               \
@@ -54,6 +60,7 @@
     fprintf(stderr, ##__VA_ARGS__);                  \
     fprintf(stderr, "\n");                           \
   } while (0)
+#define SHERPA_ONNX_LOGI(...) fprintf(stderr, ##__VA_ARGS__)
 #endif
 
 #define SHERPA_ONNX_EXIT(code) \

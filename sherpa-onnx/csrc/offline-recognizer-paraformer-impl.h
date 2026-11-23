@@ -435,11 +435,23 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
     std::vector<int32_t> features_length_vec(n);
     for (int32_t i = 0; i != n; ++i) {
       std::vector<float> f = ss[i]->GetFrames();
+      const int32_t raw_feat_elems = static_cast<int32_t>(f.size());
 
       f = ApplyLFR(f);
       ApplyCMVN(&f);
 
-      int32_t num_frames = static_cast<int32_t>(f.size()) / feat_dim;
+      int32_t num_frames = feat_dim > 0 ? static_cast<int32_t>(f.size()) / feat_dim : 0;
+      if (feat_dim <= 0 || static_cast<size_t>(num_frames) * feat_dim != f.size()) {
+        SHERPA_ONNX_LOGE(
+            "ParaformerDecode: stream=%d invalid feat layout raw_elems=%d "
+            "lfr_elems=%zu feat_dim=%d num_frames=%d",
+            i, raw_feat_elems, f.size(), feat_dim, num_frames);
+        return;
+      }
+      SHERPA_ONNX_LOGI(
+          "ParaformerDecode: stream=%d raw_feat_elems=%d lfr_elems=%zu "
+          "feat_dim=%d num_frames=%d",
+          i, raw_feat_elems, f.size(), feat_dim, num_frames);
       features_vec[i] = std::move(f);
 
       features_length_vec[i] = num_frames;
@@ -529,14 +541,37 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
       model_inputs.push_back(std::move(hw_emb_tensor));
     }
 
+    std::ostringstream feat_lens_os;
+    for (int32_t i = 0; i < n; ++i) {
+      if (i) feat_lens_os << ",";
+      feat_lens_os << features_length_vec[i];
+    }
+
     // ---------- 模型前向 ----------
     std::vector<Ort::Value> t;
     try {
+      SHERPA_ONNX_LOGI(
+          "ParaformerDecode: onnx Forward begin batch=%d feat_lens=%s inputs=%zu",
+          n, feat_lens_os.str().c_str(), model_inputs.size());
       t = model_->Forward(std::move(model_inputs));
     } catch (const Ort::Exception &ex) {
       SHERPA_ONNX_LOGE("\n\nCaught exception:\n\n%s\n\nReturn an empty result",
                        ex.what());
       return;
+    }
+
+    SHERPA_ONNX_LOGI("ParaformerDecode: onnx Forward done outputs=%zu", t.size());
+    for (size_t oi = 0; oi < t.size(); ++oi) {
+      if (!t[oi].IsTensor()) continue;
+      auto shape = t[oi].GetTensorTypeAndShapeInfo().GetShape();
+      std::ostringstream os;
+      os << "out" << oi << "[";
+      for (size_t si = 0; si < shape.size(); ++si) {
+        if (si) os << ",";
+        os << shape[si];
+      }
+      os << "]";
+      SHERPA_ONNX_LOGI("ParaformerDecode: tensor %s", os.str().c_str());
     }
 
     if (t.size() < 2) {
@@ -557,6 +592,8 @@ class OfflineRecognizerParaformerImpl : public OfflineRecognizerImpl {
                        results.size(), n);
       return;
     }
+    SHERPA_ONNX_LOGI("ParaformerDecode: decode done batch_results=%zu",
+                     results.size());
 
     for (int32_t i = 0; i != n; ++i) {
       auto r = Convert(results[i], symbol_table_);

@@ -872,8 +872,14 @@ void SherpaOnnxDecodeOfflineStream(
     const SherpaOnnxOfflineRecognizer *recognizer,
     const SherpaOnnxOfflineStream *stream) {
   if (!recognizer || !stream) return;
+  SHERPA_ONNX_LOGI(
+      "SherpaOnnxDecodeOfflineStream begin recognizer=%p stream=%p",
+      static_cast<const void *>(recognizer),
+      static_cast<const void *>(stream));
   try {
     recognizer->impl->DecodeStream(stream->impl.get());
+    SHERPA_ONNX_LOGI("SherpaOnnxDecodeOfflineStream done stream=%p",
+                     static_cast<const void *>(stream));
   } catch (const std::exception &e) {
     if (stream->impl->GetOption("mali_g720.stream") != "1") throw;
     stream->impl->SetResult({});
