@@ -5,6 +5,7 @@
 #include "sherpa-onnx/csrc/offline-paraformer-greedy-search-decoder.h"
 
 #include <algorithm>
+#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -55,6 +56,18 @@ OfflineParaformerGreedySearchDecoder::Decode(
                                  static_cast<int32_t>(max_idx)));
 
       p += vocab_size;
+    }
+
+    if (!results[i].tokens.empty()) {
+      std::ostringstream os;
+      os << "token_ids(" << results[i].tokens.size() << ")=[" << results[i].tokens[0];
+      for (size_t ti = 1; ti < results[i].tokens.size() && ti < 32; ++ti) {
+        os << "," << results[i].tokens[ti];
+      }
+      if (results[i].tokens.size() > 32) os << ",...";
+      os << "]";
+      SHERPA_ONNX_LOGI("ParaformerGreedyDecode: stream=%d %s", i,
+                       os.str().c_str());
     }
 
     if (us_cif_peak) {
