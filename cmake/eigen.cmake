@@ -39,8 +39,15 @@ function(download_eigen)
   message(STATUS "eigen is downloaded to ${eigen_SOURCE_DIR}")
   message(STATUS "eigen's binary dir is ${eigen_BINARY_DIR}")
 
+  if(TARGET Eigen3::Eigen)
+    return()
+  endif()
   add_subdirectory(${eigen_SOURCE_DIR} ${eigen_BINARY_DIR} EXCLUDE_FROM_ALL)
 endfunction()
 
-download_eigen()
+# kaldi_decoder 等依赖也会 include 本文件；避免重复 add_subdirectory 同一 eigen 树。
+if(NOT DEFINED _SHERPA_ONNX_EIGEN_CONFIGURED)
+  set(_SHERPA_ONNX_EIGEN_CONFIGURED TRUE CACHE INTERNAL "sherpa-onnx eigen configure guard")
+  download_eigen()
+endif()
 
