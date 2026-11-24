@@ -9,10 +9,12 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <numeric>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -28,6 +30,7 @@
 #include "sherpa-onnx/csrc/cat.h"
 #include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
+#include "nlohmann/json.hpp"
 #include "sherpa-onnx/csrc/online-transducer-decoder.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
 #include "sherpa-onnx/csrc/session.h"
@@ -36,6 +39,60 @@
 #include "sherpa-onnx/csrc/unbind.h"
 
 namespace sherpa_onnx {
+
+namespace {
+
+constexpr int64_t kDefaultAutoPromptId = 101;
+
+std::string NormalizeLanguage(std::string language) {
+  language = Trim(language);
+  if (language.size() >= 2 &&
+      ((language.front() == '\'' && language.back() == '\'') ||
+       (language.front() == '"' && language.back() == '"'))) {
+    language = language.substr(1, language.size() - 2);
+  }
+  if (language.size() >= 2 && language.front() == '<' &&
+      language.back() == '>') {
+    language = language.substr(1, language.size() - 2);
+  }
+  std::replace(language.begin(), language.end(), '_', '-');
+  ToLowerCase(&language);
+  return language;
+}
+
+void ParseLanguagePromptDictionary(
+    const std::string &value,
+    std::unordered_map<std::string, int64_t> *prompt_ids,
+    std::vector<std::pair<std::string, int64_t>> *ordered_prompt_ids) {
+  auto json = nlohmann::json::parse(value, nullptr, /*allow_exceptions*/ false);
+  if (json.is_discarded() || !json.is_object()) {
+    return;
+  }
+  for (const auto &item : json.items()) {
+    if (!item.value().is_number_integer()) {
+      continue;
+    }
+    int64_t id = item.value().get<int64_t>();
+    auto language = NormalizeLanguage(item.key());
+    if (id >= 0 && !language.empty() &&
+        prompt_ids->emplace(language, id).second) {
+      ordered_prompt_ids->emplace_back(std::move(language), id);
+    }
+  }
+}
+
+void AddBaseLanguageAliases(
+    std::unordered_map<std::string, int64_t> *prompt_ids,
+    const std::vector<std::pair<std::string, int64_t>> &ordered_prompt_ids) {
+  for (const auto &entry : ordered_prompt_ids) {
+    auto dash = entry.first.find('-');
+    if (dash != std::string::npos && dash > 0) {
+      prompt_ids->emplace(entry.first.substr(0, dash), entry.second);
+    }
+  }
+}
+
+}  // namespace
 
 class OnlineTransducerNeMoModel::Impl {
  public:
@@ -79,8 +136,9 @@ class OnlineTransducerNeMoModel::Impl {
     }
   }
 
-  std::vector<Ort::Value> RunEncoder(Ort::Value features,
-                                     std::vector<Ort::Value> states) {
+  std::vector<Ort::Value> RunEncoder(
+      Ort::Value features, std::vector<Ort::Value> states,
+      const std::vector<int64_t> &language_prompt_ids) {
     Ort::Value &cache_last_channel = states[0];
     Ort::Value &cache_last_time = states[1];
     Ort::Value &cache_last_channel_len = states[2];
@@ -99,9 +157,27 @@ class OnlineTransducerNeMoModel::Impl {
     // (B, T, C) -> (B, C, T)
     features = Transpose12(allocator_, &features);
 
-    std::array<Ort::Value, 5> inputs = {
-        std::move(features), View(&length), std::move(cache_last_channel),
-        std::move(cache_last_time), std::move(cache_last_channel_len)};
+    std::vector<Ort::Value> inputs;
+    inputs.reserve(is_multilingual_ ? 6 : 5);
+    inputs.push_back(std::move(features));
+    inputs.push_back(View(&length));
+    inputs.push_back(std::move(cache_last_channel));
+    inputs.push_back(std::move(cache_last_time));
+    inputs.push_back(std::move(cache_last_channel_len));
+
+    Ort::Value prompt_id_tensor{nullptr};
+    if (is_multilingual_) {
+      std::array<int64_t, 1> shape{batch_size};
+      prompt_id_tensor = Ort::Value::CreateTensor<int64_t>(
+          allocator_, shape.data(), shape.size());
+      auto *ids = prompt_id_tensor.GetTensorMutableData<int64_t>();
+      if (static_cast<int32_t>(language_prompt_ids.size()) == batch_size) {
+        std::copy(language_prompt_ids.begin(), language_prompt_ids.end(), ids);
+      } else {
+        std::fill(ids, ids + batch_size, default_prompt_id_);
+      }
+      inputs.push_back(std::move(prompt_id_tensor));
+    }
 
     auto out = encoder_sess_->Run(
         {}, encoder_input_names_ptr_.data(), inputs.data(), inputs.size(),
@@ -198,6 +274,32 @@ class OnlineTransducerNeMoModel::Impl {
   int32_t SubsamplingFactor() const { return subsampling_factor_; }
 
   int32_t FeatureDim() const { return feat_dim_; }
+
+  bool IsMultilingual() const { return is_multilingual_; }
+
+  int64_t GetLanguagePromptId(const std::string &language) const {
+    if (language.empty()) {
+      return default_prompt_id_;
+    }
+    auto normalized = NormalizeLanguage(language);
+    if (normalized.empty() || normalized == "auto") {
+      return default_prompt_id_;
+    }
+    auto it = language_prompt_ids_.find(normalized);
+    if (it == language_prompt_ids_.end()) {
+      auto dash = normalized.find('-');
+      if (dash != std::string::npos) {
+        it = language_prompt_ids_.find(normalized.substr(0, dash));
+      }
+    }
+    if (it != language_prompt_ids_.end()) {
+      return it->second;
+    }
+    SHERPA_ONNX_LOGE(
+        "Unsupported language '%s' for multilingual NeMo transducer; using auto",
+        language.c_str());
+    return default_prompt_id_;
+  }
 
   int32_t VocabSize() const { return vocab_size_; }
 
@@ -307,6 +409,10 @@ class OnlineTransducerNeMoModel::Impl {
     GetOutputNames(encoder_sess_.get(), &encoder_output_names_,
                    &encoder_output_names_ptr_);
 
+    is_multilingual_ =
+        std::find(encoder_input_names_.begin(), encoder_input_names_.end(),
+                  "prompt_index") != encoder_input_names_.end();
+
     feat_dim_ = encoder_sess_->GetInputTypeInfo(0)
                     .GetTensorTypeAndShapeInfo()
                     .GetShape()[1];
@@ -327,6 +433,38 @@ class OnlineTransducerNeMoModel::Impl {
 
     Ort::AllocatorWithDefaultOptions allocator;  // used in the macro below
     SHERPA_ONNX_READ_META_DATA(vocab_size_, "vocab_size");
+
+    if (is_multilingual_) {
+      auto dict = LookupCustomModelMetaData(meta_data, "prompt_dictionary",
+                                            allocator);
+      ParseLanguagePromptDictionary(dict, &language_prompt_ids_,
+                                    &ordered_language_prompt_ids_);
+      auto auto_id = LookupCustomModelMetaData(meta_data, "auto_prompt_id",
+                                               allocator);
+      int64_t parsed_auto_id = -1;
+      if (!auto_id.empty() &&
+          ConvertStringToInteger(Trim(auto_id), &parsed_auto_id) &&
+          parsed_auto_id >= 0) {
+        default_prompt_id_ = parsed_auto_id;
+      }
+      auto it = language_prompt_ids_.find("auto");
+      if (it != language_prompt_ids_.end()) {
+        default_prompt_id_ = it->second;
+      } else {
+        language_prompt_ids_.emplace("auto", default_prompt_id_);
+        ordered_language_prompt_ids_.emplace_back("auto", default_prompt_id_);
+      }
+      const bool has_language_prompts = std::any_of(
+          ordered_language_prompt_ids_.begin(),
+          ordered_language_prompt_ids_.end(),
+          [](const auto &entry) { return entry.first != "auto"; });
+      if (!has_language_prompts) {
+        SHERPA_ONNX_LOGE(
+            "Multilingual NeMo encoder has no usable prompt_dictionary; using auto prompt");
+      }
+      AddBaseLanguageAliases(&language_prompt_ids_,
+                             ordered_language_prompt_ids_);
+    }
 
     // need to increase by 1 since the blank token is not included in computing
     // vocab_size in NeMo.
@@ -471,6 +609,10 @@ class OnlineTransducerNeMoModel::Impl {
   int32_t vocab_size_ = 0;
   int32_t subsampling_factor_ = 8;
   int32_t feat_dim_ = 80;
+  bool is_multilingual_ = false;
+  int64_t default_prompt_id_ = kDefaultAutoPromptId;
+  std::unordered_map<std::string, int64_t> language_prompt_ids_;
+  std::vector<std::pair<std::string, int64_t>> ordered_language_prompt_ids_;
   std::string normalize_type_;
   int32_t pred_rnn_layers_ = -1;
   int32_t pred_hidden_ = -1;
@@ -505,8 +647,10 @@ OnlineTransducerNeMoModel::OnlineTransducerNeMoModel(
 OnlineTransducerNeMoModel::~OnlineTransducerNeMoModel() = default;
 
 std::vector<Ort::Value> OnlineTransducerNeMoModel::RunEncoder(
-    Ort::Value features, std::vector<Ort::Value> states) const {
-  return impl_->RunEncoder(std::move(features), std::move(states));
+    Ort::Value features, std::vector<Ort::Value> states,
+    const std::vector<int64_t> &language_prompt_ids) const {
+  return impl_->RunEncoder(std::move(features), std::move(states),
+                           language_prompt_ids);
 }
 
 std::pair<Ort::Value, std::vector<Ort::Value>>
@@ -543,6 +687,15 @@ int32_t OnlineTransducerNeMoModel::VocabSize() const {
 
 int32_t OnlineTransducerNeMoModel::FeatureDim() const {
   return impl_->FeatureDim();
+}
+
+bool OnlineTransducerNeMoModel::IsMultilingual() const {
+  return impl_->IsMultilingual();
+}
+
+int64_t OnlineTransducerNeMoModel::GetLanguagePromptId(
+    const std::string &language) const {
+  return impl_->GetLanguagePromptId(language);
 }
 
 OrtAllocator *OnlineTransducerNeMoModel::Allocator() const {

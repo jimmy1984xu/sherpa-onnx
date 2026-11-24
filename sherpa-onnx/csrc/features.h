@@ -85,6 +85,9 @@ struct FeatureExtractorConfig {
 
   bool round_to_power_of_two = true;
 
+  // NeMo 在线模型使用 log(x + 2^-24)，而非默认的硬 floor。
+  bool use_nemo_log_guard = false;
+
   std::string ToString() const;
 
   void Register(ParseOptions *po);
