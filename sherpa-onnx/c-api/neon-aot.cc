@@ -11,23 +11,13 @@
 #include "sherpa-onnx/csrc/nemotron-neon/runtime.h"
 #include "sherpa-onnx/csrc/neon-cpu-affinity.h"
 #include "sherpa-onnx/csrc/neon-threads.h"
-#include "sherpa-onnx/csrc/voxlingua107-neon/runtime.h"
 
 struct SherpaOnnxNemotronDiarization {
   transai::nemotron::Runtime impl;
   sherpa_onnx::neon::CpuAffinity affinity;
 };
 
-struct SherpaOnnxVoxLingua107 {
-  transai::voxlingua107::Runtime impl;
-  sherpa_onnx::neon::CpuAffinity affinity;
-};
-
 namespace {
-
-struct VoxResult : SherpaOnnxVoxLingua107Result {
-  std::string language_storage;
-};
 
 bool IsNeonModel(const char *model, const char *provider) {
   return model && *model && provider && std::strcmp(provider, "neon") == 0;
@@ -99,48 +89,10 @@ void SherpaOnnxDestroyNemotronDiarizationResult(const char *rttm) {
   delete[] rttm;
 }
 
-const SherpaOnnxVoxLingua107 *SherpaOnnxCreateVoxLingua107WithCpuConfig(
-    const SherpaOnnxVoxLingua107Config *config, const SherpaOnnxNeonCpuConfig *cpu) {
-  return Create<SherpaOnnxVoxLingua107>(config, cpu, __func__);
-}
-
-void SherpaOnnxDestroyVoxLingua107(const SherpaOnnxVoxLingua107 *identifier) {
-  delete identifier;
-}
-
-const SherpaOnnxVoxLingua107Result *SherpaOnnxVoxLingua107Compute(
-    const SherpaOnnxVoxLingua107 *identifier, const float *samples, int32_t n) {
-  if (!identifier || !samples || n <= 0) return nullptr;
-  return Call(__func__, [&] {
-    const sherpa_onnx::neon::ScopedInferenceCore affinity(identifier->affinity);
-    auto source = identifier->impl.Process(samples, n);
-    auto result = std::make_unique<VoxResult>();
-    result->language_id = static_cast<int32_t>(source.language_id);
-    result->language_storage.swap(source.language);
-    result->language = result->language_storage.c_str();
-    result->probability = source.probability;
-    std::copy(source.log_probabilities.begin(), source.log_probabilities.end(),
-              result->log_probabilities);
-    std::copy(source.embedding.begin(), source.embedding.end(),
-              result->embedding);
-    return result.release();
-  });
-}
-
-void SherpaOnnxDestroyVoxLingua107Result(
-    const SherpaOnnxVoxLingua107Result *result) {
-  delete static_cast<const VoxResult *>(result);
-}
-
 #else
 
 const SherpaOnnxNemotronDiarization *SherpaOnnxCreateNemotronDiarizationWithCpuConfig(
     const SherpaOnnxNemotronDiarizationConfig *, const SherpaOnnxNeonCpuConfig *) {
-  return nullptr;
-}
-
-const SherpaOnnxVoxLingua107 *SherpaOnnxCreateVoxLingua107WithCpuConfig(
-    const SherpaOnnxVoxLingua107Config *, const SherpaOnnxNeonCpuConfig *) {
   return nullptr;
 }
 
@@ -154,16 +106,6 @@ const char *SherpaOnnxNemotronDiarizationProcess(
 }
 
 void SherpaOnnxDestroyNemotronDiarizationResult(const char *) {}
-
-void SherpaOnnxDestroyVoxLingua107(const SherpaOnnxVoxLingua107 *) {}
-
-const SherpaOnnxVoxLingua107Result *SherpaOnnxVoxLingua107Compute(
-    const SherpaOnnxVoxLingua107 *, const float *, int32_t) {
-  return nullptr;
-}
-
-void SherpaOnnxDestroyVoxLingua107Result(
-    const SherpaOnnxVoxLingua107Result *) {}
 
 #endif
 

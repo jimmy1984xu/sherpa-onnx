@@ -4803,7 +4803,7 @@ SHERPA_ONNX_API int32_t SherpaOnnxNemotronSessionAcceptWaveform(
     const SherpaOnnxNemotronSession *session, const float *samples, int32_t n,
     int64_t offset_samples, SherpaOnnxNemotronTimelineView *out);
 
-/** Android arm64 VoxLingua107 NEON AOT language identifier. */
+/** VoxLingua107 language identifier (provider=cpu: ONNX+log map; provider=neon: Android arm64 AOT). */
 typedef struct SherpaOnnxVoxLingua107 SherpaOnnxVoxLingua107;
 
 typedef struct SherpaOnnxVoxLingua107Result {
@@ -4816,6 +4816,7 @@ typedef struct SherpaOnnxVoxLingua107Result {
 
 typedef struct SherpaOnnxVoxLingua107Config {
   const char *model;
+  const char *lang_map;
   const char *provider;
   int32_t num_threads;
 } SherpaOnnxVoxLingua107Config;

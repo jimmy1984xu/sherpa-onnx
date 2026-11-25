@@ -422,7 +422,7 @@ if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
   set_property(SOURCE speaker-embedding-extractor-nemo-model.cc APPEND
     PROPERTY COMPILE_DEFINITIONS SHERPA_ONNX_ENABLE_TITANET_NEON=1)
 endif()
-target_sources(sherpa-onnx-core PRIVATE nemotron-cpu/session.cc)
+target_sources(sherpa-onnx-core PRIVATE nemotron-cpu/session.cc voxlingua107-cpu/runtime.cc)
 if(SHERPA_ONNX_ENABLE_MALI_G720)
   target_sources(sherpa-onnx-core PRIVATE mali-g720/offline-recognizer.cc mali-g720/seaco-recognizer.cc)
   target_compile_definitions(sherpa-onnx-core PUBLIC SHERPA_ONNX_ENABLE_MALI_G720=1)
