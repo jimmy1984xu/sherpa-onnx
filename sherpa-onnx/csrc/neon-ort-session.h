@@ -6,6 +6,7 @@
 
 #include "onnxruntime_cxx_api.h"
 #include "sherpa-onnx/csrc/mali-g720/aot-file.h"
+#include "sherpa-onnx/csrc/neon-cpu-affinity.h"
 
 namespace transai::aot {
 
@@ -18,6 +19,7 @@ inline void RequireMappedOrtGraph(const File& file) {
 
 // The mapping must outlive every session using these read-only bytes.
 inline void SetMappedOrtGraphOptions(Ort::SessionOptions& options) {
+  sherpa_onnx::neon::ScopedCpuAffinityRequest::ConfigureWorkers(options);
   options.SetGraphOptimizationLevel(ORT_DISABLE_ALL)
       .AddConfigEntry("session.load_model_format", "ORT")
       .AddConfigEntry("session.use_ort_model_bytes_directly", "1")

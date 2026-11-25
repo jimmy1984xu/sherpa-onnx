@@ -1,6 +1,10 @@
 include_directories(${PROJECT_SOURCE_DIR})
-add_library(sherpa-onnx-c-api c-api.cc)
+add_library(sherpa-onnx-c-api c-api.cc neon-aot.cc nemotron-cpu-c-api.cc)
 target_link_libraries(sherpa-onnx-c-api sherpa-onnx-core)
+if(TARGET ucd)
+  # Android LTO links do not always propagate espeak-ng's PUBLIC ucd dependency.
+  target_link_libraries(sherpa-onnx-c-api ucd)
+endif()
 target_include_directories(sherpa-onnx-c-api PUBLIC ${PROJECT_SOURCE_DIR})
 
 if(BUILD_SHARED_LIBS)

@@ -101,8 +101,9 @@ class File {
       const bool titanet=family=="titanet-large";
       const bool nemotron=family=="nemotron-diarization";
       const bool punctuation=family=="ct-transformer";
-      // VoxLingua107 已迁入 agent-sdk 内置，本仓库不再识别 language/voxlingua107 AOT。
-      const std::vector<std::string> required=punctuation?std::vector<std::string>{
+      const bool language=family=="voxlingua107";
+      const std::vector<std::string> required=language?std::vector<std::string>{
+        "model.json","language/model.onnx","language/lang_map.json"}:punctuation?std::vector<std::string>{
         "model.json","punctuation/model.onnx"}:nemotron?std::vector<std::string>{
         "model.json","diarization/embed.onnx","diarization/step_int8.onnx",
         "diarization/mel_filters.bin","diarization/silence_embeds.bin"}:titanet?std::vector<std::string>{
@@ -113,14 +114,14 @@ class File {
         std::vector<std::string>{"model.json","tokens.txt","encoder/encoder.full.nemo.plan.taig720",
         "encoder/encoder.weights.bin","encoder/encoder_primary.clbin","encoder/encoder_alternate.clbin",
         "encoder/encoder_tiny.clbin","gpu/frontend.bin","gpu/tdt_weights.bin","gpu/frontend_tdt.clbin","gpu/frontend_tdt_trace.clbin"};
-      if((!punctuation && !nemotron && !titanet && !silero && !seaco && family!="parakeet-tdt") || manifest_.at("format")!=2 ||
+      if((!language && !punctuation && !nemotron && !titanet && !silero && !seaco && family!="parakeet-tdt") || manifest_.at("format")!=2 ||
          manifest_.at("assets").size()!=required.size()-1 || entries_.size()!=required.size())
         throw std::runtime_error("AOT compiled manifest required");
       for(const auto &name:required) Asset(name);
       std::map<std::string,bool> seen;
       for(const auto &asset:manifest_.at("assets")) {
         const std::string role=asset.at("role"),name=asset.at("name");
-        if((role!="tokens"&&role!="encoder"&&role!="gpu"&&role!="seaco"&&role!="tokenizer"&&role!="vad"&&role!="speaker"&&role!="diarization"&&role!="punctuation") || name.empty() ||
+        if((role!="tokens"&&role!="encoder"&&role!="gpu"&&role!="seaco"&&role!="tokenizer"&&role!="vad"&&role!="speaker"&&role!="diarization"&&role!="punctuation"&&role!="language") || name.empty() ||
            name.find_first_of("/\\")!=std::string::npos || name=="." || name=="..")
           throw std::runtime_error("MaliG720 AOT invalid asset name");
         const std::string key=(role=="tokens"?"":role+"/")+name;
