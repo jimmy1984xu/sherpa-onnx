@@ -388,7 +388,30 @@ if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
   install(FILES "${titanet_kai}/LICENSE" DESTINATION lib/licenses/titanet-kleidiai)
   target_sources(sherpa-onnx-core PRIVATE ${titanet_kernels})
   set_source_files_properties(${titanet_kernels} PROPERTIES
-    COMPILE_OPTIONS "-march=armv8.6-a+i8mm;-fno-lto"
+    COMPILE_OPTIONS "-O3;-march=armv8.6-a+i8mm;-fno-lto"
+    INCLUDE_DIRECTORIES "${titanet_kai};${titanet_matmul}")
+  # Nemotron and TTS share the BF16 KleidiAI implementation.
+  set(neon_bf16_kernels
+    "${titanet_matmul}/pack/kai_lhs_pack_bf16p8x4_f16_neon.c"
+    "${titanet_matmul}/pack/kai_rhs_pack_kxn_bf16p12x4biasf32_f16_neon.c"
+    "${titanet_matmul}/matmul_clamp_f32_bf16p_bf16p/kai_matmul_clamp_f32_bf16p8x4_bf16p12x4b_8x12_neon_mmla.c")
+  set(neon_bf16_sources nemotron-neon/ops.cc)
+  if(SHERPA_ONNX_ENABLE_TTS)
+    list(APPEND neon_bf16_sources
+      matcha-neon/neon_ops.cc piper-neon/neon_ops.cc piper-neon/model.cc)
+    target_compile_definitions(sherpa-onnx-core PUBLIC SHERPA_ONNX_ENABLE_MATCHA_NEON=1)
+  endif()
+  target_sources(sherpa-onnx-core PRIVATE ${neon_bf16_kernels} ${neon_bf16_sources}
+    nemotron-neon/runtime.cc voxlingua107-neon/runtime.cc voxlingua107-neon/neon-ops.cc)
+  set_source_files_properties(${neon_bf16_kernels} ${neon_bf16_sources} PROPERTIES
+    COMPILE_OPTIONS "-O3;-march=armv8.6-a+dotprod+i8mm+fp16+bf16;-mtune=cortex-a720;-fno-lto"
+    INCLUDE_DIRECTORIES "${titanet_kai};${titanet_matmul}")
+  set_source_files_properties(nemotron-neon/runtime.cc PROPERTIES
+    COMPILE_OPTIONS "-O3;-ffp-contract=off")
+  set_source_files_properties(voxlingua107-neon/runtime.cc PROPERTIES
+    COMPILE_OPTIONS "-O3")
+  set_source_files_properties(voxlingua107-neon/neon-ops.cc PROPERTIES
+    COMPILE_OPTIONS "-O3;-march=armv8.6-a+dotprod+i8mm;-mtune=cortex-a520"
     INCLUDE_DIRECTORIES "${titanet_kai};${titanet_matmul}")
   target_sources(sherpa-onnx-core PRIVATE ct-transformer-neon-ops.cc)
   set_source_files_properties(ct-transformer-neon-ops.cc PROPERTIES
@@ -399,6 +422,7 @@ if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
   set_property(SOURCE speaker-embedding-extractor-nemo-model.cc APPEND
     PROPERTY COMPILE_DEFINITIONS SHERPA_ONNX_ENABLE_TITANET_NEON=1)
 endif()
+target_sources(sherpa-onnx-core PRIVATE nemotron-cpu/session.cc voxlingua107-cpu/runtime.cc)
 if(SHERPA_ONNX_ENABLE_MALI_G720)
   target_sources(sherpa-onnx-core PRIVATE mali-g720/offline-recognizer.cc mali-g720/seaco-recognizer.cc)
   target_compile_definitions(sherpa-onnx-core PUBLIC SHERPA_ONNX_ENABLE_MALI_G720=1)

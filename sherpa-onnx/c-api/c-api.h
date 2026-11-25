@@ -4751,6 +4751,98 @@ SherpaOnnxCreateOfflineSourceSeparationOHOS(
     NativeResourceManager *mgr);
 #endif
 
+/** Android arm64 Nemotron NEON AOT diarizer. */
+typedef struct SherpaOnnxNemotronDiarization SherpaOnnxNemotronDiarization;
+
+enum { SHERPA_ONNX_NEMOTRON_MAX_SAMPLES = 3600 * 16000 };
+
+typedef struct SherpaOnnxNemotronDiarizationConfig {
+  const char *model;
+  const char *provider;  /**< Must be "neon". */
+  int32_t num_threads;   /**< 1–8 inference threads. 0 uses one thread. */
+} SherpaOnnxNemotronDiarizationConfig;
+
+SHERPA_ONNX_API void SherpaOnnxDestroyNemotronDiarization(
+    const SherpaOnnxNemotronDiarization *diarizer);
+SHERPA_ONNX_API const char *SherpaOnnxNemotronDiarizationProcess(
+    const SherpaOnnxNemotronDiarization *diarizer, const int16_t *samples,
+    int32_t n, const char *recording_id);
+SHERPA_ONNX_API void SherpaOnnxDestroyNemotronDiarizationResult(const char *rttm);
+
+/** Stateful Nemotron CPU (ORT) segmentation session for multi-chunk VAD feeding. */
+typedef struct SherpaOnnxNemotronSession SherpaOnnxNemotronSession;
+
+typedef struct SherpaOnnxNemotronSessionConfig {
+  /** NULL 或 "cpu"：ORT 四文件；**"neon"**：使用 model AOT 目录。 */
+  const char *provider;
+  /** inferenceMode=neon 时的 AOT 模型根目录。 */
+  const char *model;
+  const char *embed_onnx;
+  const char *step_onnx;
+  const char *mel_filters;
+  const char *silence_embeds;
+  int32_t num_threads;
+} SherpaOnnxNemotronSessionConfig;
+
+typedef struct SherpaOnnxNemotronTimelineView {
+  int32_t frame_count;
+  int32_t num_speakers;
+  const float *timeline;
+  /** NEON Session：段内 RTTM，直到下次 AcceptWaveform 前有效；CPU 路径为 NULL。 */
+  const char *rttm;
+} SherpaOnnxNemotronTimelineView;
+
+SHERPA_ONNX_API SherpaOnnxNemotronSession *SherpaOnnxCreateNemotronSession(
+    const SherpaOnnxNemotronSessionConfig *config);
+SHERPA_ONNX_API void SherpaOnnxDestroyNemotronSession(
+    const SherpaOnnxNemotronSession *session);
+SHERPA_ONNX_API void SherpaOnnxNemotronSessionResetContinuity(
+    const SherpaOnnxNemotronSession *session);
+/** @return 1 on success, 0 if no frames, -1 on error. timeline valid until next accept. */
+SHERPA_ONNX_API int32_t SherpaOnnxNemotronSessionAcceptWaveform(
+    const SherpaOnnxNemotronSession *session, const float *samples, int32_t n,
+    int64_t offset_samples, SherpaOnnxNemotronTimelineView *out);
+
+/** VoxLingua107 language identifier (provider=cpu: ONNX+log map; provider=neon: Android arm64 AOT). */
+typedef struct SherpaOnnxVoxLingua107 SherpaOnnxVoxLingua107;
+
+typedef struct SherpaOnnxVoxLingua107Result {
+  int32_t language_id;
+  const char *language;
+  float probability;
+  float log_probabilities[107];
+  float embedding[256];
+} SherpaOnnxVoxLingua107Result;
+
+typedef struct SherpaOnnxVoxLingua107Config {
+  const char *model;
+  const char *lang_map;
+  const char *provider;
+  int32_t num_threads;
+} SherpaOnnxVoxLingua107Config;
+
+SHERPA_ONNX_API void SherpaOnnxDestroyVoxLingua107(
+    const SherpaOnnxVoxLingua107 *identifier);
+SHERPA_ONNX_API const SherpaOnnxVoxLingua107Result *
+SherpaOnnxVoxLingua107Compute(const SherpaOnnxVoxLingua107 *identifier,
+                              const float *samples, int32_t n);
+SHERPA_ONNX_API void SherpaOnnxDestroyVoxLingua107Result(
+    const SherpaOnnxVoxLingua107Result *result);
+
+typedef struct SherpaOnnxNeonCpuConfig {
+  const int32_t *cpu_cores;
+  int32_t num_cpu_cores;
+} SherpaOnnxNeonCpuConfig;
+
+SHERPA_ONNX_API const SherpaOnnxNemotronDiarization *
+SherpaOnnxCreateNemotronDiarizationWithCpuConfig(
+    const SherpaOnnxNemotronDiarizationConfig *config,
+    const SherpaOnnxNeonCpuConfig *cpu);
+SHERPA_ONNX_API const SherpaOnnxVoxLingua107 *
+SherpaOnnxCreateVoxLingua107WithCpuConfig(
+    const SherpaOnnxVoxLingua107Config *config,
+    const SherpaOnnxNeonCpuConfig *cpu);
+
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
