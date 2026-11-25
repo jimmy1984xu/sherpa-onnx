@@ -27,8 +27,8 @@ python3 ./python-api-examples/two-pass-speech-recognition-from-microphone.py \
   --first-joiner ./sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23/joiner-epoch-99-avg-1.onnx \
   --first-tokens ./sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23/tokens.txt \
   \
-  --second-paraformer ./sherpa-onnx-paraformer-zh-2023-03-28/model.int8.onnx \
-  --second-tokens ./sherpa-onnx-paraformer-zh-2023-03-28/tokens.txt
+  --second-paraformer ./sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx \
+  --second-tokens ./sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt
 
 (2) English: Streaming zipformer (1st pass) + Non-streaming whisper (2nd pass)
 
@@ -46,7 +46,6 @@ python3 ./python-api-examples/two-pass-speech-recognition-from-microphone.py \
 import argparse
 import sys
 from pathlib import Path
-from typing import List
 
 import numpy as np
 
@@ -335,11 +334,10 @@ def create_second_pass_recognizer(args) -> sherpa_onnx.OfflineRecognizer:
 
 def run_second_pass(
     recognizer: sherpa_onnx.OfflineRecognizer,
-    sample_buffers: List[np.ndarray],
+    samples: np.ndarray,
     sample_rate: int,
 ):
     stream = recognizer.create_stream()
-    samples = np.concatenate(sample_buffers)
     stream.accept_waveform(sample_rate, samples)
 
     recognizer.decode_stream(stream)
@@ -376,8 +374,7 @@ def main():
     samples_per_read = int(0.1 * sample_rate)  # 0.1 second = 100 ms
     stream = first_recognizer.create_stream()
 
-    last_result = ""
-    segment_id = 0
+    display = sherpa_onnx.Display()
 
     sample_buffers = []
     with sd.InputStream(channels=1, dtype="float32", samplerate=sample_rate) as s:
@@ -396,32 +393,27 @@ def main():
             result = first_recognizer.get_result(stream)
             result = result.lower().strip()
 
-            if last_result != result:
-                print(
-                    "\r{}:{}".format(segment_id, " " * len(last_result)),
-                    end="",
-                    flush=True,
-                )
-                last_result = result
-                print("\r{}:{}".format(segment_id, result), end="", flush=True)
+            display.update_text(result)
+            display.display()
 
             if is_endpoint:
                 if result:
+                    samples = np.concatenate(sample_buffers)
+                    # There are internal sample buffers inside the streaming
+                    # feature extractor, so we cannot send all samples to
+                    # the 2nd pass. Here 8000 is just an empirical value
+                    # that should work for most streaming models in sherpa-onnx
+                    sample_buffers = [samples[-8000:]]
+                    samples = samples[:-8000]
                     result = run_second_pass(
                         recognizer=second_recognizer,
-                        sample_buffers=sample_buffers,
+                        samples=samples,
                         sample_rate=sample_rate,
                     )
                     result = result.lower().strip()
-
-                    sample_buffers = []
-                    print(
-                        "\r{}:{}".format(segment_id, " " * len(last_result)),
-                        end="",
-                        flush=True,
-                    )
-                    print("\r{}:{}".format(segment_id, result), flush=True)
-                    segment_id += 1
+                    display.update_text(result)
+                    display.finalize_current_sentence()
+                    display.display()
                 else:
                     sample_buffers = []
 

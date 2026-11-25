@@ -9,11 +9,8 @@
 #include <string>
 #include <vector>
 
-#if __ANDROID_API__ >= 9
-#include "android/asset_manager.h"
-#include "android/asset_manager_jni.h"
-#endif
-
+#include "sherpa-onnx/csrc/features.h"
+#include "sherpa-onnx/csrc/homophone-replacer.h"
 #include "sherpa-onnx/csrc/offline-ctc-fst-decoder-config.h"
 #include "sherpa-onnx/csrc/offline-lm-config.h"
 #include "sherpa-onnx/csrc/offline-model-config.h"
@@ -26,7 +23,7 @@ namespace sherpa_onnx {
 struct OfflineRecognitionResult;
 
 struct OfflineRecognizerConfig {
-  OfflineFeatureExtractorConfig feat_config;
+  FeatureExtractorConfig feat_config;
   OfflineModelConfig model_config;
   OfflineLMConfig lm_config;
   OfflineCtcFstDecoderConfig ctc_fst_decoder_config;
@@ -39,17 +36,25 @@ struct OfflineRecognizerConfig {
 
   float blank_penalty = 0.0;
 
+  // If there are multiple rules, they are applied from left to right.
+  std::string rule_fsts;
+
+  // If there are multiple FST archives, they are applied from left to right.
+  std::string rule_fars;
+  HomophoneReplacerConfig hr;
+
   // only greedy_search is implemented
   // TODO(fangjun): Implement modified_beam_search
 
   OfflineRecognizerConfig() = default;
   OfflineRecognizerConfig(
-      const OfflineFeatureExtractorConfig &feat_config,
+      const FeatureExtractorConfig &feat_config,
       const OfflineModelConfig &model_config, const OfflineLMConfig &lm_config,
       const OfflineCtcFstDecoderConfig &ctc_fst_decoder_config,
       const std::string &decoding_method, int32_t max_active_paths,
       const std::string &hotwords_file, float hotwords_score,
-      float blank_penalty)
+      float blank_penalty, const std::string &rule_fsts,
+      const std::string &rule_fars, const HomophoneReplacerConfig &hr)
       : feat_config(feat_config),
         model_config(model_config),
         lm_config(lm_config),
@@ -58,7 +63,10 @@ struct OfflineRecognizerConfig {
         max_active_paths(max_active_paths),
         hotwords_file(hotwords_file),
         hotwords_score(hotwords_score),
-        blank_penalty(blank_penalty) {}
+        blank_penalty(blank_penalty),
+        rule_fsts(rule_fsts),
+        rule_fars(rule_fars),
+        hr(hr) {}
 
   void Register(ParseOptions *po);
   bool Validate() const;
@@ -72,9 +80,8 @@ class OfflineRecognizer {
  public:
   ~OfflineRecognizer();
 
-#if __ANDROID_API__ >= 9
-  OfflineRecognizer(AAssetManager *mgr, const OfflineRecognizerConfig &config);
-#endif
+  template <typename Manager>
+  OfflineRecognizer(Manager *mgr, const OfflineRecognizerConfig &config);
 
   explicit OfflineRecognizer(const OfflineRecognizerConfig &config);
 
@@ -108,6 +115,15 @@ class OfflineRecognizer {
    * @param n  Size of the input array.
    */
   void DecodeStreams(OfflineStream **ss, int32_t n) const;
+
+  /** Onnxruntime Session objects are not affected by this method.
+   * The exact behavior can be defined by a specific recognizer impl.
+   * For instance, for the whisper recognizer, you can retrieve the language and
+   * task from the config and ignore any remaining fields in `config`.
+   */
+  void SetConfig(const OfflineRecognizerConfig &config);
+
+  OfflineRecognizerConfig GetConfig() const;
 
  private:
   std::unique_ptr<OfflineRecognizerImpl> impl_;

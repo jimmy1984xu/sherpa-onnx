@@ -22,8 +22,16 @@ struct OnlineCtcDecoderResult {
   /// The decoded token IDs
   std::vector<int64_t> tokens;
 
+  /// The decoded word IDs
+  /// Note: tokens.size() is usually not equal to words.size()
+  /// words is empty for greedy search decoding.
+  /// it is not empty when an HLG graph or an HLG graph is used.
+  std::vector<int32_t> words;
+
   /// timestamps[i] contains the output frame index where tokens[i] is decoded.
   /// Note: The index is after subsampling
+  ///
+  /// tokens.size() == timestamps.size()
   std::vector<int32_t> timestamps;
 
   int32_t num_trailing_blanks = 0;
@@ -35,12 +43,14 @@ class OnlineCtcDecoder {
 
   /** Run streaming CTC decoding given the output from the encoder model.
    *
-   * @param log_probs A 3-D tensor of shape (N, T, vocab_size) containing
-   *                  lob_probs.
+   * @param log_probs A 3-D tensor of shape
+   *                  (batch_size, num_frames, vocab_size) containing
+   *                  lob_probs in row major.
    *
    * @param  results Input & Output parameters..
    */
-  virtual void Decode(Ort::Value log_probs,
+  virtual void Decode(const float *log_probs, int32_t batch_size,
+                      int32_t num_frames, int32_t vocab_size,
                       std::vector<OnlineCtcDecoderResult> *results,
                       OnlineStream **ss = nullptr, int32_t n = 0) = 0;
 

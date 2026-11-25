@@ -3,28 +3,39 @@
 // Copyright (c)  2023  Xiaomi Corporation
 // Copyright (c)  2023  Pingfeng Luo
 #include "sherpa-onnx/csrc/online-transducer-model.h"
+#include "sherpa-onnx/csrc/ort-env.h"
 
 #if __ANDROID_API__ >= 9
 #include "android/asset_manager.h"
 #include "android/asset_manager_jni.h"
 #endif
 
+#if __OHOS__
+#include "rawfile/raw_file_manager.h"
+#endif
+
 #include <algorithm>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 
+#include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/online-conformer-transducer-model.h"
+#include "sherpa-onnx/csrc/online-ebranchformer-transducer-model.h"
 #include "sherpa-onnx/csrc/online-lstm-transducer-model.h"
 #include "sherpa-onnx/csrc/online-zipformer-transducer-model.h"
 #include "sherpa-onnx/csrc/online-zipformer2-transducer-model.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
+#include "sherpa-onnx/csrc/session.h"
+#include "sherpa-onnx/csrc/text-utils.h"
 
 namespace {
 
-enum class ModelType {
+enum class ModelType : std::uint8_t {
   kConformer,
+  kEbranchformer,
   kLstm,
   kZipformer,
   kZipformer2,
@@ -35,9 +46,57 @@ enum class ModelType {
 
 namespace sherpa_onnx {
 
+static ModelType GetModelType(const std::string &model_path, bool debug) {
+  Ort::Env env = CreateOrtEnv();
+  Ort::SessionOptions sess_opts;
+  sess_opts.SetIntraOpNumThreads(1);
+  sess_opts.SetInterOpNumThreads(1);
+
+  auto sess = std::make_unique<Ort::Session>(
+      env, SHERPA_ONNX_TO_ORT_PATH(model_path), sess_opts);
+
+
+  Ort::ModelMetadata meta_data = sess->GetModelMetadata();
+  if (debug) {
+    std::ostringstream os;
+    PrintModelMetadata(os, meta_data);
+#if __OHOS__
+    SHERPA_ONNX_LOGE("%{public}s", os.str().c_str());
+#else
+    SHERPA_ONNX_LOGE("%s", os.str().c_str());
+#endif
+  }
+
+  Ort::AllocatorWithDefaultOptions allocator;
+  auto model_type =
+      LookupCustomModelMetaData(meta_data, "model_type", allocator);
+  if (model_type.empty()) {
+    SHERPA_ONNX_LOGE(
+        "No model_type in the metadata!\n"
+        "Please make sure you are using the latest export-onnx.py from icefall "
+        "to export your transducer models");
+    return ModelType::kUnknown;
+  }
+
+  if (model_type == "conformer") {
+    return ModelType::kConformer;
+  } else if (model_type == "ebranchformer") {
+    return ModelType::kEbranchformer;
+  } else if (model_type == "lstm") {
+    return ModelType::kLstm;
+  } else if (model_type == "zipformer") {
+    return ModelType::kZipformer;
+  } else if (model_type == "zipformer2") {
+    return ModelType::kZipformer2;
+  } else {
+    SHERPA_ONNX_LOGE("Unsupported model_type: %s", model_type.c_str());
+    return ModelType::kUnknown;
+  }
+}
+
 static ModelType GetModelType(char *model_data, size_t model_data_length,
                               bool debug) {
-  Ort::Env env(ORT_LOGGING_LEVEL_WARNING);
+  Ort::Env env = CreateOrtEnv();
   Ort::SessionOptions sess_opts;
   sess_opts.SetIntraOpNumThreads(1);
   sess_opts.SetInterOpNumThreads(1);
@@ -49,13 +108,17 @@ static ModelType GetModelType(char *model_data, size_t model_data_length,
   if (debug) {
     std::ostringstream os;
     PrintModelMetadata(os, meta_data);
+#if __OHOS__
+    SHERPA_ONNX_LOGE("%{public}s", os.str().c_str());
+#else
     SHERPA_ONNX_LOGE("%s", os.str().c_str());
+#endif
   }
 
   Ort::AllocatorWithDefaultOptions allocator;
   auto model_type =
-      meta_data.LookupCustomMetadataMapAllocated("model_type", allocator);
-  if (!model_type) {
+      LookupCustomModelMetaData(meta_data, "model_type", allocator);
+  if (model_type.empty()) {
     SHERPA_ONNX_LOGE(
         "No model_type in the metadata!\n"
         "Please make sure you are using the latest export-onnx.py from icefall "
@@ -63,16 +126,18 @@ static ModelType GetModelType(char *model_data, size_t model_data_length,
     return ModelType::kUnknown;
   }
 
-  if (model_type.get() == std::string("conformer")) {
+  if (model_type == "conformer") {
     return ModelType::kConformer;
-  } else if (model_type.get() == std::string("lstm")) {
+  } else if (model_type == "ebranchformer") {
+    return ModelType::kEbranchformer;
+  } else if (model_type == "lstm") {
     return ModelType::kLstm;
-  } else if (model_type.get() == std::string("zipformer")) {
+  } else if (model_type == "zipformer") {
     return ModelType::kZipformer;
-  } else if (model_type.get() == std::string("zipformer2")) {
+  } else if (model_type == "zipformer2") {
     return ModelType::kZipformer2;
   } else {
-    SHERPA_ONNX_LOGE("Unsupported model_type: %s", model_type.get());
+    SHERPA_ONNX_LOGE("Unsupported model_type: %s", model_type.c_str());
     return ModelType::kUnknown;
   }
 }
@@ -83,6 +148,8 @@ std::unique_ptr<OnlineTransducerModel> OnlineTransducerModel::Create(
     const auto &model_type = config.model_type;
     if (model_type == "conformer") {
       return std::make_unique<OnlineConformerTransducerModel>(config);
+    } else if (model_type == "ebranchformer") {
+      return std::make_unique<OnlineEbranchformerTransducerModel>(config);
     } else if (model_type == "lstm") {
       return std::make_unique<OnlineLstmTransducerModel>(config);
     } else if (model_type == "zipformer") {
@@ -98,14 +165,14 @@ std::unique_ptr<OnlineTransducerModel> OnlineTransducerModel::Create(
   ModelType model_type = ModelType::kUnknown;
 
   {
-    auto buffer = ReadFile(config.transducer.encoder);
-
-    model_type = GetModelType(buffer.data(), buffer.size(), config.debug);
+    model_type = GetModelType(config.transducer.encoder, config.debug);
   }
 
   switch (model_type) {
     case ModelType::kConformer:
       return std::make_unique<OnlineConformerTransducerModel>(config);
+    case ModelType::kEbranchformer:
+      return std::make_unique<OnlineEbranchformerTransducerModel>(config);
     case ModelType::kLstm:
       return std::make_unique<OnlineLstmTransducerModel>(config);
     case ModelType::kZipformer:
@@ -155,13 +222,15 @@ Ort::Value OnlineTransducerModel::BuildDecoderInput(
   return decoder_input;
 }
 
-#if __ANDROID_API__ >= 9
+template <typename Manager>
 std::unique_ptr<OnlineTransducerModel> OnlineTransducerModel::Create(
-    AAssetManager *mgr, const OnlineModelConfig &config) {
+    Manager *mgr, const OnlineModelConfig &config) {
   if (!config.model_type.empty()) {
     const auto &model_type = config.model_type;
     if (model_type == "conformer") {
       return std::make_unique<OnlineConformerTransducerModel>(mgr, config);
+    } else if (model_type == "ebranchformer") {
+      return std::make_unique<OnlineEbranchformerTransducerModel>(mgr, config);
     } else if (model_type == "lstm") {
       return std::make_unique<OnlineLstmTransducerModel>(mgr, config);
     } else if (model_type == "zipformer") {
@@ -181,6 +250,8 @@ std::unique_ptr<OnlineTransducerModel> OnlineTransducerModel::Create(
   switch (model_type) {
     case ModelType::kConformer:
       return std::make_unique<OnlineConformerTransducerModel>(mgr, config);
+    case ModelType::kEbranchformer:
+      return std::make_unique<OnlineEbranchformerTransducerModel>(mgr, config);
     case ModelType::kLstm:
       return std::make_unique<OnlineLstmTransducerModel>(mgr, config);
     case ModelType::kZipformer:
@@ -195,6 +266,15 @@ std::unique_ptr<OnlineTransducerModel> OnlineTransducerModel::Create(
   // unreachable code
   return nullptr;
 }
+
+#if __ANDROID_API__ >= 9
+template std::unique_ptr<OnlineTransducerModel> OnlineTransducerModel::Create(
+    AAssetManager *mgr, const OnlineModelConfig &config);
+#endif
+
+#if __OHOS__
+template std::unique_ptr<OnlineTransducerModel> OnlineTransducerModel::Create(
+    NativeResourceManager *mgr, const OnlineModelConfig &config);
 #endif
 
 }  // namespace sherpa_onnx

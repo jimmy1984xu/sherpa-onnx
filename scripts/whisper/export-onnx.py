@@ -43,8 +43,11 @@ def get_args():
         choices=[
             "tiny", "tiny.en", "base", "base.en",
             "small", "small.en", "medium", "medium.en",
-            "large", "large-v1", "large-v2",
+            "large-v1", "large-v2",
+            "large", "large-v3", "turbo", # these three have feature dim 128
             "distil-medium.en", "distil-small.en", "distil-large-v2",
+            "distil-large-v3",
+            "distil-large-v3.5",
             # for fine-tuned models from icefall
             "medium-aishell",
             ],
@@ -63,12 +66,26 @@ def add_meta_data(filename: str, meta_data: Dict[str, Any]):
         Key-value pairs.
     """
     model = onnx.load(filename)
+
+    while len(model.metadata_props):
+        model.metadata_props.pop()
+
     for key, value in meta_data.items():
         meta = model.metadata_props.add()
         meta.key = key
         meta.value = str(value)
 
-    onnx.save(model, filename)
+    if "large" in filename or "turbo" in filename:
+        external_filename = filename.split(".onnx")[0]
+        onnx.save(
+            model,
+            filename,
+            save_as_external_data=True,
+            all_tensors_to_one_file=True,
+            location=external_filename + ".weights",
+        )
+    else:
+        onnx.save(model, filename)
 
 
 def modified_audio_encoder_forward(self: AudioEncoder, x: torch.Tensor):
@@ -294,15 +311,24 @@ def convert_tokens(name, model):
             f.write(f"{t} {i}\n")
 
 
-@torch.no_grad()
-def main():
-    args = get_args()
-    name = args.model
-    print(args)
-    print(name)
+def load_model(name: str):
+    """Load a Whisper model by name.
 
-    opset_version = 13
+    For standard OpenAI models (tiny, base, small, medium, large, etc.),
+    this uses whisper.load_model() directly.
 
+    For distil-whisper and fine-tuned models, this expects the checkpoint
+    file to be pre-downloaded to the current directory with a specific name.
+
+    Args:
+        name: Model name (e.g., "tiny", "distil-small.en", "medium-aishell")
+
+    Returns:
+        The loaded whisper model.
+
+    Raises:
+        ValueError: If a required checkpoint file is not found.
+    """
     if name == "distil-medium.en":
         filename = "./distil-medium-en-original-model.bin"
         if not Path(filename).is_file():
@@ -315,7 +341,7 @@ def main():
                 wget -O distil-medium-en-original-model.bin https://huggingface.co/distil-whisper/distil-medium.en/resolve/main/original-model.bin
             """
             )
-        model = whisper.load_model(filename)
+        return whisper.load_model(filename)
     elif name == "distil-large-v2":
         filename = "./distil-large-v2-original-model.bin"
         if not Path(filename).is_file():
@@ -328,7 +354,33 @@ def main():
                 wget -O distil-large-v2-original-model.bin https://huggingface.co/distil-whisper/distil-large-v2/resolve/main/original-model.bin
             """
             )
-        model = whisper.load_model(filename)
+        return whisper.load_model(filename)
+    elif name == "distil-large-v3":
+        filename = "./distil-large-v3-original-model.bin"
+        if not Path(filename).is_file():
+            raise ValueError(
+                """
+                Please go to https://huggingface.co/distil-whisper/distil-large-v3-openai
+                to download model.bin
+                You can use the following command to do that:
+
+                wget -O distil-large-v3-original-model.bin https://huggingface.co/distil-whisper/distil-large-v3-openai/resolve/main/model.bin
+            """
+            )
+        return whisper.load_model(filename)
+    elif name == "distil-large-v3.5":
+        filename = "./distil-large-v3.5-original-model.bin"
+        if not Path(filename).is_file():
+            raise ValueError(
+                """
+                Please go to https://huggingface.co/distil-whisper/distil-large-v3.5-openai/
+                to download model.bin
+                You can use the following command to do that:
+
+                wget -O distil-large-v3.5-original-model.bin https://huggingface.co/distil-whisper/distil-large-v3.5-openai/resolve/main/model.bin
+            """
+            )
+        return whisper.load_model(filename)
     elif name == "distil-small.en":
         filename = "./distil-small-en-original-model.bin"
         if not Path(filename).is_file():
@@ -341,7 +393,7 @@ def main():
                 wget -O distil-small-en-original-model.bin https://huggingface.co/distil-whisper/distil-small.en/resolve/main/original-model.bin
             """
             )
-        model = whisper.load_model(filename)
+        return whisper.load_model(filename)
     elif name == "medium-aishell":
         filename = "./medium-aishell.pt"
         if not Path(filename).is_file():
@@ -354,9 +406,21 @@ def main():
                 wget -O medium-aishell.pt https://huggingface.co/yuekai/icefall_asr_aishell_whisper/resolve/main/exp_medium/whisper-medium-aishell1-epoch-10-avg-4.pt
             """
             )
-        model = whisper.load_model(filename)
+        return whisper.load_model(filename)
     else:
-        model = whisper.load_model(name)
+        return whisper.load_model(name)
+
+
+@torch.no_grad()
+def main():
+    args = get_args()
+    name = args.model
+    print(args)
+    print(name)
+
+    opset_version = 17
+
+    model = load_model(name)
     print(model.dims)
 
     print(
@@ -376,7 +440,9 @@ def main():
 
     # write tokens
 
-    tokenizer = whisper.tokenizer.get_tokenizer(model.is_multilingual)
+    tokenizer = whisper.tokenizer.get_tokenizer(
+        model.is_multilingual, num_languages=model.num_languages
+    )
 
     model.eval()
     print(model.dims)
@@ -384,10 +450,22 @@ def main():
     audio = whisper.pad_or_trim(audio)
     assert audio.shape == (16000 * 30,), audio.shape
 
-    # make log-Mel spectrogram and move to the same device as the model
-    mel = whisper.log_mel_spectrogram(audio).to(model.device).unsqueeze(0)
+    if args.model in ("distil-large-v3", "distil-large-v3.5"):
+        n_mels = 128
+    elif args.model in (
+        "large",
+        "large-v3",
+        "turbo",
+    ):
+        n_mels = 128
+    else:
+        n_mels = 80
+
+    mel = (
+        whisper.log_mel_spectrogram(audio, n_mels=n_mels).to(model.device).unsqueeze(0)
+    )
     batch_size = 1
-    assert mel.shape == (batch_size, 80, 30 * 100)
+    assert mel.shape == (batch_size, n_mels, 30 * 100), mel.shape
 
     encoder = AudioEncoderTensorCache(model.encoder, model.decoder)
 
@@ -547,8 +625,16 @@ def main():
     )
 
     if "large" in args.model:
-        # it causes errors for large models, so skip it.
-        return
+        decoder_external_filename = decoder_filename.split(".onnx")[0]
+        decoder_model = onnx.load(decoder_filename)
+        onnx.save(
+            decoder_model,
+            decoder_filename,
+            save_as_external_data=True,
+            all_tensors_to_one_file=True,
+            location=decoder_external_filename + ".weights",
+        )
+
     # Generate int8 quantization models
     # See https://onnxruntime.ai/docs/performance/model-optimizations/quantization.html#data-type-selection
 
@@ -572,4 +658,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+    # To fix
+    # TypeError: scaled_dot_product_attention(): argument 'is_causal' must be bool, not Tensor
+    # See also https://github.com/k2-fsa/sherpa-onnx/issues/1764
+    from whisper.model import disable_sdpa
+
+    with disable_sdpa():
+        main()

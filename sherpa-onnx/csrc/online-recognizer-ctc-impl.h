@@ -6,6 +6,7 @@
 #define SHERPA_ONNX_CSRC_ONLINE_RECOGNIZER_CTC_IMPL_H_
 
 #include <algorithm>
+#include <cassert>
 #include <ios>
 #include <memory>
 #include <sstream>
@@ -15,6 +16,7 @@
 
 #include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
+#include "sherpa-onnx/csrc/offline-whisper-model.h"
 #include "sherpa-onnx/csrc/online-ctc-decoder.h"
 #include "sherpa-onnx/csrc/online-ctc-fst-decoder.h"
 #include "sherpa-onnx/csrc/online-ctc-greedy-search-decoder.h"
@@ -24,23 +26,23 @@
 
 namespace sherpa_onnx {
 
-static OnlineRecognizerResult Convert(const OnlineCtcDecoderResult &src,
-                                      const SymbolTable &sym_table,
-                                      float frame_shift_ms,
-                                      int32_t subsampling_factor,
-                                      int32_t segment,
-                                      int32_t frames_since_start) {
+static OnlineRecognizerResult ConvertCtc(const OnlineCtcDecoderResult &src,
+                                  const SymbolTable &sym_table,
+                                  float frame_shift_ms,
+                                  int32_t subsampling_factor, int32_t segment,
+                                  int32_t frames_since_start) {
   OnlineRecognizerResult r;
   r.tokens.reserve(src.tokens.size());
   r.timestamps.reserve(src.tokens.size());
 
+  std::string text;
   for (auto i : src.tokens) {
     auto sym = sym_table[i];
 
-    r.text.append(sym);
+    text.append(sym);
 
     if (sym.size() == 1 && (sym[0] < 0x20 || sym[0] > 0x7e)) {
-      // for byte bpe models
+      // for bpe models with byte_fallback
       // (but don't rewrite printable characters 0x20..0x7e,
       //  which collide with standard BPE units)
       std::ostringstream os;
@@ -52,6 +54,12 @@ static OnlineRecognizerResult Convert(const OnlineCtcDecoderResult &src,
     r.tokens.push_back(std::move(sym));
   }
 
+  if (sym_table.IsByteBpe()) {
+    text = sym_table.DecodeByteBpe(text);
+  }
+
+  r.text = std::move(text);
+
   float frame_shift_s = frame_shift_ms / 1000. * subsampling_factor;
   for (auto t : src.timestamps) {
     float time = frame_shift_s * t;
@@ -59,6 +67,7 @@ static OnlineRecognizerResult Convert(const OnlineCtcDecoderResult &src,
   }
 
   r.segment = segment;
+  r.words = std::move(src.words);
   r.start_time = frames_since_start * frame_shift_ms / 1000.;
 
   return r;
@@ -67,35 +76,32 @@ static OnlineRecognizerResult Convert(const OnlineCtcDecoderResult &src,
 class OnlineRecognizerCtcImpl : public OnlineRecognizerImpl {
  public:
   explicit OnlineRecognizerCtcImpl(const OnlineRecognizerConfig &config)
-      : config_(config),
+      : OnlineRecognizerImpl(config),
+        config_(config),
         model_(OnlineCtcModel::Create(config.model_config)),
-        sym_(config.model_config.tokens),
         endpoint_(config_.endpoint_config) {
-    if (!config.model_config.wenet_ctc.model.empty()) {
-      // WeNet CTC models assume input samples are in the range
-      // [-32768, 32767], so we set normalize_samples to false
-      config_.feat_config.normalize_samples = false;
+    if (!config.model_config.tokens_buf.empty()) {
+      sym_ = SymbolTable(config.model_config.tokens_buf, false);
+    } else {
+      sym_ = SymbolTable(config.model_config.tokens, true);
     }
-
-    InitDecoder();
+    PostInit();
   }
 
-#if __ANDROID_API__ >= 9
-  explicit OnlineRecognizerCtcImpl(AAssetManager *mgr,
+  template <typename Manager>
+  explicit OnlineRecognizerCtcImpl(Manager *mgr,
                                    const OnlineRecognizerConfig &config)
-      : config_(config),
+      : OnlineRecognizerImpl(mgr, config),
+        config_(config),
         model_(OnlineCtcModel::Create(mgr, config.model_config)),
-        sym_(mgr, config.model_config.tokens),
         endpoint_(config_.endpoint_config) {
-    if (!config.model_config.wenet_ctc.model.empty()) {
-      // WeNet CTC models assume input samples are in the range
-      // [-32768, 32767], so we set normalize_samples to false
-      config_.feat_config.normalize_samples = false;
+    if (!config.model_config.tokens_buf.empty()) {
+      sym_ = SymbolTable(config.model_config.tokens_buf, false);
+    } else {
+      sym_ = SymbolTable(mgr, config.model_config.tokens);
     }
-
-    InitDecoder();
+    PostInit();
   }
-#endif
 
   std::unique_ptr<OnlineStream> CreateStream() const override {
     auto stream = std::make_unique<OnlineStream>(config_.feat_config);
@@ -133,6 +139,10 @@ class OnlineRecognizerCtcImpl : public OnlineRecognizerImpl {
       const auto num_processed_frames = ss[i]->GetNumProcessedFrames();
       std::vector<float> features =
           ss[i]->GetFrames(num_processed_frames, chunk_length);
+      if (config_.feat_config.is_whisper) {
+        OfflineWhisperModel::NormalizeFeatures(features.data(), chunk_length,
+                                               feat_dim);
+      }
 
       // Question: should num_processed_frames include chunk_shift?
       ss[i]->GetNumProcessedFrames() += chunk_shift;
@@ -167,7 +177,10 @@ class OnlineRecognizerCtcImpl : public OnlineRecognizerImpl {
     std::vector<std::vector<Ort::Value>> next_states =
         model_->UnStackStates(std::move(out_states));
 
-    decoder_->Decode(std::move(out[0]), &results, ss, n);
+    std::vector<int64_t> log_probs_shape =
+        out[0].GetTensorTypeAndShapeInfo().GetShape();
+    decoder_->Decode(out[0].GetTensorData<float>(), log_probs_shape[0],
+                     log_probs_shape[1], log_probs_shape[2], &results, ss, n);
 
     for (int32_t k = 0; k != n; ++k) {
       ss[k]->SetCtcResult(results[k]);
@@ -181,8 +194,20 @@ class OnlineRecognizerCtcImpl : public OnlineRecognizerImpl {
     // TODO(fangjun): Remember to change these constants if needed
     int32_t frame_shift_ms = 10;
     int32_t subsampling_factor = 4;
-    return Convert(decoder_result, sym_, frame_shift_ms, subsampling_factor,
+    if (!config_.model_config.t_one_ctc.model.empty()) {
+      // each input frame is of 300ms long, which produces 10 output frames.
+      // so frame_shift_ms is 300/10 = 30ms
+      //
+      frame_shift_ms = 30;
+      subsampling_factor = 1;
+    }
+
+    auto r =
+        ConvertCtc(decoder_result, sym_, frame_shift_ms, subsampling_factor,
                    s->GetCurrentSegment(), s->GetNumFramesSinceStart());
+    r.text = ApplyInverseTextNormalization(std::move(r.text));
+    r.text = ApplyHomophoneReplacer(std::move(r.text));
+    return r;
   }
 
   bool IsEndpoint(OnlineStream *s) const override {
@@ -192,11 +217,15 @@ class OnlineRecognizerCtcImpl : public OnlineRecognizerImpl {
 
     int32_t num_processed_frames = s->GetNumProcessedFrames();
 
-    // frame shift is 10 milliseconds
     float frame_shift_in_seconds = 0.01;
+    int32_t subsampling_factor = 4;
+    if (!config_.model_config.t_one_ctc.model.empty()) {
+      frame_shift_in_seconds = 0.03;
+      subsampling_factor = 1;
+    }
 
-    // subsampling factor is 4
-    int32_t trailing_silence_frames = s->GetCtcResult().num_trailing_blanks * 4;
+    int32_t trailing_silence_frames =
+        s->GetCtcResult().num_trailing_blanks * subsampling_factor;
 
     return endpoint_.IsEndpoint(num_processed_frames, trailing_silence_frames,
                                 frame_shift_in_seconds);
@@ -216,28 +245,50 @@ class OnlineRecognizerCtcImpl : public OnlineRecognizerImpl {
     // clear states
     s->SetStates(model_->GetInitStates());
 
+    s->GetFasterDecoderProcessedFrames() = 0;
+
     // Note: We only update counters. The underlying audio samples
     // are not discarded.
     s->Reset();
   }
 
  private:
+  void PostInit() {
+    if (!config_.model_config.wenet_ctc.model.empty()) {
+      // WeNet CTC models assume input samples are in the range
+      // [-32768, 32767], so we set normalize_samples to false
+      config_.feat_config.normalize_samples = false;
+    }
+
+    if (!config_.model_config.t_one_ctc.model.empty()) {
+      config_.feat_config.is_t_one = true;
+      config_.feat_config.frame_length_ms = 300;
+      config_.feat_config.frame_shift_ms = 300;
+      config_.feat_config.sampling_rate = 8000;
+    }
+
+    if (model_->UseWhisperFeature()) {
+      config_.feat_config.is_whisper = true;
+    }
+
+    InitDecoder();
+  }
   void InitDecoder() {
-    if (!sym_.contains("<blk>") && !sym_.contains("<eps>") &&
-        !sym_.contains("<blank>")) {
+    if (!sym_.Contains("<blk>") && !sym_.Contains("<eps>") &&
+        !sym_.Contains("<blank>")) {
       SHERPA_ONNX_LOGE(
           "We expect that tokens.txt contains "
           "the symbol <blk> or <eps> or <blank> and its ID.");
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
 
     int32_t blank_id = 0;
-    if (sym_.contains("<blk>")) {
+    if (sym_.Contains("<blk>")) {
       blank_id = sym_["<blk>"];
-    } else if (sym_.contains("<eps>")) {
+    } else if (sym_.Contains("<eps>")) {
       // for tdnn models of the yesno recipe from icefall
       blank_id = sym_["<eps>"];
-    } else if (sym_.contains("<blank>")) {
+    } else if (sym_.Contains("<blank>")) {
       // for WeNet CTC models
       blank_id = sym_["<blank>"];
     }
@@ -251,7 +302,7 @@ class OnlineRecognizerCtcImpl : public OnlineRecognizerImpl {
       SHERPA_ONNX_LOGE(
           "Unsupported decoding method: %s for streaming CTC models",
           config_.decoding_method.c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
   }
 
@@ -264,6 +315,12 @@ class OnlineRecognizerCtcImpl : public OnlineRecognizerImpl {
     const auto num_processed_frames = s->GetNumProcessedFrames();
     std::vector<float> frames =
         s->GetFrames(num_processed_frames, chunk_length);
+
+    if (config_.feat_config.is_whisper) {
+      OfflineWhisperModel::NormalizeFeatures(frames.data(), chunk_length,
+                                             feat_dim);
+    }
+
     s->GetNumProcessedFrames() += chunk_shift;
 
     auto memory_info =
@@ -287,7 +344,10 @@ class OnlineRecognizerCtcImpl : public OnlineRecognizerImpl {
     std::vector<OnlineCtcDecoderResult> results(1);
     results[0] = std::move(s->GetCtcResult());
 
-    decoder_->Decode(std::move(out[0]), &results, &s, 1);
+    std::vector<int64_t> log_probs_shape =
+        out[0].GetTensorTypeAndShapeInfo().GetShape();
+    decoder_->Decode(out[0].GetTensorData<float>(), log_probs_shape[0],
+                     log_probs_shape[1], log_probs_shape[2], &results, &s, 1);
     s->SetCtcResult(results[0]);
   }
 

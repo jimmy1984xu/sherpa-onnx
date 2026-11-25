@@ -102,15 +102,17 @@ if (navigator.mediaDevices.getUserMedia) {
       recognizer_stream.acceptWaveform(expectedSampleRate, samples);
       while (recognizer.isReady(recognizer_stream)) {
         recognizer.decode(recognizer_stream);
-      }
 
+        let result = recognizer.getResult(recognizer_stream);
 
-      let result = recognizer.getResult(recognizer_stream);
-      console.log(result)
+        if (result.keyword.length > 0) {
+          console.log(result)
+          lastResult = result;
+          resultList.push(JSON.stringify(result));
 
-      if (result.keyword.length > 0) {
-        lastResult = result;
-        resultList.push(JSON.stringify(result));
+          // remember to reset the stream right after detecting a keyword
+          recognizer.reset(recognizer_stream);
+        }
       }
 
 
@@ -203,7 +205,7 @@ if (navigator.mediaDevices.getUserMedia) {
   };
 
   let onError = function(err) {
-    console.log('The following error occured: ' + err);
+    console.log('The following error occurred: ' + err);
   };
 
   navigator.mediaDevices.getUserMedia(constraints).then(onSuccess, onError);

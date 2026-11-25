@@ -3,12 +3,24 @@
 // Copyright (c)  2023  Xiaomi Corporation
 
 #include "sherpa-onnx/csrc/offline-rnn-lm.h"
+#include "sherpa-onnx/csrc/ort-env.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#if __ANDROID_API__ >= 9
+#include "android/asset_manager.h"
+#include "android/asset_manager_jni.h"
+#endif
+
+#if __OHOS__
+#include "rawfile/raw_file_manager.h"
+#endif
+
 #include "onnxruntime_cxx_api.h"  // NOLINT
+#include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
 #include "sherpa-onnx/csrc/session.h"
@@ -20,23 +32,23 @@ class OfflineRnnLM::Impl {
  public:
   explicit Impl(const OfflineLMConfig &config)
       : config_(config),
-        env_(ORT_LOGGING_LEVEL_ERROR),
+        env_(CreateOrtEnv()),
         sess_opts_{GetSessionOptions(config)},
         allocator_{} {
-    auto buf = ReadFile(config_.model);
-    Init(buf.data(), buf.size());
+    sess_ = std::make_unique<Ort::Session>(
+        env_, SHERPA_ONNX_TO_ORT_PATH(config_.model), sess_opts_);
+    Init(nullptr, 0);
   }
 
-#if __ANDROID_API__ >= 9
-  Impl(AAssetManager *mgr, const OfflineLMConfig &config)
+  template <typename Manager>
+  Impl(Manager *mgr, const OfflineLMConfig &config)
       : config_(config),
-        env_(ORT_LOGGING_LEVEL_ERROR),
+        env_(CreateOrtEnv()),
         sess_opts_{GetSessionOptions(config)},
         allocator_{} {
     auto buf = ReadFile(mgr, config_.model);
     Init(buf.data(), buf.size());
   }
-#endif
 
   Ort::Value Rescore(Ort::Value x, Ort::Value x_lens) {
     std::array<Ort::Value, 2> inputs = {std::move(x), std::move(x_lens)};
@@ -50,8 +62,15 @@ class OfflineRnnLM::Impl {
 
  private:
   void Init(void *model_data, size_t model_data_length) {
-    sess_ = std::make_unique<Ort::Session>(env_, model_data, model_data_length,
-                                           sess_opts_);
+    if (model_data) {
+      sess_ = std::make_unique<Ort::Session>(
+          env_, model_data, model_data_length, sess_opts_);
+    } else if (!sess_) {
+      SHERPA_ONNX_LOGE(
+          "Please pass model data or initialize the session outside of "
+          "this function");
+      SHERPA_ONNX_EXIT(-1);
+    }
 
     GetInputNames(sess_.get(), &input_names_, &input_names_ptr_);
 
@@ -74,17 +93,26 @@ class OfflineRnnLM::Impl {
 };
 
 OfflineRnnLM::OfflineRnnLM(const OfflineLMConfig &config)
-    : impl_(std::make_unique<Impl>(config)) {}
+    : impl_(std::make_unique<Impl>(config)), OfflineLM(config) {}
 
-#if __ANDROID_API__ >= 9
-OfflineRnnLM::OfflineRnnLM(AAssetManager *mgr, const OfflineLMConfig &config)
-    : impl_(std::make_unique<Impl>(mgr, config)) {}
-#endif
+template <typename Manager>
+OfflineRnnLM::OfflineRnnLM(Manager *mgr, const OfflineLMConfig &config)
+    : impl_(std::make_unique<Impl>(mgr, config)), OfflineLM(config) {}
 
 OfflineRnnLM::~OfflineRnnLM() = default;
 
 Ort::Value OfflineRnnLM::Rescore(Ort::Value x, Ort::Value x_lens) {
   return impl_->Rescore(std::move(x), std::move(x_lens));
 }
+
+#if __ANDROID_API__ >= 9
+template OfflineRnnLM::OfflineRnnLM(AAssetManager *mgr,
+                                    const OfflineLMConfig &config);
+#endif
+
+#if __OHOS__
+template OfflineRnnLM::OfflineRnnLM(NativeResourceManager *mgr,
+                                    const OfflineLMConfig &config);
+#endif
 
 }  // namespace sherpa_onnx

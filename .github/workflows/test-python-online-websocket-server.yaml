@@ -6,19 +6,10 @@ on:
       - master
     paths:
       - '.github/workflows/test-python-online-websocket-server.yaml'
-      - 'CMakeLists.txt'
       - 'cmake/**'
       - 'sherpa-onnx/csrc/*'
       - 'sherpa-onnx/python/**'
-  pull_request:
-    branches:
-      - master
-    paths:
-      - '.github/workflows/test-python-online-websocket-server.yaml'
-      - 'CMakeLists.txt'
-      - 'cmake/**'
-      - 'sherpa-onnx/csrc/*'
-      - 'sherpa-onnx/python/**'
+
   workflow_dispatch:
 
 concurrency:
@@ -35,14 +26,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11"]
+        os: [ubuntu-latest, ubuntu-22.04, windows-2022, macos-latest, macos-14]
+        python-version: ["3.10"]
         model_type: ["transducer", "paraformer", "zipformer2-ctc"]
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Update version
+        shell: bash
+        run: |
+          ./new-release.sh
+          git diff .
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -57,7 +54,7 @@ jobs:
       - name: Install Python dependencies
         shell: bash
         run: |
-          python3 -m pip install --upgrade pip numpy pypinyin sentencepiece
+          python3 -m pip install --upgrade pip numpy pypinyin sentencepiece setuptools wheel
 
       - name: Install sherpa-onnx
         shell: bash
@@ -66,7 +63,7 @@ jobs:
           export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
           cmake --version
 
-          python3 -m pip install --no-deps --verbose .
+          python3 -m pip install .
           python3 -m pip install websockets
 
       - name: Start server for zipformer2 CTC models
@@ -94,10 +91,9 @@ jobs:
         if: matrix.model_type == 'transducer'
         shell: bash
         run: |
-          GIT_LFS_SKIP_SMUDGE=1 git clone https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26
-          cd sherpa-onnx-streaming-zipformer-en-2023-06-26
-          git lfs pull --include "*.onnx"
-          cd ..
+          curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2
+          tar xvf sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2
+          rm sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2
 
           python3 ./python-api-examples/streaming_server.py \
             --encoder ./sherpa-onnx-streaming-zipformer-en-2023-06-26/encoder-epoch-99-avg-1-chunk-16-left-128.onnx \
@@ -118,10 +114,9 @@ jobs:
         if: matrix.model_type == 'paraformer'
         shell: bash
         run: |
-          GIT_LFS_SKIP_SMUDGE=1 git clone https://huggingface.co/csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en
-          cd sherpa-onnx-streaming-paraformer-bilingual-zh-en
-          git lfs pull --include "*.onnx"
-          cd ..
+          curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2
+          tar xvf sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2
+          rm sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2
 
           python3 ./python-api-examples/streaming_server.py \
             --tokens ./sherpa-onnx-streaming-paraformer-bilingual-zh-en/tokens.txt \

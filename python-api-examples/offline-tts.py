@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (c)  2023  Xiaomi Corporation
+# Copyright (c)  2023-2025  Xiaomi Corporation
 
 """
 This file demonstrates how to use sherpa-onnx Python API to generate audio
@@ -12,7 +12,7 @@ generated audio.
 
 Usage:
 
-Example (1/2)
+Example (1/8)
 
 wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-low.tar.bz2
 tar xf vits-piper-en_US-amy-low.tar.bz2
@@ -24,19 +24,124 @@ python3 ./python-api-examples/offline-tts.py \
  --output-filename=./generated.wav \
  "Today as always, men fall into two groups: slaves and free men. Whoever does not have two-thirds of his day for himself, is a slave, whatever he may be: a statesman, a businessman, an official, or a scholar."
 
-Example (2/2)
+Example (2/8)
 
-wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-zh-aishell3.tar.bz2
-tar xvf vits-zh-aishell3.tar.bz2
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-icefall-zh-aishell3.tar.bz2
+tar xvf vits-icefall-zh-aishell3.tar.bz2
 
 python3 ./python-api-examples/offline-tts.py \
- --vits-model=./vits-aishell3.onnx \
- --vits-lexicon=./lexicon.txt \
- --vits-tokens=./tokens.txt \
- --tts-rule-fsts=./rule.fst \
+ --vits-model=./vits-icefall-zh-aishell3/model.onnx \
+ --vits-lexicon=./vits-icefall-zh-aishell3/lexicon.txt \
+ --vits-tokens=./vits-icefall-zh-aishell3/tokens.txt \
+ --tts-rule-fsts='./vits-icefall-zh-aishell3/phone.fst,./vits-icefall-zh-aishell3/date.fst,./vits-icefall-zh-aishell3/number.fst' \
  --sid=21 \
  --output-filename=./liubei-21.wav \
  "勿以恶小而为之，勿以善小而不为。惟贤惟德，能服于人。122334"
+
+Example (3/8)
+
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-vits-zh-ll.tar.bz2
+tar xvf sherpa-onnx-vits-zh-ll.tar.bz2
+rm sherpa-onnx-vits-zh-ll.tar.bz2
+
+python3 ./python-api-examples/offline-tts.py \
+ --vits-model=./sherpa-onnx-vits-zh-ll/model.onnx \
+ --vits-lexicon=./sherpa-onnx-vits-zh-ll/lexicon.txt \
+ --vits-tokens=./sherpa-onnx-vits-zh-ll/tokens.txt \
+ --tts-rule-fsts=./sherpa-onnx-vits-zh-ll/phone.fst,./sherpa-onnx-vits-zh-ll/date.fst,./sherpa-onnx-vits-zh-ll/number.fst \
+ --sid=2 \
+ --output-filename=./test-2.wav \
+ "当夜幕降临，星光点点，伴随着微风拂面，我在静谧中感受着时光的流转，思念如涟漪荡漾，梦境如画卷展开，我与自然融为一体，沉静在这片宁静的美丽之中，感受着生命的奇迹与温柔。2024年5月11号，拨打110或者18920240511。123456块钱。"
+
+Example (4/8)
+
+curl -O -SL https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-zh-baker.tar.bz2
+tar xvf matcha-icefall-zh-baker.tar.bz2
+rm matcha-icefall-zh-baker.tar.bz2
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx
+
+python3 ./python-api-examples/offline-tts.py \
+ --matcha-acoustic-model=./matcha-icefall-zh-baker/model-steps-3.onnx \
+ --matcha-vocoder=./vocos-22khz-univ.onnx \
+ --matcha-lexicon=./matcha-icefall-zh-baker/lexicon.txt \
+ --matcha-tokens=./matcha-icefall-zh-baker/tokens.txt \
+ --tts-rule-fsts=./matcha-icefall-zh-baker/phone.fst,./matcha-icefall-zh-baker/date.fst,./matcha-icefall-zh-baker/number.fst \
+ --output-filename=./test-matcha.wav \
+ "某某银行的副行长和一些行政领导表示，他们去过长江和长白山; 经济不断增长。2024年12月31号，拨打110或者18920240511。123456块钱。"
+
+Example (5/8)
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-en_US-ljspeech.tar.bz2
+tar xvf matcha-icefall-en_US-ljspeech.tar.bz2
+rm matcha-icefall-en_US-ljspeech.tar.bz2
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx
+
+python3 ./python-api-examples/offline-tts.py \
+  --matcha-acoustic-model=./matcha-icefall-en_US-ljspeech/model-steps-3.onnx \
+  --matcha-vocoder=./vocos-22khz-univ.onnx \
+  --matcha-tokens=./matcha-icefall-en_US-ljspeech/tokens.txt \
+  --matcha-data-dir=./matcha-icefall-en_US-ljspeech/espeak-ng-data \
+  --output-filename=./test-matcha-ljspeech-en.wav \
+  --num-threads=2 \
+ "Today as always, men fall into two groups: slaves and free men. Whoever does not have two-thirds of his day for himself, is a slave, whatever he may be: a statesman, a businessman, an official, or a scholar."
+
+Example (6/8)
+
+(This version of kokoro supports only English)
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2
+tar xf kokoro-en-v0_19.tar.bz2
+rm kokoro-en-v0_19.tar.bz2
+
+python3 ./python-api-examples/offline-tts.py \
+  --debug=1 \
+  --kokoro-model=./kokoro-en-v0_19/model.onnx \
+  --kokoro-voices=./kokoro-en-v0_19/voices.bin \
+  --kokoro-tokens=./kokoro-en-v0_19/tokens.txt \
+  --kokoro-data-dir=./kokoro-en-v0_19/espeak-ng-data \
+  --num-threads=2 \
+  --sid=10 \
+  --output-filename="./kokoro-10.wav" \
+  "Today as always, men fall into two groups: slaves and free men. Whoever does not have two-thirds of his day for himself, is a slave, whatever he may be: a statesman, a businessman, an official, or a scholar."
+
+Example (7/8)
+
+(This version of kokoro supports English, Chinese, etc.)
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2
+tar xf kokoro-multi-lang-v1_0.tar.bz2
+rm kokoro-multi-lang-v1_0.tar.bz2
+
+python3 ./python-api-examples/offline-tts.py \
+  --debug=1 \
+  --kokoro-model=./kokoro-multi-lang-v1_0/model.onnx \
+  --kokoro-voices=./kokoro-multi-lang-v1_0/voices.bin \
+  --kokoro-tokens=./kokoro-multi-lang-v1_0/tokens.txt \
+  --kokoro-data-dir=./kokoro-multi-lang-v1_0/espeak-ng-data \
+  --kokoro-lexicon=./kokoro-multi-lang-v1_0/lexicon-us-en.txt,./kokoro-multi-lang-v1_0/lexicon-zh.txt \
+  --num-threads=2 \
+  --sid=18 \
+  --output-filename="./kokoro-18-zh-en.wav" \
+  "中英文语音合成测试。This is generated by next generation Kaldi using Kokoro without Misaki. 你觉得中英文说的如何呢？"
+
+Example (8/8)
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kitten-nano-en-v0_1-fp16.tar.bz2
+tar xf kitten-nano-en-v0_1-fp16.tar.bz2
+rm kitten-nano-en-v0_1-fp16.tar.bz2
+
+python3 ./python-api-examples/offline-tts.py \
+  --debug=1 \
+  --kitten-model=./kitten-nano-en-v0_1-fp16/model.fp16.onnx \
+  --kitten-voices=./kitten-nano-en-v0_1-fp16/voices.bin \
+  --kitten-tokens=./kitten-nano-en-v0_1-fp16/tokens.txt \
+  --kitten-data-dir=./kitten-nano-en-v0_1-fp16/espeak-ng-data \
+  --num-threads=2 \
+  --sid=0 \
+  --output-filename="./kitten-0.wav" \
+  "Today as always, men fall into two groups: slaves and free men. Whoever does not have two-thirds of his day for himself, is a slave, whatever he may be: a statesman, a businessman, an official, or a scholar."
 
 You can find more models at
 https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models
@@ -54,14 +159,11 @@ import sherpa_onnx
 import soundfile as sf
 
 
-def get_args():
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-
+def add_vits_args(parser):
     parser.add_argument(
         "--vits-model",
         type=str,
+        default="",
         help="Path to vits model.onnx",
     )
 
@@ -83,9 +185,125 @@ def get_args():
         "--vits-data-dir",
         type=str,
         default="",
-        help="""Path to the dict director of espeak-ng. If it is specified,
+        help="""Path to the dict directory of espeak-ng. If it is specified,
         --vits-lexicon and --vits-tokens are ignored""",
     )
+
+
+def add_matcha_args(parser):
+    parser.add_argument(
+        "--matcha-acoustic-model",
+        type=str,
+        default="",
+        help="Path to model.onnx for matcha",
+    )
+
+    parser.add_argument(
+        "--matcha-vocoder",
+        type=str,
+        default="",
+        help="Path to vocoder for matcha",
+    )
+
+    parser.add_argument(
+        "--matcha-lexicon",
+        type=str,
+        default="",
+        help="Path to lexicon.txt for matcha",
+    )
+
+    parser.add_argument(
+        "--matcha-tokens",
+        type=str,
+        default="",
+        help="Path to tokens.txt for matcha",
+    )
+
+    parser.add_argument(
+        "--matcha-data-dir",
+        type=str,
+        default="",
+        help="""Path to the dict directory of espeak-ng. If it is specified,
+        --matcha-lexicon and --matcha-tokens are ignored""",
+    )
+
+
+def add_kokoro_args(parser):
+    parser.add_argument(
+        "--kokoro-model",
+        type=str,
+        default="",
+        help="Path to model.onnx for kokoro",
+    )
+
+    parser.add_argument(
+        "--kokoro-voices",
+        type=str,
+        default="",
+        help="Path to voices.bin for kokoro",
+    )
+
+    parser.add_argument(
+        "--kokoro-tokens",
+        type=str,
+        default="",
+        help="Path to tokens.txt for kokoro",
+    )
+
+    parser.add_argument(
+        "--kokoro-data-dir",
+        type=str,
+        default="",
+        help="Path to the dict directory of espeak-ng.",
+    )
+
+    parser.add_argument(
+        "--kokoro-lexicon",
+        type=str,
+        default="",
+        help="Path to lexicon.txt for kokoro. Needed only by multilingual kokoro",
+    )
+
+
+def add_kitten_args(parser):
+    parser.add_argument(
+        "--kitten-model",
+        type=str,
+        default="",
+        help="Path to model.onnx for kitten",
+    )
+
+    parser.add_argument(
+        "--kitten-voices",
+        type=str,
+        default="",
+        help="Path to voices.bin for kitten",
+    )
+
+    parser.add_argument(
+        "--kitten-tokens",
+        type=str,
+        default="",
+        help="Path to tokens.txt for kitten",
+    )
+
+    parser.add_argument(
+        "--kitten-data-dir",
+        type=str,
+        default="",
+        help="Path to the dict directory of espeak-ng.",
+    )
+
+
+def get_args():
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    add_vits_args(parser)
+    add_matcha_args(parser)
+    add_kokoro_args(parser)
+    add_kitten_args(parser)
 
     parser.add_argument(
         "--tts-rule-fsts",
@@ -97,7 +315,7 @@ def get_args():
     parser.add_argument(
         "--max-num-sentences",
         type=int,
-        default=2,
+        default=1,
         help="""Max number of sentences in a batch to avoid OOM if the input
         text is very long. Set it to -1 to process all the sentences in a
         single batch. A smaller value does not mean it is slower compared
@@ -171,6 +389,26 @@ def main():
                 data_dir=args.vits_data_dir,
                 tokens=args.vits_tokens,
             ),
+            matcha=sherpa_onnx.OfflineTtsMatchaModelConfig(
+                acoustic_model=args.matcha_acoustic_model,
+                vocoder=args.matcha_vocoder,
+                lexicon=args.matcha_lexicon,
+                tokens=args.matcha_tokens,
+                data_dir=args.matcha_data_dir,
+            ),
+            kokoro=sherpa_onnx.OfflineTtsKokoroModelConfig(
+                model=args.kokoro_model,
+                voices=args.kokoro_voices,
+                tokens=args.kokoro_tokens,
+                data_dir=args.kokoro_data_dir,
+                lexicon=args.kokoro_lexicon,
+            ),
+            kitten=sherpa_onnx.OfflineTtsKittenModelConfig(
+                model=args.kitten_model,
+                voices=args.kitten_voices,
+                tokens=args.kitten_tokens,
+                data_dir=args.kitten_data_dir,
+            ),
             provider=args.provider,
             debug=args.debug,
             num_threads=args.num_threads,
@@ -184,7 +422,11 @@ def main():
     tts = sherpa_onnx.OfflineTts(tts_config)
 
     start = time.time()
-    audio = tts.generate(args.text, sid=args.sid, speed=args.speed)
+    gen_config = sherpa_onnx.GenerationConfig()
+    gen_config.sid = args.sid
+    gen_config.speed = args.speed
+    gen_config.silence_scale = 0.2
+    audio = tts.generate(args.text, gen_config)
     end = time.time()
 
     if len(audio.samples) == 0:

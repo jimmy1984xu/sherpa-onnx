@@ -35,7 +35,18 @@ Note that you need a non-streaming model for this script.
       --sample-rate=16000 \
       --feature-dim=80
 
-(3) For Whisper models
+(3) For Moonshine models
+
+./python-api-examples/vad-with-non-streaming-asr.py  \
+  --silero-vad-model=/path/to/silero_vad.onnx \
+  --moonshine-preprocessor=./sherpa-onnx-moonshine-tiny-en-int8/preprocess.onnx \
+  --moonshine-encoder=./sherpa-onnx-moonshine-tiny-en-int8/encode.int8.onnx \
+  --moonshine-uncached-decoder=./sherpa-onnx-moonshine-tiny-en-int8/uncached_decode.int8.onnx \
+  --moonshine-cached-decoder=./sherpa-onnx-moonshine-tiny-en-int8/cached_decode.int8.onnx \
+  --tokens=./sherpa-onnx-moonshine-tiny-en-int8/tokens.txt \
+  --num-threads=2
+
+(4) For Whisper models
 
 ./python-api-examples/vad-with-non-streaming-asr.py  \
   --silero-vad-model=/path/to/silero_vad.onnx \
@@ -45,18 +56,27 @@ Note that you need a non-streaming model for this script.
   --whisper-task=transcribe \
   --num-threads=2
 
+(5) For SenseVoice CTC models
+
+./python-api-examples/vad-with-non-streaming-asr.py  \
+  --silero-vad-model=/path/to/silero_vad.onnx \
+  --sense-voice=./sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.onnx \
+  --tokens=./sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt \
+  --num-threads=2
+
 Please refer to
 https://k2-fsa.github.io/sherpa/onnx/index.html
 to install sherpa-onnx and to download non-streaming pre-trained models
 used in this file.
 
 Please visit
-https://github.com/snakers4/silero-vad/blob/master/files/silero_vad.onnx
+https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
 to download silero_vad.onnx
 
 For instance,
 
-wget https://github.com/snakers4/silero-vad/raw/master/files/silero_vad.onnx
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
+
 """
 import argparse
 import sys
@@ -124,6 +144,13 @@ def get_args():
     )
 
     parser.add_argument(
+        "--sense-voice",
+        default="",
+        type=str,
+        help="Path to the model.onnx from SenseVoice",
+    )
+
+    parser.add_argument(
         "--num-threads",
         type=int,
         default=1,
@@ -178,6 +205,34 @@ def get_args():
     )
 
     parser.add_argument(
+        "--moonshine-preprocessor",
+        default="",
+        type=str,
+        help="Path to moonshine preprocessor model",
+    )
+
+    parser.add_argument(
+        "--moonshine-encoder",
+        default="",
+        type=str,
+        help="Path to moonshine encoder model",
+    )
+
+    parser.add_argument(
+        "--moonshine-uncached-decoder",
+        default="",
+        type=str,
+        help="Path to moonshine uncached decoder model",
+    )
+
+    parser.add_argument(
+        "--moonshine-cached-decoder",
+        default="",
+        type=str,
+        help="Path to moonshine cached decoder model",
+    )
+
+    parser.add_argument(
         "--blank-penalty",
         type=float,
         default=0.0,
@@ -219,6 +274,20 @@ def get_args():
         help="Feature dimension. Must match the one expected by the model",
     )
 
+    parser.add_argument(
+        "--hr-lexicon",
+        type=str,
+        default="",
+        help="If not empty, it is the lexicon.txt for homophone replacer",
+    )
+
+    parser.add_argument(
+        "--hr-rule-fsts",
+        type=str,
+        default="",
+        help="If not empty, it is the replace.fst for homophone replacer",
+    )
+
     return parser.parse_args()
 
 
@@ -233,8 +302,15 @@ def assert_file_exists(filename: str):
 def create_recognizer(args) -> sherpa_onnx.OfflineRecognizer:
     if args.encoder:
         assert len(args.paraformer) == 0, args.paraformer
+        assert len(args.sense_voice) == 0, args.sense_voice
         assert len(args.whisper_encoder) == 0, args.whisper_encoder
         assert len(args.whisper_decoder) == 0, args.whisper_decoder
+        assert len(args.moonshine_preprocessor) == 0, args.moonshine_preprocessor
+        assert len(args.moonshine_encoder) == 0, args.moonshine_encoder
+        assert (
+            len(args.moonshine_uncached_decoder) == 0
+        ), args.moonshine_uncached_decoder
+        assert len(args.moonshine_cached_decoder) == 0, args.moonshine_cached_decoder
 
         assert_file_exists(args.encoder)
         assert_file_exists(args.decoder)
@@ -251,10 +327,19 @@ def create_recognizer(args) -> sherpa_onnx.OfflineRecognizer:
             decoding_method=args.decoding_method,
             blank_penalty=args.blank_penalty,
             debug=args.debug,
+            hr_rule_fsts=args.hr_rule_fsts,
+            hr_lexicon=args.hr_lexicon,
         )
     elif args.paraformer:
+        assert len(args.sense_voice) == 0, args.sense_voice
         assert len(args.whisper_encoder) == 0, args.whisper_encoder
         assert len(args.whisper_decoder) == 0, args.whisper_decoder
+        assert len(args.moonshine_preprocessor) == 0, args.moonshine_preprocessor
+        assert len(args.moonshine_encoder) == 0, args.moonshine_encoder
+        assert (
+            len(args.moonshine_uncached_decoder) == 0
+        ), args.moonshine_uncached_decoder
+        assert len(args.moonshine_cached_decoder) == 0, args.moonshine_cached_decoder
 
         assert_file_exists(args.paraformer)
 
@@ -266,10 +351,38 @@ def create_recognizer(args) -> sherpa_onnx.OfflineRecognizer:
             feature_dim=args.feature_dim,
             decoding_method=args.decoding_method,
             debug=args.debug,
+            hr_rule_fsts=args.hr_rule_fsts,
+            hr_lexicon=args.hr_lexicon,
+        )
+    elif args.sense_voice:
+        assert len(args.whisper_encoder) == 0, args.whisper_encoder
+        assert len(args.whisper_decoder) == 0, args.whisper_decoder
+        assert len(args.moonshine_preprocessor) == 0, args.moonshine_preprocessor
+        assert len(args.moonshine_encoder) == 0, args.moonshine_encoder
+        assert (
+            len(args.moonshine_uncached_decoder) == 0
+        ), args.moonshine_uncached_decoder
+        assert len(args.moonshine_cached_decoder) == 0, args.moonshine_cached_decoder
+
+        assert_file_exists(args.sense_voice)
+        recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+            model=args.sense_voice,
+            tokens=args.tokens,
+            num_threads=args.num_threads,
+            use_itn=True,
+            debug=args.debug,
+            hr_rule_fsts=args.hr_rule_fsts,
+            hr_lexicon=args.hr_lexicon,
         )
     elif args.whisper_encoder:
         assert_file_exists(args.whisper_encoder)
         assert_file_exists(args.whisper_decoder)
+        assert len(args.moonshine_preprocessor) == 0, args.moonshine_preprocessor
+        assert len(args.moonshine_encoder) == 0, args.moonshine_encoder
+        assert (
+            len(args.moonshine_uncached_decoder) == 0
+        ), args.moonshine_uncached_decoder
+        assert len(args.moonshine_cached_decoder) == 0, args.moonshine_cached_decoder
 
         recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
             encoder=args.whisper_encoder,
@@ -281,6 +394,26 @@ def create_recognizer(args) -> sherpa_onnx.OfflineRecognizer:
             language=args.whisper_language,
             task=args.whisper_task,
             tail_paddings=args.whisper_tail_paddings,
+            hr_rule_fsts=args.hr_rule_fsts,
+            hr_lexicon=args.hr_lexicon,
+        )
+    elif args.moonshine_preprocessor:
+        assert_file_exists(args.moonshine_preprocessor)
+        assert_file_exists(args.moonshine_encoder)
+        assert_file_exists(args.moonshine_uncached_decoder)
+        assert_file_exists(args.moonshine_cached_decoder)
+
+        recognizer = sherpa_onnx.OfflineRecognizer.from_moonshine(
+            preprocessor=args.moonshine_preprocessor,
+            encoder=args.moonshine_encoder,
+            uncached_decoder=args.moonshine_uncached_decoder,
+            cached_decoder=args.moonshine_cached_decoder,
+            tokens=args.tokens,
+            num_threads=args.num_threads,
+            decoding_method=args.decoding_method,
+            debug=args.debug,
+            hr_rule_fsts=args.hr_rule_fsts,
+            hr_lexicon=args.hr_lexicon,
         )
     else:
         raise ValueError("Please specify at least one model")

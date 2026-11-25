@@ -8,6 +8,327 @@ log() {
   echo -e "$(date '+%Y-%m-%d %H:%M:%S') (${fname}:${BASH_LINENO[0]}:${FUNCNAME[1]}) $*"
 }
 
+log "test Cohere Transcribe"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01.tar.bz2
+tar xvf sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01.tar.bz2
+rm sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01.tar.bz2
+python3 ./python-api-examples/offline-cohere-transcribe-decode-files.py
+rm -rf sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01
+
+log "test Qwen3 ASR"
+
+wget -q https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2
+tar xvf sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2
+rm sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2
+
+python3 ./python-api-examples/offline-qwen3-asr-decode-files.py \
+  --conv-frontend=./sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/conv_frontend.onnx \
+  --encoder=./sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/encoder.int8.onnx \
+  --decoder=./sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/decoder.int8.onnx \
+  --tokenizer=./sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/tokenizer \
+  --max-new-tokens=128 \
+  --num-threads=2 \
+  ./sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/test_wavs/raokouling.wav
+
+rm -rf sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25
+
+log "test Supertonic TTS"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2
+tar xvf sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2
+rm sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2
+
+python3 python-api-examples/supertonic-tts.py
+
+rm -rf sherpa-onnx-supertonic-3-tts-int8-2026-05-11
+
+mkdir -p tts
+cp supertonic-en.wav tts/
+ls -lh tts
+
+log "test Moonshine v2"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2
+tar xvf sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2
+rm sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2
+
+ls -lh sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27
+
+python3 ./python-api-examples/offline-moonshine-decode-files-v2.py
+
+rm -rf  sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27
+
+log "test FireRedASR CTC"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25.tar.bz2
+tar xvf sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25.tar.bz2
+rm sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25.tar.bz2
+
+python3 ./python-api-examples/offline-fire-red-asr-ctc-decode-files.py
+
+rm -rf sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25
+
+log "test FireRedASR AED"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16.tar.bz2
+tar xvf sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16.tar.bz2
+rm sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16.tar.bz2
+
+python3 ./python-api-examples/offline-fire-red-asr-decode-files.py
+
+rm -rf sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16
+
+log "test PocketTTS"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-pocket-tts-int8-2026-01-26.tar.bz2
+tar xvf sherpa-onnx-pocket-tts-int8-2026-01-26.tar.bz2
+rm sherpa-onnx-pocket-tts-int8-2026-01-26.tar.bz2
+
+python3 ./python-api-examples/pocket-tts.py
+
+rm -rf sherpa-onnx-pocket-tts-int8-2026-01-26
+
+log "test ZipVoice TTS"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia.tar.bz2
+tar xvf sherpa-onnx-zipvoice-distill-int8-zh-en-emilia.tar.bz2
+rm sherpa-onnx-zipvoice-distill-int8-zh-en-emilia.tar.bz2
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos_24khz.onnx
+
+python3 ./python-api-examples/zipvoice-tts.py
+
+cp generated-zipvoice-zh-en-python.wav tts/
+
+rm -rf sherpa-onnx-zipvoice-distill-int8-zh-en-emilia
+rm -f vocos_24khz.onnx
+
+log "test Google MedASR"
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-medasr-ctc-en-int8-2025-12-25.tar.bz2
+tar xvf sherpa-onnx-medasr-ctc-en-int8-2025-12-25.tar.bz2
+rm sherpa-onnx-medasr-ctc-en-int8-2025-12-25.tar.bz2
+ls -lh sherpa-onnx-medasr-ctc-en-int8-2025-12-25
+
+ls -lh sherpa-onnx-medasr-ctc-en-int8-2025-12-25/test_wavs
+
+python3 ./python-api-examples/offline-medasr-ctc-decode-files.py
+rm -rf sherpa-onnx-medasr-ctc-en-int8-2025-12-25
+
+log "test omnilingual ASR"
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-omnilingual-asr-1600-languages-300M-ctc-int8-2025-11-12.tar.bz2
+tar xvf sherpa-onnx-omnilingual-asr-1600-languages-300M-ctc-int8-2025-11-12.tar.bz2
+rm sherpa-onnx-omnilingual-asr-1600-languages-300M-ctc-int8-2025-11-12.tar.bz2
+ls -lh sherpa-onnx-omnilingual-asr-1600-languages-300M-ctc-int8-2025-11-12
+
+python3 ./python-api-examples/offline-omnilingual-asr-ctc-decode-files.py
+
+rm -rf sherpa-onnx-omnilingual-asr-1600-languages-300M-ctc-int8-2025-11-12
+
+log "test T-one"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-t-one-russian-2025-09-08.tar.bz2
+tar xvf sherpa-onnx-streaming-t-one-russian-2025-09-08.tar.bz2
+rm sherpa-onnx-streaming-t-one-russian-2025-09-08.tar.bz2
+
+python3 ./python-api-examples/online-t-one-ctc-decode-files.py
+
+rm -rf sherpa-onnx-streaming-t-one-russian-2025-09-08
+
+log "test nemo canary"
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8.tar.bz2
+tar xvf sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8.tar.bz2
+rm sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8.tar.bz2
+python3 ./python-api-examples/offline-nemo-canary-decode-files.py
+rm -rf sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8
+
+log "test spleeter"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/source-separation-models/sherpa-onnx-spleeter-2stems-fp16.tar.bz2
+tar xvf sherpa-onnx-spleeter-2stems-fp16.tar.bz2
+rm sherpa-onnx-spleeter-2stems-fp16.tar.bz2
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/source-separation-models/qi-feng-le-zh.wav
+./python-api-examples/offline-source-separation-spleeter.py
+rm -rf sherpa-onnx-spleeter-2stems-fp16
+rm qi-feng-le-zh.wav
+
+log "test UVR"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/source-separation-models/UVR_MDXNET_9482.onnx
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/source-separation-models/qi-feng-le-zh.wav
+./python-api-examples/offline-source-separation-uvr.py
+rm UVR_MDXNET_9482.onnx
+rm qi-feng-le-zh.wav
+
+mkdir source-separation
+
+mv spleeter-*.wav source-separation
+mv uvr-*.wav source-separation
+
+ls -lh source-separation
+
+
+log "test offline dolphin ctc"
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-dolphin-base-ctc-multi-lang-int8-2025-04-02.tar.bz2
+tar xvf sherpa-onnx-dolphin-base-ctc-multi-lang-int8-2025-04-02.tar.bz2
+rm sherpa-onnx-dolphin-base-ctc-multi-lang-int8-2025-04-02.tar.bz2
+
+python3 ./python-api-examples/offline-dolphin-ctc-decode-files.py
+
+rm -rf sherpa-onnx-dolphin-base-ctc-multi-lang-int8-2025-04-02
+
+log "test offline speech enhancement (GTCRN)"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/dpdfnet_baseline.onnx
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/speech_with_noise.wav
+python3 ./python-api-examples/offline-speech-enhancement-gtcrn.py
+python3 ./python-api-examples/offline-speech-enhancement-dpdfnet.py
+python3 ./python-api-examples/online-speech-enhancement-gtcrn.py
+python3 ./python-api-examples/online-speech-enhancement-dpdfnet.py
+ls -lh *.wav
+
+log "test offline zipformer (byte-level bpe, Chinese+English)"
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-zh-en-2023-11-22.tar.bz2
+tar xvf sherpa-onnx-zipformer-zh-en-2023-11-22.tar.bz2
+rm sherpa-onnx-zipformer-zh-en-2023-11-22.tar.bz2
+
+repo=sherpa-onnx-zipformer-zh-en-2023-11-22
+
+./python-api-examples/offline-decode-files.py  \
+  --tokens=$repo/tokens.txt \
+  --encoder=$repo/encoder-epoch-34-avg-19.int8.onnx \
+  --decoder=$repo/decoder-epoch-34-avg-19.onnx \
+  --joiner=$repo/joiner-epoch-34-avg-19.int8.onnx \
+  --num-threads=2 \
+  --decoding-method=greedy_search \
+  --debug=true \
+  $repo/test_wavs/0.wav \
+  $repo/test_wavs/1.wav \
+  $repo/test_wavs/2.wav
+
+rm -rf sherpa-onnx-zipformer-zh-en-2023-11-22
+
+log "test offline Moonshine"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-moonshine-tiny-en-int8.tar.bz2
+tar xvf sherpa-onnx-moonshine-tiny-en-int8.tar.bz2
+rm sherpa-onnx-moonshine-tiny-en-int8.tar.bz2
+
+python3 ./python-api-examples/offline-moonshine-decode-files.py
+
+rm -rf sherpa-onnx-moonshine-tiny-en-int8
+
+log "test offline speaker diarization"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+tar xvf sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+rm sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/0-four-speakers-zh.wav
+
+python3 ./python-api-examples/offline-speaker-diarization.py
+
+rm -rf *.wav *.onnx ./sherpa-onnx-pyannote-segmentation-3-0
+
+
+log "test_clustering"
+pushd /tmp/
+mkdir test-cluster
+cd test-cluster
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
+git clone https://github.com/csukuangfj/sr-data
+popd
+
+python3 ./sherpa-onnx/python/tests/test_fast_clustering.py
+
+rm -rf /tmp/test-cluster
+
+export GIT_CLONE_PROTECTION_ACTIVE=false
+
+log "test offline SenseVoice CTC"
+url=https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+name=$(basename $url)
+repo=$(basename -s .tar.bz2 $name)
+
+curl -SL -O $url
+tar xvf $name
+rm $name
+ls -lh $repo
+python3 ./python-api-examples/offline-sense-voice-ctc-decode-files.py
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/hr-files/dict.tar.bz2
+tar xf dict.tar.bz2
+rm dict.tar.bz2
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/hr-files/replace.fst
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/hr-files/test-hr.wav
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/hr-files/lexicon.txt
+
+python3 ./python-api-examples/offline-sense-voice-ctc-decode-files-with-hr.py
+
+rm -rf dict replace.fst test-hr.wav lexicon.txt
+
+if [[ $(uname) == Linux ]]; then
+  # It needs ffmpeg
+  log  "generate subtitles (Chinese)"
+  curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
+  curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/lei-jun-test.wav
+
+  python3 ./python-api-examples/generate-subtitles.py \
+    --silero-vad-model=./silero_vad.onnx \
+    --sense-voice=$repo/model.onnx \
+    --tokens=$repo/tokens.txt \
+    --num-threads=2 \
+    ./lei-jun-test.wav
+
+  cat lei-jun-test.srt
+
+  rm lei-jun-test.wav
+
+  log  "generate subtitles (English)"
+  curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/Obama.wav
+
+  python3 ./python-api-examples/generate-subtitles.py \
+    --silero-vad-model=./silero_vad.onnx \
+    --sense-voice=$repo/model.onnx \
+    --tokens=$repo/tokens.txt \
+    --num-threads=2 \
+    ./Obama.wav
+
+  cat Obama.srt
+  rm Obama.wav
+  rm silero_vad.onnx
+fi
+rm -rf $repo
+
+log "test offline TeleSpeech CTC"
+url=https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-telespeech-ctc-int8-zh-2024-06-04.tar.bz2
+name=$(basename $url)
+repo=$(basename -s .tar.bz2 $name)
+
+curl -SL -O $url
+tar xvf $name
+rm $name
+ls -lh $repo
+python3 ./python-api-examples/offline-telespeech-ctc-decode-files.py
+rm -rf $repo
+
+log "test online NeMo CTC"
+
+url=https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-streaming-fast-conformer-ctc-en-80ms.tar.bz2
+name=$(basename $url)
+repo=$(basename -s .tar.bz2 $name)
+
+curl -SL -O $url
+tar xvf $name
+rm $name
+ls -lh $repo
+python3 ./python-api-examples/online-nemo-ctc-decode-files.py
+rm -rf $repo
+
 log "test offline punctuation"
 
 curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12.tar.bz2
@@ -17,6 +338,18 @@ repo=sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12
 ls -lh $repo
 
 python3 ./python-api-examples/add-punctuation.py
+
+rm -rf $repo
+
+log "test online punctuation"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-online-punct-en-2024-08-06.tar.bz2
+tar xvf sherpa-onnx-online-punct-en-2024-08-06.tar.bz2
+rm sherpa-onnx-online-punct-en-2024-08-06.tar.bz2
+repo=sherpa-onnx-online-punct-en-2024-08-06
+ls -lh $repo
+
+python3 ./python-api-examples/add-punctuation-online.py
 
 rm -rf $repo
 
@@ -87,27 +420,26 @@ wenet_models=(
 # sherpa-onnx-zh-wenet-wenetspeech
 # sherpa-onnx-zh-wenet-multi-cn
 sherpa-onnx-en-wenet-librispeech
-sherpa-onnx-en-wenet-gigaspeech
+# sherpa-onnx-en-wenet-gigaspeech
 )
 
 for name in ${wenet_models[@]}; do
-  repo_url=https://huggingface.co/csukuangfj/$name
+  repo_url=https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$name.tar.bz2
+  curl -SL -O $repo_url
+  tar xvf $name.tar.bz2
+  rm $name.tar.bz2
+  repo=$name
   log "Start testing ${repo_url}"
-  repo=$dir/$(basename $repo_url)
-  log "Download pretrained model and test-data from $repo_url"
-  pushd $dir
-  GIT_LFS_SKIP_SMUDGE=1 git clone $repo_url
-  cd $repo
-  git lfs pull --include "*.onnx"
-  ls -lh *.onnx
-  popd
 
-  python3 ./python-api-examples/offline-decode-files.py \
-    --tokens=$repo/tokens.txt \
-    --wenet-ctc=$repo/model.onnx \
-    $repo/test_wavs/0.wav \
-    $repo/test_wavs/1.wav \
-    $repo/test_wavs/8k.wav
+  if false; then
+    # offline wenet ctc models are not supported by onnxruntime >= 1.18
+    python3 ./python-api-examples/offline-decode-files.py \
+      --tokens=$repo/tokens.txt \
+      --wenet-ctc=$repo/model.onnx \
+      $repo/test_wavs/0.wav \
+      $repo/test_wavs/1.wav \
+      $repo/test_wavs/8k.wav
+  fi
 
   python3 ./python-api-examples/online-decode-files.py \
     --tokens=$repo/tokens.txt \
@@ -125,7 +457,105 @@ done
 
 log "Offline TTS test"
 # test waves are saved in ./tts
-mkdir ./tts
+mkdir -p ./tts
+
+log "test kitten tts"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kitten-nano-en-v0_1-fp16.tar.bz2
+tar xf kitten-nano-en-v0_1-fp16.tar.bz2
+rm kitten-nano-en-v0_1-fp16.tar.bz2
+
+python3 ./python-api-examples/offline-tts.py \
+  --debug=1 \
+  --kitten-model=./kitten-nano-en-v0_1-fp16/model.fp16.onnx \
+  --kitten-voices=./kitten-nano-en-v0_1-fp16/voices.bin \
+  --kitten-tokens=./kitten-nano-en-v0_1-fp16/tokens.txt \
+  --kitten-data-dir=./kitten-nano-en-v0_1-fp16/espeak-ng-data \
+  --num-threads=2 \
+  --sid=0 \
+  --output-filename="./tts/kitten-0.wav" \
+  "Today as always, men fall into two groups: slaves and free men. Whoever does not have two-thirds of his day for himself, is a slave, whatever he may be: a statesman, a businessman, an official, or a scholar."
+
+rm -rf kitten-nano-en-v0_1-fp16
+
+log "kokoro-multi-lang-v1_0 test"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2
+tar xf kokoro-multi-lang-v1_0.tar.bz2
+rm kokoro-multi-lang-v1_0.tar.bz2
+
+python3 ./python-api-examples/offline-tts.py \
+  --debug=1 \
+  --kokoro-model=./kokoro-multi-lang-v1_0/model.onnx \
+  --kokoro-voices=./kokoro-multi-lang-v1_0/voices.bin \
+  --kokoro-tokens=./kokoro-multi-lang-v1_0/tokens.txt \
+  --kokoro-data-dir=./kokoro-multi-lang-v1_0/espeak-ng-data \
+  --kokoro-lexicon=./kokoro-multi-lang-v1_0/lexicon-us-en.txt,./kokoro-multi-lang-v1_0/lexicon-zh.txt \
+  --num-threads=2 \
+  --sid=18 \
+  --output-filename="./tts/kokoro-18-zh-en.wav" \
+  "中英文语音合成测试。This is generated by next generation Kaldi using Kokoro without Misaki. 你觉得中英文说的如何呢？"
+
+rm -rf kokoro-multi-lang-v1_0
+
+log "kokoro-en-v0_19 test"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2
+tar xf kokoro-en-v0_19.tar.bz2
+rm kokoro-en-v0_19.tar.bz2
+
+python3 ./python-api-examples/offline-tts.py \
+  --debug=1 \
+  --kokoro-model=./kokoro-en-v0_19/model.onnx \
+  --kokoro-voices=./kokoro-en-v0_19/voices.bin \
+  --kokoro-tokens=./kokoro-en-v0_19/tokens.txt \
+  --kokoro-data-dir=./kokoro-en-v0_19/espeak-ng-data \
+  --num-threads=2 \
+  --sid=10 \
+  --output-filename="./tts/kokoro-10.wav" \
+  "Today as always, men fall into two groups: slaves and free men. Whoever does not have two-thirds of his day for himself, is a slave, whatever he may be  a statesman, a businessman, an official, or a scholar."
+
+rm -rf kokoro-en-v0_19
+
+log "matcha-ljspeech-en test"
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-en_US-ljspeech.tar.bz2
+tar xvf matcha-icefall-en_US-ljspeech.tar.bz2
+rm matcha-icefall-en_US-ljspeech.tar.bz2
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx
+
+python3 ./python-api-examples/offline-tts.py \
+  --matcha-acoustic-model=./matcha-icefall-en_US-ljspeech/model-steps-3.onnx \
+  --matcha-vocoder=./vocos-22khz-univ.onnx \
+  --matcha-tokens=./matcha-icefall-en_US-ljspeech/tokens.txt \
+  --matcha-data-dir=./matcha-icefall-en_US-ljspeech/espeak-ng-data \
+  --output-filename=./tts/test-matcha-ljspeech-en.wav \
+  --num-threads=2 \
+ "Today as always, men fall into two groups: slaves and free men. Whoever does not have two-thirds of his day for himself, is a slave, whatever he may be: a statesman, a businessman, an official, or a scholar."
+
+rm vocos-22khz-univ.onnx
+rm -rf matcha-icefall-en_US-ljspeech
+
+log "matcha-baker-zh test"
+
+curl -O -SL https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-zh-baker.tar.bz2
+tar xvf matcha-icefall-zh-baker.tar.bz2
+rm matcha-icefall-zh-baker.tar.bz2
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx
+
+python3 ./python-api-examples/offline-tts.py \
+ --matcha-acoustic-model=./matcha-icefall-zh-baker/model-steps-3.onnx \
+ --matcha-vocoder=./vocos-22khz-univ.onnx \
+ --matcha-lexicon=./matcha-icefall-zh-baker/lexicon.txt \
+ --matcha-tokens=./matcha-icefall-zh-baker/tokens.txt \
+ --tts-rule-fsts=./matcha-icefall-zh-baker/phone.fst,./matcha-icefall-zh-baker/date.fst,./matcha-icefall-zh-baker/number.fst \
+ --output-filename=./tts/test-matcha-baker-zh.wav \
+ "某某银行的副行长和一些行政领导表示，他们去过长江和长白山; 经济不断增长。2024年12月31号，拨打110或者18920240511。123456块钱。"
+
+rm -rf matcha-icefall-zh-baker
+rm vocos-22khz-univ.onnx
 
 log "vits-ljs test"
 
@@ -191,16 +621,14 @@ log "Test streaming transducer models"
 if [[ x$OS != x'windows-latest' ]]; then
   echo "OS: $OS"
   pushd $dir
-  repo_url=https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20
+  repo_url=https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2
+  curl -SL -O $repo_url
+  tar xvf sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2
+  rm sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2
+  repo=sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20
 
   log "Start testing ${repo_url}"
-  repo=$dir/$(basename $repo_url)
-  log "Download pretrained model and test-data from $repo_url"
-
-  GIT_LFS_SKIP_SMUDGE=1 git clone $repo_url
-  cd $repo
-  git lfs pull --include "*.onnx"
-  popd
+  repo=$dir/$repo
 
   python3 -c "import sherpa_onnx; print(sherpa_onnx.__file__)"
   sherpa_onnx_version=$(python3 -c "import sherpa_onnx; print(sherpa_onnx.__version__)")
@@ -211,6 +639,7 @@ if [[ x$OS != x'windows-latest' ]]; then
   ls -lh
 
   ls -lh $repo
+  popd
 
   python3 ./python-api-examples/online-decode-files.py \
     --tokens=$repo/tokens.txt \
@@ -226,7 +655,7 @@ if [[ x$OS != x'windows-latest' ]]; then
   python3 ./python-api-examples/online-decode-files.py \
     --tokens=$repo/tokens.txt \
     --encoder=$repo/encoder-epoch-99-avg-1.int8.onnx \
-    --decoder=$repo/decoder-epoch-99-avg-1.int8.onnx \
+    --decoder=$repo/decoder-epoch-99-avg-1.onnx \
     --joiner=$repo/joiner-epoch-99-avg-1.int8.onnx \
     $repo/test_wavs/0.wav \
     $repo/test_wavs/1.wav \
@@ -234,21 +663,31 @@ if [[ x$OS != x'windows-latest' ]]; then
     $repo/test_wavs/3.wav \
     $repo/test_wavs/8k.wav
 
+  ln -s $repo $PWD/
+
+  curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/itn_zh_number.fst
+  curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/itn-zh-number.wav
+
+  python3 ./python-api-examples/inverse-text-normalization-online-asr.py
+
   python3 sherpa-onnx/python/tests/test_online_recognizer.py --verbose
+
+  rm -rfv sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20
+
+  rm -rf $repo
 fi
 
 log "Test non-streaming transducer models"
 
 pushd $dir
-repo_url=https://huggingface.co/csukuangfj/sherpa-onnx-zipformer-en-2023-04-01
-
-log "Start testing ${repo_url}"
-repo=$dir/$(basename $repo_url)
+repo_url=https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-en-2023-04-01.tar.bz2
 log "Download pretrained model and test-data from $repo_url"
 
-GIT_LFS_SKIP_SMUDGE=1 git clone $repo_url
-cd $repo
-git lfs pull --include "*.onnx"
+curl -SL -O $repo_url
+tar xvf sherpa-onnx-zipformer-en-2023-04-01.tar.bz2
+rm sherpa-onnx-zipformer-en-2023-04-01.tar.bz2
+repo=$dir/sherpa-onnx-zipformer-en-2023-04-01
+
 popd
 
 ls -lh $repo
@@ -265,41 +704,61 @@ python3 ./python-api-examples/offline-decode-files.py \
 python3 ./python-api-examples/offline-decode-files.py \
   --tokens=$repo/tokens.txt \
   --encoder=$repo/encoder-epoch-99-avg-1.int8.onnx \
-  --decoder=$repo/decoder-epoch-99-avg-1.int8.onnx \
+  --decoder=$repo/decoder-epoch-99-avg-1.onnx \
   --joiner=$repo/joiner-epoch-99-avg-1.int8.onnx \
+  $repo/test_wavs/0.wav \
+  $repo/test_wavs/1.wav \
+  $repo/test_wavs/8k.wav
+
+lm_repo_url=https://huggingface.co/ezerhouni/icefall-librispeech-rnn-lm
+log "Download pre-trained RNN-LM model from ${lm_repo_url}"
+GIT_LFS_SKIP_SMUDGE=1 git clone $lm_repo_url
+lm_repo=$(basename $lm_repo_url)
+pushd $lm_repo
+git lfs pull --include "exp/no-state-epoch-99-avg-1.onnx"
+popd
+
+bigram_repo_url=https://huggingface.co/vsd-vector/librispeech_bigram_sherpa-onnx-zipformer-large-en-2023-06-26
+log "Download bi-gram LM from ${bigram_repo_url}"
+GIT_LFS_SKIP_SMUDGE=1 git clone $bigram_repo_url
+bigramlm_repo=$(basename $bigram_repo_url)
+pushd $bigramlm_repo
+git lfs pull --include "2gram.fst"
+popd
+
+log "Perform offline decoding with RNN-LM and LODR"
+python3 ./python-api-examples/offline-decode-files.py \
+  --tokens=$repo/tokens.txt \
+  --encoder=$repo/encoder-epoch-99-avg-1.onnx \
+  --decoder=$repo/decoder-epoch-99-avg-1.onnx \
+  --joiner=$repo/joiner-epoch-99-avg-1.onnx \
+  --decoding-method=modified_beam_search \
+  --lm=$lm_repo/exp/no-state-epoch-99-avg-1.onnx \
+  --lodr-fst=$bigramlm_repo/2gram.fst \
+  --lodr-scale=-0.5 \
   $repo/test_wavs/0.wav \
   $repo/test_wavs/1.wav \
   $repo/test_wavs/8k.wav
 
 python3 sherpa-onnx/python/tests/test_offline_recognizer.py --verbose
 
-rm -rf $repo
+rm -rf $repo $lm_repo $bigramlm_repo
 
 log "Test non-streaming paraformer models"
 
 if [[ x$OS != x'windows-latest' ]]; then
   echo "OS: $OS"
   pushd $dir
-  repo_url=https://huggingface.co/csukuangfj/sherpa-onnx-paraformer-zh-2023-03-28
+  repo_url=https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2
+  curl -SL -O $repo_url
+  tar xvf sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2
+  rm sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2
 
   log "Start testing ${repo_url}"
-  repo=$dir/$(basename $repo_url)
-  log "Download pretrained model and test-data from $repo_url"
-
-  GIT_LFS_SKIP_SMUDGE=1 git clone $repo_url
-  cd $repo
-  git lfs pull --include "*.onnx"
-  popd
+  repo=$dir/sherpa-onnx-paraformer-zh-2023-09-14
 
   ls -lh $repo
-
-  python3 ./python-api-examples/offline-decode-files.py \
-    --tokens=$repo/tokens.txt \
-    --paraformer=$repo/model.onnx \
-    $repo/test_wavs/0.wav \
-    $repo/test_wavs/1.wav \
-    $repo/test_wavs/2.wav \
-    $repo/test_wavs/8k.wav
+  popd
 
   python3 ./python-api-examples/offline-decode-files.py \
     --tokens=$repo/tokens.txt \
@@ -311,24 +770,31 @@ if [[ x$OS != x'windows-latest' ]]; then
 
   python3 sherpa-onnx/python/tests/test_offline_recognizer.py --verbose
 
+  ln -s $repo $PWD/
+
+  curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/itn_zh_number.fst
+  curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/itn-zh-number.wav
+
+  python3 ./python-api-examples/inverse-text-normalization-offline-asr.py
+
+  rm -rfv sherpa-onnx-paraformer-zh-2023-09-14
+
   rm -rf $repo
 fi
 
 log "Test non-streaming NeMo CTC models"
 
 pushd $dir
-repo_url=http://huggingface.co/csukuangfj/sherpa-onnx-nemo-ctc-en-citrinet-512
+repo_url=https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-ctc-en-citrinet-512.tar.bz2
+curl -SL -O $repo_url
+tar xvf sherpa-onnx-nemo-ctc-en-citrinet-512.tar.bz2
+rm sherpa-onnx-nemo-ctc-en-citrinet-512.tar.bz2
 
 log "Start testing ${repo_url}"
-repo=$dir/$(basename $repo_url)
-log "Download pretrained model and test-data from $repo_url"
-
-GIT_LFS_SKIP_SMUDGE=1 git clone $repo_url
-cd $repo
-git lfs pull --include "*.onnx"
-popd
+repo=$dir/sherpa-onnx-nemo-ctc-en-citrinet-512
 
 ls -lh $repo
+popd
 
 python3 ./python-api-examples/offline-decode-files.py \
   --tokens=$repo/tokens.txt \
@@ -368,51 +834,19 @@ echo "sherpa_onnx version: $sherpa_onnx_version"
 pwd
 ls -lh
 
-repo=sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01
-log "Start testing ${repo}"
-
-pushd $dir
-curl -LS -O https://github.com/pkufool/keyword-spotting-models/releases/download/v0.1/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz
-tar xf sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz
-popd
-
-repo=$dir/$repo
-ls -lh $repo
-
-python3 ./python-api-examples/keyword-spotter.py \
-  --tokens=$repo/tokens.txt \
-  --encoder=$repo/encoder-epoch-12-avg-2-chunk-16-left-64.onnx \
-  --decoder=$repo/decoder-epoch-12-avg-2-chunk-16-left-64.onnx \
-  --joiner=$repo/joiner-epoch-12-avg-2-chunk-16-left-64.onnx \
-  --keywords-file=$repo/test_wavs/test_keywords.txt \
-  $repo/test_wavs/0.wav \
-  $repo/test_wavs/1.wav
-
-rm -rf $repo
-
 if [[ x$OS != x'windows-latest' ]]; then
   echo "OS: $OS"
 
   repo=sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01
   log "Start testing ${repo}"
 
-  pushd $dir
   curl -LS -O https://github.com/pkufool/keyword-spotting-models/releases/download/v0.1/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01.tar.bz
   tar xf sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01.tar.bz
-  popd
+  rm sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01.tar.bz
 
-  repo=$dir/$repo
   ls -lh $repo
 
-  python3 ./python-api-examples/keyword-spotter.py \
-    --tokens=$repo/tokens.txt \
-    --encoder=$repo/encoder-epoch-12-avg-2-chunk-16-left-64.onnx \
-    --decoder=$repo/decoder-epoch-12-avg-2-chunk-16-left-64.onnx \
-    --joiner=$repo/joiner-epoch-12-avg-2-chunk-16-left-64.onnx \
-    --keywords-file=$repo/test_wavs/test_keywords.txt \
-    $repo/test_wavs/3.wav \
-    $repo/test_wavs/4.wav \
-    $repo/test_wavs/5.wav
+  python3 ./python-api-examples/keyword-spotter.py
 
   python3 sherpa-onnx/python/tests/test_keyword_spotter.py --verbose
 

@@ -3,32 +3,57 @@
 // Copyright (c)  2023  Xiaomi Corporation
 
 #include "sherpa-onnx/csrc/silero-vad-model.h"
+#include "sherpa-onnx/csrc/ort-env.h"
 
+#include <algorithm>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#if __ANDROID_API__ >= 9
+#include "android/asset_manager.h"
+#include "android/asset_manager_jni.h"
+#endif
+
+#if __OHOS__
+#include "rawfile/raw_file_manager.h"
+#endif
+
+#include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
 #include "sherpa-onnx/csrc/session.h"
+#include "sherpa-onnx/csrc/text-utils.h"
+
+#ifdef SHERPA_ONNX_ENABLE_SILERO_NEON
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+
+#include "sherpa-onnx/csrc/mali-g720/aot-file.h"
+#endif
 
 namespace sherpa_onnx {
+
+#ifdef SHERPA_ONNX_ENABLE_SILERO_NEON
+void RegisterSileroNeonOp(Ort::SessionOptions &options);
+#endif
 
 class SileroVadModel::Impl {
  public:
   explicit Impl(const VadModelConfig &config)
       : config_(config),
-        env_(ORT_LOGGING_LEVEL_ERROR),
-        sess_opts_(GetSessionOptions(config)),
-        allocator_{} {
-    auto buf = ReadFile(config.silero_vad.model);
-    Init(buf.data(), buf.size());
+        env_(CreateOrtEnv()),
+        sess_opts_(MakeSessionOptions(config)),
+        allocator_{},
+        sample_rate_(config.sample_rate) {
+    InitFromPath();
 
-    sample_rate_ = config.sample_rate;
     if (sample_rate_ != 16000) {
       SHERPA_ONNX_LOGE("Expected sample rate 16000. Given: %d",
                        config.sample_rate);
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
 
     min_silence_samples_ =
@@ -37,20 +62,24 @@ class SileroVadModel::Impl {
     min_speech_samples_ = sample_rate_ * config_.silero_vad.min_speech_duration;
   }
 
-#if __ANDROID_API__ >= 9
-  Impl(AAssetManager *mgr, const VadModelConfig &config)
+  template <typename Manager>
+  Impl(Manager *mgr, const VadModelConfig &config)
       : config_(config),
-        env_(ORT_LOGGING_LEVEL_ERROR),
-        sess_opts_(GetSessionOptions(config)),
-        allocator_{} {
-    auto buf = ReadFile(mgr, config.silero_vad.model);
-    Init(buf.data(), buf.size());
+        env_(CreateOrtEnv()),
+        sess_opts_(MakeSessionOptions(config)),
+        allocator_{},
+        sample_rate_(config.sample_rate) {
+    if (config.provider == "neon") {
+      InitFromPath();
+    } else {
+      auto buf = ReadFile(mgr, config.silero_vad.model);
+      Init(buf.data(), buf.size());
+    }
 
-    sample_rate_ = config.sample_rate;
     if (sample_rate_ != 16000) {
       SHERPA_ONNX_LOGE("Expected sample rate 16000. Given: %d",
                        config.sample_rate);
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
 
     min_silence_samples_ =
@@ -58,28 +87,21 @@ class SileroVadModel::Impl {
 
     min_speech_samples_ = sample_rate_ * config_.silero_vad.min_speech_duration;
   }
-#endif
+
+  float Run(const float *samples, int32_t n) {
+    if (is_v5_) {
+      return RunV5(samples, n);
+    } else {
+      return RunV4(samples, n);
+    }
+  }
 
   void Reset() {
-    // 2 - number of LSTM layer
-    // 1 - batch size
-    // 64 - hidden dim
-    std::array<int64_t, 3> shape{2, 1, 64};
-
-    Ort::Value h =
-        Ort::Value::CreateTensor<float>(allocator_, shape.data(), shape.size());
-
-    Ort::Value c =
-        Ort::Value::CreateTensor<float>(allocator_, shape.data(), shape.size());
-
-    Fill<float>(&h, 0);
-    Fill<float>(&c, 0);
-
-    states_.clear();
-
-    states_.reserve(2);
-    states_.push_back(std::move(h));
-    states_.push_back(std::move(c));
+    if (is_v5_) {
+      ResetV5();
+    } else {
+      ResetV4();
+    }
 
     triggered_ = false;
     current_sample_ = 0;
@@ -88,37 +110,12 @@ class SileroVadModel::Impl {
   }
 
   bool IsSpeech(const float *samples, int32_t n) {
-    if (n != config_.silero_vad.window_size) {
-      SHERPA_ONNX_LOGE("n: %d != window_size: %d", n,
-                       config_.silero_vad.window_size);
-      exit(-1);
+    if (n != WindowSize()) {
+      SHERPA_ONNX_LOGE("n: %d != window_size: %d", n, WindowSize());
+      SHERPA_ONNX_EXIT(-1);
     }
 
-    auto memory_info =
-        Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
-
-    std::array<int64_t, 2> x_shape = {1, n};
-
-    Ort::Value x =
-        Ort::Value::CreateTensor(memory_info, const_cast<float *>(samples), n,
-                                 x_shape.data(), x_shape.size());
-
-    int64_t sr_shape = 1;
-    Ort::Value sr =
-        Ort::Value::CreateTensor(memory_info, &sample_rate_, 1, &sr_shape, 1);
-
-    std::array<Ort::Value, 4> inputs = {std::move(x), std::move(sr),
-                                        std::move(states_[0]),
-                                        std::move(states_[1])};
-
-    auto out =
-        sess_->Run({}, input_names_ptr_.data(), inputs.data(), inputs.size(),
-                   output_names_ptr_.data(), output_names_ptr_.size());
-
-    states_[0] = std::move(out[1]);
-    states_[1] = std::move(out[2]);
-
-    float prob = out[0].GetTensorData<float>()[0];
+    float prob = Run(samples, n);
 
     float threshold = config_.silero_vad.threshold;
 
@@ -152,7 +149,13 @@ class SileroVadModel::Impl {
       return false;
     }
 
-    if ((prob > threshold - 0.15) && triggered_) {
+    float neg_threshold;
+    if (config_.silero_vad.neg_threshold < 0) {
+        neg_threshold = std::max(threshold - 0.15f, 0.01f);
+    } else {
+        neg_threshold = std::max(config_.silero_vad.neg_threshold, 0.01f);
+    }
+    if ((prob > neg_threshold) && triggered_) {
       // speaking
       return true;
     }
@@ -184,74 +187,366 @@ class SileroVadModel::Impl {
     return false;
   }
 
-  int32_t WindowSize() const { return config_.silero_vad.window_size; }
+  int32_t WindowShift() const { return config_.silero_vad.window_size; }
+
+  int32_t WindowSize() const {
+    return config_.silero_vad.window_size + window_overlap_;
+  }
 
   int32_t MinSilenceDurationSamples() const { return min_silence_samples_; }
 
   int32_t MinSpeechDurationSamples() const { return min_speech_samples_; }
 
+  void SetMinSilenceDuration(float s) {
+    min_silence_samples_ = sample_rate_ * s;
+  }
+
+  void SetThreshold(float threshold) {
+    config_.silero_vad.threshold = threshold;
+  }
+
  private:
-  void Init(void *model_data, size_t model_data_length) {
-    sess_ = std::make_unique<Ort::Session>(env_, model_data, model_data_length,
-                                           sess_opts_);
+  static Ort::SessionOptions MakeSessionOptions(const VadModelConfig &config) {
+    if (config.provider != "neon") {
+      return GetSessionOptions(config);
+    }
+#ifdef SHERPA_ONNX_ENABLE_SILERO_NEON
+    constexpr unsigned long required = HWCAP_ASIMDDP | HWCAP_ASIMDFHM;
+    if ((getauxval(AT_HWCAP) & required) != required) {
+      throw std::runtime_error("Silero NEON requires Arm dot-product and FP16 FML");
+    }
+    if (config.sample_rate != 16000 || config.silero_vad.window_size != 512) {
+      throw std::runtime_error("Silero NEON requires 16 kHz and a 512-sample hop");
+    }
+    // The frozen graph is a single fused operator.
+    Ort::SessionOptions options;
+    options.SetIntraOpNumThreads(config.num_threads)
+        .SetInterOpNumThreads(config.num_threads)
+        .SetGraphOptimizationLevel(ORT_DISABLE_ALL);
+    RegisterSileroNeonOp(options);
+    return options;
+#else
+    throw std::runtime_error("Silero NEON requires an Android arm64 build");
+#endif
+  }
+
+  void InitFromPath() {
+    const auto &path = config_.silero_vad.model;
+#ifdef SHERPA_ONNX_ENABLE_SILERO_NEON
+    if (config_.provider == "neon") {
+      const auto file = transai::aot::File::Open(path);
+      const auto &manifest = file->manifest();
+      const auto &architecture = manifest.at("architecture");
+      if (architecture.at("family") != "silero-vad" ||
+          architecture.at("version") != 1 ||
+          architecture.at("precision") != "w8-lstm-recurrent" ||
+          manifest.at("aot").at("format") != 1 ||
+          file->Asset("vad/model.onnx").bytes > 8 * 1024 * 1024) {
+        throw std::runtime_error("Expected a Silero VAD NEON v1.0 AOT");
+      }
+      const transai::aot::Mapping model(path + "/vad/model.onnx");
+      Init(model.data(), model.size());
+      return;
+    }
+#endif
+    sess_ = std::make_unique<Ort::Session>(
+        env_, SHERPA_ONNX_TO_ORT_PATH(path), sess_opts_);
+    Init(nullptr, 0);
+  }
+
+  void Init(const void *model_data, size_t model_data_length) {
+    if (model_data) {
+      sess_ = std::make_unique<Ort::Session>(
+          env_, model_data, model_data_length, sess_opts_);
+    } else if (!sess_) {
+      SHERPA_ONNX_LOGE(
+          "Please pass model data or initialize the session outside of "
+          "this function");
+      SHERPA_ONNX_EXIT(-1);
+    }
 
     GetInputNames(sess_.get(), &input_names_, &input_names_ptr_);
     GetOutputNames(sess_.get(), &output_names_, &output_names_ptr_);
+
+    if ((input_names_.size() == 4 && output_names_.size() == 3) ||
+        IsExportedByK2Fsa()) {
+      is_v5_ = false;
+    } else if (input_names_.size() == 3 && output_names_.size() == 2) {
+      is_v5_ = true;
+
+      // 64 for 16kHz
+      // 32 for 8kHz
+      window_overlap_ = 64;
+
+      if (config_.silero_vad.window_size != 512) {
+        SHERPA_ONNX_LOGE(
+            "For silero_vad  v5, we require window_size to be 512 for 16kHz");
+        SHERPA_ONNX_EXIT(-1);
+      }
+    } else {
+      SHERPA_ONNX_LOGE("Unsupported silero vad model");
+      SHERPA_ONNX_EXIT(-1);
+    }
+
     Check();
 
     Reset();
   }
 
-  void Check() {
+  struct NeonBuffers {
+    Ort::MemoryInfo memory =
+        Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+    std::array<Ort::Value, 3> inputs{Ort::Value{nullptr}, Ort::Value{nullptr},
+                                     Ort::Value{nullptr}};
+    std::array<Ort::Value, 2> outputs{Ort::Value{nullptr}, Ort::Value{nullptr}};
+
+    NeonBuffers(OrtAllocator *allocator, int64_t *sample_rate) {
+      constexpr int64_t rate_shape[] = {1};
+      constexpr int64_t state_shape[] = {2, 1, 128};
+      constexpr int64_t prob_shape[] = {1, 1};
+      inputs[1] = Ort::Value::CreateTensor<float>(allocator, state_shape, 3);
+      inputs[2] = Ort::Value::CreateTensor(memory, sample_rate, 1, rate_shape, 1);
+      outputs[0] = Ort::Value::CreateTensor<float>(allocator, prob_shape, 2);
+      outputs[1] = Ort::Value::CreateTensor<float>(allocator, state_shape, 3);
+    }
+  };
+
+  void ResetV5() {
+    if (config_.provider == "neon") {
+      if (!neon_buffers_) {
+        neon_buffers_ = std::make_unique<NeonBuffers>(allocator_, &sample_rate_);
+      }
+      Fill<float>(&neon_buffers_->inputs[1], 0);
+      return;
+    }
+    // 2 - number of LSTM layer
+    // 1 - batch size
+    // 128 - hidden dim
+    std::array<int64_t, 3> shape{2, 1, 128};
+
+    Ort::Value s =
+        Ort::Value::CreateTensor<float>(allocator_, shape.data(), shape.size());
+
+    Fill<float>(&s, 0);
+    states_.clear();
+    states_.push_back(std::move(s));
+  }
+
+  void ResetV4() {
+    // 2 - number of LSTM layer
+    // 1 - batch size
+    // 64 - hidden dim
+    std::array<int64_t, 3> shape{2, 1, 64};
+
+    Ort::Value h =
+        Ort::Value::CreateTensor<float>(allocator_, shape.data(), shape.size());
+
+    Ort::Value c =
+        Ort::Value::CreateTensor<float>(allocator_, shape.data(), shape.size());
+
+    Fill<float>(&h, 0);
+    Fill<float>(&c, 0);
+
+    states_.clear();
+
+    states_.reserve(2);
+    states_.push_back(std::move(h));
+    states_.push_back(std::move(c));
+  }
+
+  void Check() const {
+    if (is_v5_) {
+      CheckV5();
+    } else {
+      CheckV4();
+    }
+  }
+
+  bool IsExportedByK2Fsa() const {
+    if (input_names_.size() == 3 && input_names_[0] == "x" &&
+        input_names_[1] == "h" && input_names_[2] == "c" &&
+        output_names_.size() == 3 && output_names_[0] == "prob" &&
+        output_names_[1] == "new_h" && output_names_[2] == "new_c") {
+      // this version is exported and maintained by us (k2-fsa)
+      return true;
+    }
+
+    return false;
+  }
+
+  void CheckV4() const {
+    if (IsExportedByK2Fsa()) {
+      return;
+    }
+
     if (input_names_.size() != 4) {
       SHERPA_ONNX_LOGE("Expect 4 inputs. Given: %d",
                        static_cast<int32_t>(input_names_.size()));
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
 
     if (input_names_[0] != "input") {
       SHERPA_ONNX_LOGE("Input[0]: %s. Expected: input",
                        input_names_[0].c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
 
     if (input_names_[1] != "sr") {
       SHERPA_ONNX_LOGE("Input[1]: %s. Expected: sr", input_names_[1].c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
 
     if (input_names_[2] != "h") {
       SHERPA_ONNX_LOGE("Input[2]: %s. Expected: h", input_names_[2].c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
 
     if (input_names_[3] != "c") {
       SHERPA_ONNX_LOGE("Input[3]: %s. Expected: c", input_names_[3].c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
 
     // Now for outputs
     if (output_names_.size() != 3) {
       SHERPA_ONNX_LOGE("Expect 3 outputs. Given: %d",
                        static_cast<int32_t>(output_names_.size()));
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
 
     if (output_names_[0] != "output") {
       SHERPA_ONNX_LOGE("Output[0]: %s. Expected: output",
                        output_names_[0].c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
 
     if (output_names_[1] != "hn") {
       SHERPA_ONNX_LOGE("Output[1]: %s. Expected: sr", output_names_[1].c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
 
     if (output_names_[2] != "cn") {
       SHERPA_ONNX_LOGE("Output[2]: %s. Expected: sr", output_names_[2].c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
+  }
+
+  void CheckV5() const {
+    if (input_names_.size() != 3) {
+      SHERPA_ONNX_LOGE("Expect 3 inputs. Given: %d",
+                       static_cast<int32_t>(input_names_.size()));
+      SHERPA_ONNX_EXIT(-1);
+    }
+
+    if (input_names_[0] != "input") {
+      SHERPA_ONNX_LOGE("Input[0]: %s. Expected: input",
+                       input_names_[0].c_str());
+      SHERPA_ONNX_EXIT(-1);
+    }
+
+    if (input_names_[1] != "state") {
+      SHERPA_ONNX_LOGE("Input[1]: %s. Expected: state",
+                       input_names_[1].c_str());
+      SHERPA_ONNX_EXIT(-1);
+    }
+
+    if (input_names_[2] != "sr") {
+      SHERPA_ONNX_LOGE("Input[2]: %s. Expected: sr", input_names_[2].c_str());
+      SHERPA_ONNX_EXIT(-1);
+    }
+
+    // Now for outputs
+    if (output_names_.size() != 2) {
+      SHERPA_ONNX_LOGE("Expect 2 outputs. Given: %d",
+                       static_cast<int32_t>(output_names_.size()));
+      SHERPA_ONNX_EXIT(-1);
+    }
+
+    if (output_names_[0] != "output") {
+      SHERPA_ONNX_LOGE("Output[0]: %s. Expected: output",
+                       output_names_[0].c_str());
+      SHERPA_ONNX_EXIT(-1);
+    }
+
+    if (output_names_[1] != "stateN") {
+      SHERPA_ONNX_LOGE("Output[1]: %s. Expected: stateN",
+                       output_names_[1].c_str());
+      SHERPA_ONNX_EXIT(-1);
+    }
+  }
+
+  float RunV5(const float *samples, int32_t n) {
+    if (neon_buffers_) {
+      auto &buffers = *neon_buffers_;
+      const int64_t shape[] = {1, n};
+      buffers.inputs[0] = Ort::Value::CreateTensor(
+          buffers.memory, const_cast<float *>(samples), n, shape, 2);
+      sess_->Run(Ort::RunOptions{nullptr}, input_names_ptr_.data(),
+                 buffers.inputs.data(), buffers.inputs.size(),
+                 output_names_ptr_.data(), buffers.outputs.data(),
+                 buffers.outputs.size());
+      std::swap(buffers.inputs[1], buffers.outputs[1]);
+      return buffers.outputs[0].GetTensorData<float>()[0];
+    }
+
+    auto memory_info =
+        Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+
+    std::array<int64_t, 2> x_shape = {1, n};
+
+    Ort::Value x =
+        Ort::Value::CreateTensor(memory_info, const_cast<float *>(samples), n,
+                                 x_shape.data(), x_shape.size());
+
+    int64_t sr_shape = 1;
+    Ort::Value sr =
+        Ort::Value::CreateTensor(memory_info, &sample_rate_, 1, &sr_shape, 1);
+
+    std::array<Ort::Value, 3> inputs = {std::move(x), std::move(states_[0]),
+                                        std::move(sr)};
+
+    auto out =
+        sess_->Run({}, input_names_ptr_.data(), inputs.data(), inputs.size(),
+                   output_names_ptr_.data(), output_names_ptr_.size());
+
+    states_[0] = std::move(out[1]);
+
+    float prob = out[0].GetTensorData<float>()[0];
+    return prob;
+  }
+
+  float RunV4(const float *samples, int32_t n) {
+    auto memory_info =
+        Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+
+    std::array<int64_t, 2> x_shape = {1, n};
+
+    Ort::Value x =
+        Ort::Value::CreateTensor(memory_info, const_cast<float *>(samples), n,
+                                 x_shape.data(), x_shape.size());
+
+    int64_t sr_shape = 1;
+    Ort::Value sr =
+        Ort::Value::CreateTensor(memory_info, &sample_rate_, 1, &sr_shape, 1);
+
+    std::vector<Ort::Value> inputs;
+    inputs.reserve(input_names_.size());
+
+    inputs.push_back(std::move(x));
+    if (input_names_.size() == 4) {
+      inputs.push_back(std::move(sr));
+    }
+    inputs.push_back(std::move(states_[0]));
+    inputs.push_back(std::move(states_[1]));
+
+    auto out =
+        sess_->Run({}, input_names_ptr_.data(), inputs.data(), inputs.size(),
+                   output_names_ptr_.data(), output_names_ptr_.size());
+
+    states_[0] = std::move(out[1]);
+    states_[1] = std::move(out[2]);
+
+    float prob = out[0].GetTensorData<float>()[0];
+    return prob;
   }
 
  private:
@@ -271,6 +566,7 @@ class SileroVadModel::Impl {
 
   std::vector<Ort::Value> states_;
   int64_t sample_rate_;
+  std::unique_ptr<NeonBuffers> neon_buffers_;
   int32_t min_silence_samples_;
   int32_t min_speech_samples_;
 
@@ -278,15 +574,18 @@ class SileroVadModel::Impl {
   int32_t current_sample_ = 0;
   int32_t temp_start_ = 0;
   int32_t temp_end_ = 0;
+
+  int32_t window_overlap_ = 0;
+
+  bool is_v5_ = false;
 };
 
 SileroVadModel::SileroVadModel(const VadModelConfig &config)
     : impl_(std::make_unique<Impl>(config)) {}
 
-#if __ANDROID_API__ >= 9
-SileroVadModel::SileroVadModel(AAssetManager *mgr, const VadModelConfig &config)
+template <typename Manager>
+SileroVadModel::SileroVadModel(Manager *mgr, const VadModelConfig &config)
     : impl_(std::make_unique<Impl>(mgr, config)) {}
-#endif
 
 SileroVadModel::~SileroVadModel() = default;
 
@@ -298,6 +597,8 @@ bool SileroVadModel::IsSpeech(const float *samples, int32_t n) {
 
 int32_t SileroVadModel::WindowSize() const { return impl_->WindowSize(); }
 
+int32_t SileroVadModel::WindowShift() const { return impl_->WindowShift(); }
+
 int32_t SileroVadModel::MinSilenceDurationSamples() const {
   return impl_->MinSilenceDurationSamples();
 }
@@ -305,5 +606,27 @@ int32_t SileroVadModel::MinSilenceDurationSamples() const {
 int32_t SileroVadModel::MinSpeechDurationSamples() const {
   return impl_->MinSpeechDurationSamples();
 }
+
+void SileroVadModel::SetMinSilenceDuration(float s) {
+  impl_->SetMinSilenceDuration(s);
+}
+
+void SileroVadModel::SetThreshold(float threshold) {
+  impl_->SetThreshold(threshold);
+}
+
+float SileroVadModel::Compute(const float *samples, int32_t n) {
+  return impl_->Run(samples, n);
+}
+
+#if __ANDROID_API__ >= 9
+template SileroVadModel::SileroVadModel(AAssetManager *mgr,
+                                        const VadModelConfig &config);
+#endif
+
+#if __OHOS__
+template SileroVadModel::SileroVadModel(NativeResourceManager *mgr,
+                                        const VadModelConfig &config);
+#endif
 
 }  // namespace sherpa_onnx

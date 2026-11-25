@@ -33,6 +33,9 @@ class OfflinePunctuation {
  public:
   explicit OfflinePunctuation(const OfflinePunctuationConfig &config);
 
+  template <typename Manager>
+  OfflinePunctuation(Manager *mgr, const OfflinePunctuationConfig &config);
+
   ~OfflinePunctuation();
 
   // Add punctuation to the input text and return it.

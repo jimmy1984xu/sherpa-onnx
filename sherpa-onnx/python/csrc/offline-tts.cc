@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 #include "sherpa-onnx/csrc/offline-tts.h"
 #include "sherpa-onnx/python/csrc/offline-tts-model-config.h"
@@ -25,6 +26,22 @@ static void PybindGeneratedAudio(py::module *m) {
       });
 }
 
+static void PybindGenerationConfig(py::module *m) {
+  using PyClass = GenerationConfig;
+
+  py::class_<PyClass>(*m, "GenerationConfig")
+      .def(py::init<>())
+      .def_readwrite("silence_scale", &PyClass::silence_scale)
+      .def_readwrite("speed", &PyClass::speed)
+      .def_readwrite("sid", &PyClass::sid)
+      .def_readwrite("reference_audio", &PyClass::reference_audio)
+      .def_readwrite("reference_sample_rate", &PyClass::reference_sample_rate)
+      .def_readwrite("reference_text", &PyClass::reference_text)
+      .def_readwrite("num_steps", &PyClass::num_steps)
+      .def_readwrite("extra", &PyClass::extra)
+      .def("__str__", &PyClass::ToString);
+}
+
 static void PybindOfflineTtsConfig(py::module *m) {
   PybindOfflineTtsModelConfig(m);
 
@@ -32,13 +49,15 @@ static void PybindOfflineTtsConfig(py::module *m) {
   py::class_<PyClass>(*m, "OfflineTtsConfig")
       .def(py::init<>())
       .def(py::init<const OfflineTtsModelConfig &, const std::string &,
-                    const std::string &, int32_t>(),
+                    const std::string &, int32_t, float>(),
            py::arg("model"), py::arg("rule_fsts") = "",
-           py::arg("rule_fars") = "", py::arg("max_num_sentences") = 2)
+           py::arg("rule_fars") = "", py::arg("max_num_sentences") = 1,
+           py::arg("silence_scale") = 0.2)
       .def_readwrite("model", &PyClass::model)
       .def_readwrite("rule_fsts", &PyClass::rule_fsts)
       .def_readwrite("rule_fars", &PyClass::rule_fars)
       .def_readwrite("max_num_sentences", &PyClass::max_num_sentences)
+      .def_readwrite("silence_scale", &PyClass::silence_scale)
       .def("validate", &PyClass::Validate)
       .def("__str__", &PyClass::ToString);
 }
@@ -46,6 +65,7 @@ static void PybindOfflineTtsConfig(py::module *m) {
 void PybindOfflineTts(py::module *m) {
   PybindOfflineTtsConfig(m);
   PybindGeneratedAudio(m);
+  PybindGenerationConfig(m);
 
   using PyClass = OfflineTts;
   py::class_<PyClass>(*m, "OfflineTts")
@@ -57,13 +77,16 @@ void PybindOfflineTts(py::module *m) {
           "generate",
           [](const PyClass &self, const std::string &text, int64_t sid,
              float speed,
-             std::function<void(py::array_t<float>, float)> callback)
+             std::function<int32_t(py::array_t<float>, float)> callback)
               -> GeneratedAudio {
             if (!callback) {
-              return self.Generate(text, sid, speed);
+              GenerationConfig config;
+              config.sid = sid;
+              config.speed = speed;
+              return self.Generate(text, config);
             }
 
-            std::function<void(const float *, int32_t, float)>
+            std::function<int32_t(const float *, int32_t, float)>
                 callback_wrapper = [callback](const float *samples, int32_t n,
                                               float progress) {
                   // CAUTION(fangjun): we have to copy samples since it is
@@ -75,13 +98,83 @@ void PybindOfflineTts(py::module *m) {
                   py::buffer_info buf = array.request();
                   auto p = static_cast<float *>(buf.ptr);
                   std::copy(samples, samples + n, p);
-                  callback(array, progress);
+                  return callback(array, progress);
                 };
 
-            return self.Generate(text, sid, speed, callback_wrapper);
+            GenerationConfig config;
+            config.sid = sid;
+            config.speed = speed;
+            return self.Generate(text, config, callback_wrapper);
           },
           py::arg("text"), py::arg("sid") = 0, py::arg("speed") = 1.0,
           py::arg("callback") = py::none(),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "generate",
+          [](const PyClass &self, const std::string &text,
+             const GenerationConfig &config,
+             std::function<int32_t(py::array_t<float>, float)> callback)
+              -> GeneratedAudio {
+            if (!callback) {
+              return self.Generate(text, config);
+            }
+
+            std::function<int32_t(const float *, int32_t, float)>
+                callback_wrapper = [callback](const float *samples, int32_t n,
+                                              float progress) {
+                  py::gil_scoped_acquire acquire;
+
+                  py::array_t<float> array(n);
+                  auto buf = array.request();
+                  auto *p = static_cast<float *>(buf.ptr);
+                  std::copy(samples, samples + n, p);
+
+                  return callback(array, progress);
+                };
+
+            return self.Generate(text, config, callback_wrapper);
+          },
+          py::arg("text"), py::arg("config"), py::arg("callback") = py::none(),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "generate",
+          [](const PyClass &self, const std::string &text,
+             const std::string &prompt_text,
+             const std::vector<float> &prompt_samples, int32_t sample_rate,
+             float speed, int32_t num_steps,
+             std::function<int32_t(py::array_t<float>, float)> callback)
+              -> GeneratedAudio {
+            GenerationConfig config;
+            config.reference_audio = prompt_samples;
+            config.reference_sample_rate = sample_rate;
+            config.reference_text = prompt_text;
+            config.speed = speed;
+            config.num_steps = num_steps;
+
+            if (!callback) {
+              return self.Generate(text, config);
+            }
+
+            std::function<int32_t(const float *, int32_t, float)>
+                callback_wrapper = [callback](const float *samples, int32_t n,
+                                              float progress) {
+                  // CAUTION(fangjun): we have to copy samples since it is
+                  // freed once the call back returns.
+
+                  pybind11::gil_scoped_acquire acquire;
+
+                  pybind11::array_t<float> array(n);
+                  py::buffer_info buf = array.request();
+                  auto p = static_cast<float *>(buf.ptr);
+                  std::copy(samples, samples + n, p);
+                  return callback(array, progress);
+                };
+
+            return self.Generate(text, config, callback_wrapper);
+          },
+          py::arg("text"), py::arg("prompt_text"), py::arg("prompt_samples"),
+          py::arg("sample_rate"), py::arg("speed") = 1.0,
+          py::arg("num_steps") = 4, py::arg("callback") = py::none(),
           py::call_guard<py::gil_scoped_release>());
 }
 

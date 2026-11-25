@@ -13,28 +13,28 @@
 namespace sherpa_onnx {
 
 void OnlineCtcGreedySearchDecoder::Decode(
-    Ort::Value log_probs, std::vector<OnlineCtcDecoderResult> *results,
+    const float *log_probs, int32_t batch_size, int32_t num_frames,
+    int32_t vocab_size, std::vector<OnlineCtcDecoderResult> *results,
     OnlineStream ** /*ss=nullptr*/, int32_t /*n = 0*/) {
-  std::vector<int64_t> log_probs_shape =
-      log_probs.GetTensorTypeAndShapeInfo().GetShape();
-
-  if (log_probs_shape[0] != results->size()) {
+  if (batch_size != results->size()) {
     SHERPA_ONNX_LOGE("Size mismatch! log_probs.size(0) %d, results.size(0): %d",
-                     static_cast<int32_t>(log_probs_shape[0]),
-                     static_cast<int32_t>(results->size()));
-    exit(-1);
+                     batch_size, static_cast<int32_t>(results->size()));
+    SHERPA_ONNX_EXIT(-1);
   }
 
-  int32_t batch_size = static_cast<int32_t>(log_probs_shape[0]);
-  int32_t num_frames = static_cast<int32_t>(log_probs_shape[1]);
-  int32_t vocab_size = static_cast<int32_t>(log_probs_shape[2]);
-
-  const float *p = log_probs.GetTensorData<float>();
+  const float *p = log_probs;
 
   for (int32_t b = 0; b != batch_size; ++b) {
     auto &r = (*results)[b];
 
     int32_t prev_id = -1;
+    if (!r.tokens.empty()) {
+      if (r.num_trailing_blanks > 0) {
+        prev_id = blank_id_;
+      } else {
+        prev_id = r.tokens.back();
+      }
+    }
 
     for (int32_t t = 0; t != num_frames; ++t, p += vocab_size) {
       int32_t y = static_cast<int32_t>(std::distance(

@@ -5,14 +5,16 @@
 #include <stdio.h>
 
 #include <atomic>
-#include <chrono>  // NOLINT
+#include <chrono>
 #include <fstream>
-#include <mutex>  // NOLINT
+#include <mutex>
 #include <string>
-#include <thread>  // NOLINT
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include "sherpa-onnx/csrc/offline-recognizer.h"
+#include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/parse-options.h"
 #include "sherpa-onnx/csrc/wave-reader.h"
 
@@ -69,7 +71,7 @@ void AsrInference(const std::vector<std::vector<std::string>> &chunk_wav_paths,
     const std::vector<float> samples =
         sherpa_onnx::ReadWave(wav_filename, &sampling_rate, &is_ok);
     if (!is_ok) {
-      fprintf(stderr, "Failed to read %s\n", wav_filename.c_str());
+      fprintf(stderr, "Failed to read '%s'\n", wav_filename.c_str());
       continue;
     }
     duration += samples.size() / static_cast<float>(sampling_rate);
@@ -85,7 +87,7 @@ void AsrInference(const std::vector<std::vector<std::string>> &chunk_wav_paths,
 
   while (true) {
     int chunk = wav_index.fetch_add(1);
-    if (chunk >= chunk_wav_paths.size()) {
+    if (chunk >= static_cast<int32_t>(chunk_wav_paths.size())) {
       break;
     }
     const auto &wav_paths = chunk_wav_paths[chunk];
@@ -96,7 +98,7 @@ void AsrInference(const std::vector<std::vector<std::string>> &chunk_wav_paths,
       const std::vector<float> samples =
           sherpa_onnx::ReadWave(wav_filename, &sampling_rate, &is_ok);
       if (!is_ok) {
-        fprintf(stderr, "Failed to read %s\n", wav_filename.c_str());
+        fprintf(stderr, "Failed to read '%s'\n", wav_filename.c_str());
         continue;
       }
       duration += samples.size() / static_cast<float>(sampling_rate);
@@ -115,8 +117,9 @@ void AsrInference(const std::vector<std::vector<std::string>> &chunk_wav_paths,
     elapsed_seconds_batch += elapsed_seconds;
     int i = 0;
     for (const auto &wav_filename : wav_paths) {
-      fprintf(stderr, "%s\n%s\n----\n", wav_filename.c_str(),
-              ss[i]->GetResult().AsJsonString().c_str());
+      fprintf(stderr, "%s\n", wav_filename.c_str());
+      fprintf(stdout, "%s\n", ss[i]->GetResult().AsJsonString().c_str());
+      fprintf(stderr, "----\n");
       i = i + 1;
     }
     ss_pointers.clear();
@@ -241,7 +244,7 @@ for a list of pre-trained models to download.
   if (po.NumArgs() < 1 && wav_scp.empty()) {
     fprintf(stderr, "Error: Please provide at least 1 wave file.\n\n");
     po.PrintUsage();
-    exit(EXIT_FAILURE);
+    SHERPA_ONNX_EXIT(EXIT_FAILURE);
   }
 
   fprintf(stderr, "%s\n", config.ToString().c_str());

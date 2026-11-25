@@ -4,15 +4,24 @@
 
 #include "sherpa-onnx/csrc/keyword-spotter.h"
 
-#include <assert.h>
-
 #include <algorithm>
+#include <cassert>
 #include <fstream>
 #include <iomanip>
 #include <memory>
 #include <sstream>
+#include <string>
 #include <utility>
 #include <vector>
+
+#if __ANDROID_API__ >= 9
+#include "android/asset_manager.h"
+#include "android/asset_manager_jni.h"
+#endif
+
+#if __OHOS__
+#include "rawfile/raw_file_manager.h"
+#endif
 
 #include "sherpa-onnx/csrc/keyword-spotter-impl.h"
 
@@ -90,8 +99,17 @@ void KeywordSpotterConfig::Register(ParseOptions *po) {
 }
 
 bool KeywordSpotterConfig::Validate() const {
-  if (keywords_file.empty()) {
-    SHERPA_ONNX_LOGE("Please provide --keywords-file.");
+  if (!keywords_file.empty() && !keywords_buf.empty()) {
+    SHERPA_ONNX_LOGE(
+        "you can not provide a keywords_buf and a keywords file: '%s', "
+        "at the same time, which is confusing",
+        keywords_file.c_str());
+    return false;
+  }
+
+  if (keywords_file.empty() && keywords_buf.empty()) {
+    SHERPA_ONNX_LOGE(
+        "Please provide either a keywords-file or the keywords-buf");
     return false;
   }
 
@@ -100,8 +118,9 @@ bool KeywordSpotterConfig::Validate() const {
   // keywords file will be packaged into the sherpa-onnx-wasm-kws-main.data file
   // Solution: take keyword_file variable is directly
   // parsed as a string of keywords
-  if (!std::ifstream(keywords_file.c_str()).good()) {
-    SHERPA_ONNX_LOGE("Keywords file %s does not exist.", keywords_file.c_str());
+  if (keywords_buf.empty() && !std::ifstream(keywords_file.c_str()).good()) {
+    SHERPA_ONNX_LOGE("Keywords file '%s' does not exist.",
+                     keywords_file.c_str());
     return false;
   }
 #endif
@@ -127,11 +146,9 @@ std::string KeywordSpotterConfig::ToString() const {
 KeywordSpotter::KeywordSpotter(const KeywordSpotterConfig &config)
     : impl_(KeywordSpotterImpl::Create(config)) {}
 
-#if __ANDROID_API__ >= 9
-KeywordSpotter::KeywordSpotter(AAssetManager *mgr,
-                               const KeywordSpotterConfig &config)
+template <typename Manager>
+KeywordSpotter::KeywordSpotter(Manager *mgr, const KeywordSpotterConfig &config)
     : impl_(KeywordSpotterImpl::Create(mgr, config)) {}
-#endif
 
 KeywordSpotter::~KeywordSpotter() = default;
 
@@ -148,6 +165,8 @@ bool KeywordSpotter::IsReady(OnlineStream *s) const {
   return impl_->IsReady(s);
 }
 
+void KeywordSpotter::Reset(OnlineStream *s) const { impl_->Reset(s); }
+
 void KeywordSpotter::DecodeStreams(OnlineStream **ss, int32_t n) const {
   impl_->DecodeStreams(ss, n);
 }
@@ -155,5 +174,15 @@ void KeywordSpotter::DecodeStreams(OnlineStream **ss, int32_t n) const {
 KeywordResult KeywordSpotter::GetResult(OnlineStream *s) const {
   return impl_->GetResult(s);
 }
+
+#if __ANDROID_API__ >= 9
+template KeywordSpotter::KeywordSpotter(AAssetManager *mgr,
+                                        const KeywordSpotterConfig &config);
+#endif
+
+#if __OHOS__
+template KeywordSpotter::KeywordSpotter(NativeResourceManager *mgr,
+                                        const KeywordSpotterConfig &config);
+#endif
 
 }  // namespace sherpa_onnx

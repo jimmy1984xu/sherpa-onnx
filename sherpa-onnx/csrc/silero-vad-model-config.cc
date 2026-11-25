@@ -4,6 +4,8 @@
 
 #include "sherpa-onnx/csrc/silero-vad-model-config.h"
 
+#include <string>
+
 #include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 
@@ -29,12 +31,22 @@ void SileroVadModelConfig::Register(ParseOptions *po) {
                "--silero-vad-min-speech-duration seconds before separating it");
 
   po->Register(
+      "silero-vad-max-speech-duration", &max_speech_duration,
+      "In seconds. If a speech segment is longer than this value, then we "
+      "increase the threshold to 0.9. After finishing detecting the segment, "
+      "the threshold value is reset to its original value.");
+
+  po->Register(
       "silero-vad-window-size", &window_size,
       "In samples. Audio chunks of --silero-vad-window-size samples are fed "
       "to the silero VAD model. WARNING! Silero VAD models were trained using "
       "512, 1024, 1536 samples for 16000 sample rate and 256, 512, 768 samples "
       "for 8000 sample rate. Values other than these may affect model "
-      "perfomance!");
+      "performance!");
+
+  po->Register("silero-vad-neg-threshold", &neg_threshold,
+               "Negative threshold (noise threshold). If < 0, defaults to "
+               "(threshold - 0.15) with lower bound 0.01.");
 }
 
 bool SileroVadModelConfig::Validate() const {
@@ -44,7 +56,8 @@ bool SileroVadModelConfig::Validate() const {
   }
 
   if (!FileExists(model)) {
-    SHERPA_ONNX_LOGE("Silero vad model file %s does not exist", model.c_str());
+    SHERPA_ONNX_LOGE("Silero vad model file '%s' does not exist",
+                     model.c_str());
     return false;
   }
 
@@ -62,18 +75,47 @@ bool SileroVadModelConfig::Validate() const {
     return false;
   }
 
+  if (min_silence_duration <= 0) {
+    SHERPA_ONNX_LOGE(
+        "Please use a larger value for --silero-vad-min-silence-duration. "
+        "Given: "
+        "%f",
+        min_silence_duration);
+    return false;
+  }
+
+  if (min_speech_duration <= 0) {
+    SHERPA_ONNX_LOGE(
+        "Please use a larger value for --silero-vad-min-speech-duration. "
+        "Given: "
+        "%f",
+        min_speech_duration);
+    return false;
+  }
+
+  if (max_speech_duration <= 0) {
+    SHERPA_ONNX_LOGE(
+        "Please use a larger value for --silero-vad-max-speech-duration. "
+        "Given: "
+        "%f",
+        max_speech_duration);
+    return false;
+  }
+
   return true;
 }
 
 std::string SileroVadModelConfig::ToString() const {
   std::ostringstream os;
 
-  os << "SilerVadModelConfig(";
+  os << "SileroVadModelConfig(";
   os << "model=\"" << model << "\", ";
   os << "threshold=" << threshold << ", ";
   os << "min_silence_duration=" << min_silence_duration << ", ";
   os << "min_speech_duration=" << min_speech_duration << ", ";
-  os << "window_size=" << window_size << ")";
+  os << "max_speech_duration=" << max_speech_duration << ", ";
+  os << "window_size=" << window_size << ", ";
+  os << "neg_threshold=" << neg_threshold << ")";
 
   return os.str();
 }

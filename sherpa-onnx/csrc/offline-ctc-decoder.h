@@ -15,9 +15,21 @@ struct OfflineCtcDecoderResult {
   /// The decoded token IDs
   std::vector<int64_t> tokens;
 
+  /// The decoded word IDs
+  /// Note: tokens.size() is usually not equal to words.size()
+  /// words is empty for greedy search decoding.
+  /// it is not empty when an HLG graph or an HLG graph is used.
+  std::vector<int32_t> words;
+
   /// timestamps[i] contains the output frame index where tokens[i] is decoded.
   /// Note: The index is after subsampling
+  ///
+  /// tokens.size() == timestamps.size()
   std::vector<int32_t> timestamps;
+
+  /// ys_log_probs[i] contains the log probability for tokens[i].
+  /// It is empty when the decoder cannot provide token probabilities.
+  std::vector<float> ys_log_probs;
 };
 
 class OfflineCtcDecoder {

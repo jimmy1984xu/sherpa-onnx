@@ -19,6 +19,10 @@ class OfflinePunctuationImpl {
   static std::unique_ptr<OfflinePunctuationImpl> Create(
       const OfflinePunctuationConfig &config);
 
+  template <typename Manager>
+  static std::unique_ptr<OfflinePunctuationImpl> Create(
+      Manager *mgr, const OfflinePunctuationConfig &config);
+
   virtual std::string AddPunctuation(const std::string &text) const = 0;
 };
 

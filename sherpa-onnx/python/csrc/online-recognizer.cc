@@ -41,7 +41,12 @@ static void PybindOnlineRecognizerResult(py::module *m) {
       .def_property_readonly(
           "segment", [](PyClass &self) -> int32_t { return self.segment; })
       .def_property_readonly(
+          "words",
+          [](PyClass &self) -> std::vector<int32_t> { return self.words; })
+      .def_property_readonly(
           "is_final", [](PyClass &self) -> bool { return self.is_final; })
+      .def("__str__", &PyClass::AsJsonString,
+           py::call_guard<py::gil_scoped_release>())
       .def("as_json_string", &PyClass::AsJsonString,
            py::call_guard<py::gil_scoped_release>());
 }
@@ -49,18 +54,22 @@ static void PybindOnlineRecognizerResult(py::module *m) {
 static void PybindOnlineRecognizerConfig(py::module *m) {
   using PyClass = OnlineRecognizerConfig;
   py::class_<PyClass>(*m, "OnlineRecognizerConfig")
-      .def(
-          py::init<const FeatureExtractorConfig &, const OnlineModelConfig &,
-                   const OnlineLMConfig &, const EndpointConfig &,
-                   const OnlineCtcFstDecoderConfig &, bool, const std::string &,
-                   int32_t, const std::string &, float, float>(),
-          py::arg("feat_config"), py::arg("model_config"),
-          py::arg("lm_config") = OnlineLMConfig(),
-          py::arg("endpoint_config") = EndpointConfig(),
-          py::arg("ctc_fst_decoder_config") = OnlineCtcFstDecoderConfig(),
-          py::arg("enable_endpoint"), py::arg("decoding_method"),
-          py::arg("max_active_paths") = 4, py::arg("hotwords_file") = "",
-          py::arg("hotwords_score") = 0, py::arg("blank_penalty") = 0.0)
+      .def(py::init<const FeatureExtractorConfig &, const OnlineModelConfig &,
+                    const OnlineLMConfig &, const EndpointConfig &,
+                    const OnlineCtcFstDecoderConfig &, bool,
+                    const std::string &, int32_t, const std::string &, float,
+                    float, float, const std::string &, const std::string &,
+                    bool, const HomophoneReplacerConfig &>(),
+           py::arg("feat_config"), py::arg("model_config"),
+           py::arg("lm_config") = OnlineLMConfig(),
+           py::arg("endpoint_config") = EndpointConfig(),
+           py::arg("ctc_fst_decoder_config") = OnlineCtcFstDecoderConfig(),
+           py::arg("enable_endpoint"), py::arg("decoding_method"),
+           py::arg("max_active_paths") = 4, py::arg("hotwords_file") = "",
+           py::arg("hotwords_score") = 0, py::arg("blank_penalty") = 0.0,
+           py::arg("temperature_scale") = 2.0, py::arg("rule_fsts") = "",
+           py::arg("rule_fars") = "", py::arg("reset_encoder") = false,
+           py::arg("hr") = HomophoneReplacerConfig{})
       .def_readwrite("feat_config", &PyClass::feat_config)
       .def_readwrite("model_config", &PyClass::model_config)
       .def_readwrite("lm_config", &PyClass::lm_config)
@@ -72,6 +81,11 @@ static void PybindOnlineRecognizerConfig(py::module *m) {
       .def_readwrite("hotwords_file", &PyClass::hotwords_file)
       .def_readwrite("hotwords_score", &PyClass::hotwords_score)
       .def_readwrite("blank_penalty", &PyClass::blank_penalty)
+      .def_readwrite("temperature_scale", &PyClass::temperature_scale)
+      .def_readwrite("rule_fsts", &PyClass::rule_fsts)
+      .def_readwrite("rule_fars", &PyClass::rule_fars)
+      .def_readwrite("reset_encoder", &PyClass::reset_encoder)
+      .def_readwrite("hr", &PyClass::hr)
       .def("__str__", &PyClass::ToString);
 }
 
@@ -95,19 +109,20 @@ void PybindOnlineRecognizer(py::module *m) {
           py::arg("hotwords"), py::call_guard<py::gil_scoped_release>())
       .def("is_ready", &PyClass::IsReady,
            py::call_guard<py::gil_scoped_release>())
-      .def("decode_stream", &PyClass::DecodeStream,
+      .def("decode_stream", &PyClass::DecodeStream, py::arg("s"),
            py::call_guard<py::gil_scoped_release>())
       .def(
           "decode_streams",
           [](PyClass &self, std::vector<OnlineStream *> ss) {
             self.DecodeStreams(ss.data(), ss.size());
           },
-          py::call_guard<py::gil_scoped_release>())
-      .def("get_result", &PyClass::GetResult,
+          py::arg("ss"), py::call_guard<py::gil_scoped_release>())
+      .def("get_result", &PyClass::GetResult, py::arg("s"),
            py::call_guard<py::gil_scoped_release>())
-      .def("is_endpoint", &PyClass::IsEndpoint,
+      .def("is_endpoint", &PyClass::IsEndpoint, py::arg("s"),
            py::call_guard<py::gil_scoped_release>())
-      .def("reset", &PyClass::Reset, py::call_guard<py::gil_scoped_release>());
+      .def("reset", &PyClass::Reset, py::arg("s"),
+           py::call_guard<py::gil_scoped_release>());
 }
 
 }  // namespace sherpa_onnx

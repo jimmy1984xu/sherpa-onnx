@@ -3,6 +3,12 @@
 This directory contains examples showing how to use Next-gen Kaldi in MFC
 for speech recognition.
 
+|Directory| Pre-built exe (x64)|Pre-built exe (x86)| Description|
+|---------|--------------------|-------------------|------------|
+|[./NonStreamingSpeechRecognition](./NonStreamingSpeechRecognition)|[URL](https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-non-streaming-asr-x64-v1.13.2.exe)|[URL](https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-non-streaming-asr-x86-v1.13.2.exe)| Non-streaming speech recognition|
+|[./StreamingSpeechRecognition](./StreamingSpeechRecognition)|[URL](https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-streaming-asr-x64-v1.13.2.exe)|[URL](https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-streaming-asr-x86-v1.13.2.exe)| Streaming speech recognition|
+|[./NonStreamingTextToSpeech](./NonStreamingTextToSpeech)|[URL](https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-non-streaming-tts-x64-v1.13.2.exe)|[URL](https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-non-streaming-tts-x86-v1.13.2.exe)| Non-streaming text to speech|
+
 Caution: You need to use Windows and install Visual Studio 2022 in order to
 compile it.
 
@@ -24,6 +30,7 @@ cd $HOME/open-source
 git clone https://github.com/k2-fsa/sherpa-onnx
 cd sherpa-onnx
 mkdir build
+cd build
 
 cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX=./install ..
 cmake --build . --config Release --target install

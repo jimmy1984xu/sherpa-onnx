@@ -3,15 +3,28 @@
 // Copyright (c)  2024  Xiaomi Corporation
 
 #include "sherpa-onnx/csrc/speaker-embedding-extractor-model.h"
+#include "sherpa-onnx/csrc/ort-env.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#if __ANDROID_API__ >= 9
+#include "android/asset_manager.h"
+#include "android/asset_manager_jni.h"
+#endif
+
+#if __OHOS__
+#include "rawfile/raw_file_manager.h"
+#endif
+
+#include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
 #include "sherpa-onnx/csrc/session.h"
 #include "sherpa-onnx/csrc/speaker-embedding-extractor-model-meta-data.h"
+#include "sherpa-onnx/csrc/text-utils.h"
 
 namespace sherpa_onnx {
 
@@ -19,19 +32,18 @@ class SpeakerEmbeddingExtractorModel::Impl {
  public:
   explicit Impl(const SpeakerEmbeddingExtractorConfig &config)
       : config_(config),
-        env_(ORT_LOGGING_LEVEL_ERROR),
+        env_(CreateOrtEnv()),
         sess_opts_(GetSessionOptions(config)),
         allocator_{} {
-    {
-      auto buf = ReadFile(config.model);
-      Init(buf.data(), buf.size());
-    }
+    sess_ = std::make_unique<Ort::Session>(
+        env_, SHERPA_ONNX_TO_ORT_PATH(config.model), sess_opts_);
+    Init(nullptr, 0);
   }
 
-#if __ANDROID_API__ >= 9
-  Impl(AAssetManager *mgr, const SpeakerEmbeddingExtractorConfig &config)
+  template <typename Manager>
+  Impl(Manager *mgr, const SpeakerEmbeddingExtractorConfig &config)
       : config_(config),
-        env_(ORT_LOGGING_LEVEL_ERROR),
+        env_(CreateOrtEnv()),
         sess_opts_(GetSessionOptions(config)),
         allocator_{} {
     {
@@ -39,7 +51,6 @@ class SpeakerEmbeddingExtractorModel::Impl {
       Init(buf.data(), buf.size());
     }
   }
-#endif
 
   Ort::Value Compute(Ort::Value x) const {
     std::array<Ort::Value, 1> inputs = {std::move(x)};
@@ -56,8 +67,15 @@ class SpeakerEmbeddingExtractorModel::Impl {
 
  private:
   void Init(void *model_data, size_t model_data_length) {
-    sess_ = std::make_unique<Ort::Session>(env_, model_data, model_data_length,
-                                           sess_opts_);
+    if (model_data) {
+      sess_ = std::make_unique<Ort::Session>(
+          env_, model_data, model_data_length, sess_opts_);
+    } else if (!sess_) {
+      SHERPA_ONNX_LOGE(
+          "Please pass model data or initialize the session outside of "
+          "this function");
+      SHERPA_ONNX_EXIT(-1);
+    }
 
     GetInputNames(sess_.get(), &input_names_, &input_names_ptr_);
 
@@ -68,7 +86,11 @@ class SpeakerEmbeddingExtractorModel::Impl {
     if (config_.debug) {
       std::ostringstream os;
       PrintModelMetadata(os, meta_data);
+#if __OHOS__
+      SHERPA_ONNX_LOGE("%{public}s", os.str().c_str());
+#else
       SHERPA_ONNX_LOGE("%s", os.str().c_str());
+#endif
     }
 
     Ort::AllocatorWithDefaultOptions allocator;  // used in the macro below
@@ -84,9 +106,15 @@ class SpeakerEmbeddingExtractorModel::Impl {
     std::string framework;
     SHERPA_ONNX_READ_META_DATA_STR(framework, "framework");
     if (framework != "wespeaker" && framework != "3d-speaker") {
+#if __OHOS__
+      SHERPA_ONNX_LOGE(
+          "Expect a wespeaker or a 3d-speaker model, given: %{public}s",
+          framework.c_str());
+#else
       SHERPA_ONNX_LOGE("Expect a wespeaker or a 3d-speaker model, given: %s",
                        framework.c_str());
-      exit(-1);
+#endif
+      SHERPA_ONNX_EXIT(-1);
     }
   }
 
@@ -111,11 +139,10 @@ SpeakerEmbeddingExtractorModel::SpeakerEmbeddingExtractorModel(
     const SpeakerEmbeddingExtractorConfig &config)
     : impl_(std::make_unique<Impl>(config)) {}
 
-#if __ANDROID_API__ >= 9
+template <typename Manager>
 SpeakerEmbeddingExtractorModel::SpeakerEmbeddingExtractorModel(
-    AAssetManager *mgr, const SpeakerEmbeddingExtractorConfig &config)
+    Manager *mgr, const SpeakerEmbeddingExtractorConfig &config)
     : impl_(std::make_unique<Impl>(mgr, config)) {}
-#endif
 
 SpeakerEmbeddingExtractorModel::~SpeakerEmbeddingExtractorModel() = default;
 
@@ -127,5 +154,15 @@ SpeakerEmbeddingExtractorModel::GetMetaData() const {
 Ort::Value SpeakerEmbeddingExtractorModel::Compute(Ort::Value x) const {
   return impl_->Compute(std::move(x));
 }
+
+#if __ANDROID_API__ >= 9
+template SpeakerEmbeddingExtractorModel::SpeakerEmbeddingExtractorModel(
+    AAssetManager *mgr, const SpeakerEmbeddingExtractorConfig &config);
+#endif
+
+#if __OHOS__
+template SpeakerEmbeddingExtractorModel::SpeakerEmbeddingExtractorModel(
+    NativeResourceManager *mgr, const SpeakerEmbeddingExtractorConfig &config);
+#endif
 
 }  // namespace sherpa_onnx

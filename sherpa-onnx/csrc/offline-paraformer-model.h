@@ -7,11 +7,6 @@
 #include <memory>
 #include <vector>
 
-#if __ANDROID_API__ >= 9
-#include "android/asset_manager.h"
-#include "android/asset_manager_jni.h"
-#endif
-
 #include "onnxruntime_cxx_api.h"  // NOLINT
 #include "sherpa-onnx/csrc/offline-model-config.h"
 
@@ -21,9 +16,8 @@ class OfflineParaformerModel {
  public:
   explicit OfflineParaformerModel(const OfflineModelConfig &config);
 
-#if __ANDROID_API__ >= 9
-  OfflineParaformerModel(AAssetManager *mgr, const OfflineModelConfig &config);
-#endif
+  template <typename Manager>
+  OfflineParaformerModel(Manager *mgr, const OfflineModelConfig &config);
 
   ~OfflineParaformerModel();
 
@@ -45,6 +39,13 @@ class OfflineParaformerModel {
    */
   std::vector<Ort::Value> Forward(Ort::Value features,
                                   Ort::Value features_length);
+  std::vector<Ort::Value> Forward(std::vector<Ort::Value> inputs);
+
+  /** Return true if the model requires a bias embedding input. */
+  bool HasBiasEmbedInput() const;
+
+  /** Return the embedding dimension of the bias embedding input. */
+  int32_t BiasEmbedDim() const;
 
   /** Return the vocabulary size of the model
    */

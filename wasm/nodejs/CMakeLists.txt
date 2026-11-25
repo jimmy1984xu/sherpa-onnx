@@ -10,45 +10,116 @@ set(exported_functions
   SherpaOnnxDestroyOfflineTtsGeneratedAudio
   SherpaOnnxOfflineTtsGenerate
   SherpaOnnxOfflineTtsGenerateWithCallback
+  SherpaOnnxOfflineTtsGenerateWithConfig
   SherpaOnnxOfflineTtsNumSpeakers
   SherpaOnnxOfflineTtsSampleRate
   SherpaOnnxWriteWave
   # streaming asr
-  AcceptWaveform
-  CreateOnlineRecognizer
-  CreateOnlineStream
-  DecodeOnlineStream
-  DestroyOnlineRecognizer
-  DestroyOnlineRecognizerResult
-  DestroyOnlineStream
-  DestroyOnlineStreamResultJson
-  GetOnlineStreamResult
-  GetOnlineStreamResultAsJson
-  InputFinished
-  IsEndpoint
-  IsOnlineStreamReady
-  Reset
+  SherpaOnnxCreateOnlineRecognizer
+  SherpaOnnxCreateOnlineStream
+  SherpaOnnxDecodeOnlineStream
+  SherpaOnnxDestroyOnlineRecognizer
+  SherpaOnnxDestroyOnlineRecognizerResult
+  SherpaOnnxDestroyOnlineStream
+  SherpaOnnxDestroyOnlineStreamResultJson
+  SherpaOnnxGetOnlineStreamResult
+  SherpaOnnxGetOnlineStreamResultAsJson
+  SherpaOnnxIsOnlineStreamReady
+  SherpaOnnxOnlineStreamAcceptWaveform
+  SherpaOnnxOnlineStreamGetOption
+  SherpaOnnxOnlineStreamInputFinished
+  SherpaOnnxOnlineStreamIsEndpoint
+  SherpaOnnxOnlineStreamReset
+  SherpaOnnxOnlineStreamSetOption
   # non-streaming ASR
-  AcceptWaveformOffline
-  CreateOfflineRecognizer
-  CreateOfflineStream
-  DecodeMultipleOfflineStreams
-  DecodeOfflineStream
-  DestroyOfflineRecognizer
-  DestroyOfflineRecognizerResult
-  DestroyOfflineStream
-  DestroyOfflineStreamResultJson
-  GetOfflineStreamResult
-  GetOfflineStreamResultAsJson
   PrintOfflineRecognizerConfig
+  SherpaOnnxAcceptWaveformOffline
+  SherpaOnnxCreateOfflineRecognizer
+  SherpaOnnxCreateOfflineStream
+  SherpaOnnxDecodeMultipleOfflineStreams
+  SherpaOnnxDecodeOfflineStream
+  SherpaOnnxDestroyOfflineRecognizer
+  SherpaOnnxDestroyOfflineRecognizerResult
+  SherpaOnnxDestroyOfflineStream
+  SherpaOnnxDestroyOfflineStreamResultJson
+  SherpaOnnxGetOfflineStreamResult
+  SherpaOnnxGetOfflineStreamResultAsJson
+  SherpaOnnxOfflineStreamGetOption
+  SherpaOnnxOfflineStreamSetOption
+  SherpaOnnxOfflineRecognizerSetConfig
   # online kws
-  CreateKeywordSpotter
-  DestroyKeywordSpotter
-  CreateKeywordStream
-  DecodeKeywordStream
-  GetKeywordResult
-  DestroyKeywordResult
-  IsKeywordStreamReady
+  SherpaOnnxCreateKeywordSpotter
+  SherpaOnnxCreateKeywordStream
+  SherpaOnnxDecodeKeywordStream
+  SherpaOnnxDestroyKeywordResult
+  SherpaOnnxDestroyKeywordSpotter
+  SherpaOnnxGetKeywordResult
+  SherpaOnnxIsKeywordStreamReady
+  SherpaOnnxResetKeywordStream
+  # VAD
+  SherpaOnnxCreateCircularBuffer
+  SherpaOnnxDestroyCircularBuffer
+  SherpaOnnxCircularBufferPush
+  SherpaOnnxCircularBufferGet
+  SherpaOnnxCircularBufferFree
+  SherpaOnnxCircularBufferPop
+  SherpaOnnxCircularBufferSize
+  SherpaOnnxCircularBufferHead
+  SherpaOnnxCircularBufferReset
+  SherpaOnnxCreateVoiceActivityDetector
+  SherpaOnnxDestroyVoiceActivityDetector
+  SherpaOnnxVoiceActivityDetectorAcceptWaveform
+  SherpaOnnxVoiceActivityDetectorEmpty
+  SherpaOnnxVoiceActivityDetectorDetected
+  SherpaOnnxVoiceActivityDetectorPop
+  SherpaOnnxVoiceActivityDetectorClear
+  SherpaOnnxVoiceActivityDetectorFront
+  SherpaOnnxDestroySpeechSegment
+  SherpaOnnxVoiceActivityDetectorReset
+  SherpaOnnxVoiceActivityDetectorFlush
+  # Speaker diarization
+  SherpaOnnxCreateOfflineSpeakerDiarization
+  SherpaOnnxDestroyOfflineSpeakerDiarization
+  SherpaOnnxOfflineSpeakerDiarizationDestroyResult
+  SherpaOnnxOfflineSpeakerDiarizationDestroySegment
+  SherpaOnnxOfflineSpeakerDiarizationGetSampleRate
+  SherpaOnnxOfflineSpeakerDiarizationProcess
+  SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback
+  SherpaOnnxOfflineSpeakerDiarizationResultGetNumSegments
+  SherpaOnnxOfflineSpeakerDiarizationResultSortByStartTime
+  SherpaOnnxOfflineSpeakerDiarizationSetConfig
+  #
+  SherpaOnnxFileExists
+  SherpaOnnxReadWave
+  SherpaOnnxReadWaveFromBinaryData
+  SherpaOnnxFreeWave
+  SherpaOnnxWriteWave
+  # speech enhancement
+  SherpaOnnxCreateOfflineSpeechDenoiser
+  SherpaOnnxCreateOnlineSpeechDenoiser
+  SherpaOnnxDestroyDenoisedAudio
+  SherpaOnnxDestroyOfflineSpeechDenoiser
+  SherpaOnnxDestroyOnlineSpeechDenoiser
+  SherpaOnnxOfflineSpeechDenoiserGetSampleRate
+  SherpaOnnxOfflineSpeechDenoiserRun
+  SherpaOnnxOnlineSpeechDenoiserGetFrameShiftInSamples
+  SherpaOnnxOnlineSpeechDenoiserGetSampleRate
+  SherpaOnnxOnlineSpeechDenoiserRun
+  SherpaOnnxOnlineSpeechDenoiserFlush
+  SherpaOnnxOnlineSpeechDenoiserReset
+  # punctuation
+  SherpaOnnxCreateOfflinePunctuation
+  SherpaOnnxDestroyOfflinePunctuation
+  SherpaOfflinePunctuationAddPunct
+  SherpaOfflinePunctuationFreeText
+  SherpaOnnxCreateOnlinePunctuation
+  SherpaOnnxDestroyOnlinePunctuation
+  SherpaOnnxOnlinePunctuationAddPunct
+  SherpaOnnxOnlinePunctuationFreeText
+  # version
+  SherpaOnnxGetGitDate
+  SherpaOnnxGetGitSha1
+  SherpaOnnxGetVersionStr
 )
 
 
@@ -61,17 +132,20 @@ list(JOIN mangled_exported_functions "," all_exported_functions)
 include_directories(${CMAKE_SOURCE_DIR})
 set(MY_FLAGS " -s FORCE_FILESYSTEM=1 -s INITIAL_MEMORY=512MB -s ALLOW_MEMORY_GROWTH=1")
 string(APPEND MY_FLAGS " -sSTACK_SIZE=10485760 ") # 10MB
+string(APPEND MY_FLAGS " -sALLOW_TABLE_GROWTH ")
 string(APPEND MY_FLAGS " -sEXPORTED_FUNCTIONS=[_CopyHeap,_malloc,_free,${all_exported_functions}] ")
-string(APPEND MY_FLAGS " -sEXPORTED_RUNTIME_METHODS=['ccall','stringToUTF8','setValue','getValue'] ")
 string(APPEND MY_FLAGS " -sNODERAWFS=1 ")
-string(APPEND MY_FLAGS " -sEXPORTED_RUNTIME_METHODS=['ccall','stringToUTF8','setValue','getValue','lengthBytesUTF8','UTF8ToString'] ")
+string(APPEND MY_FLAGS " -sEXPORTED_RUNTIME_METHODS=['ccall','stringToUTF8','setValue','getValue','lengthBytesUTF8','UTF8ToString','HEAPU8','HEAP16','HEAP32','HEAPU32','HEAPF32','HEAPF64','addFunction','removeFunction'] ")
+
 string(APPEND MY_FLAGS " -sMODULARIZE=1 -sWASM_ASYNC_COMPILATION=0 ")
+string(APPEND MY_FLAGS " -fexceptions ")
+string(APPEND MY_FLAGS " -sPTHREAD_POOL_SIZE=4 ")
 
 message(STATUS "MY_FLAGS: ${MY_FLAGS}")
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${MY_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${MY_FLAGS}")
-set(CMAKE_EXECUTBLE_LINKER_FLAGS "${CMAKE_EXECUTBLE_LINKER_FLAGS} ${MY_FLAGS}")
+set(CMAKE_EXECUTABLE_LINKER_FLAGS "${CMAKE_EXECUTABLE_LINKER_FLAGS} ${MY_FLAGS}")
 
 add_executable(sherpa-onnx-wasm-nodejs sherpa-onnx-wasm-nodejs.cc)
 target_link_libraries(sherpa-onnx-wasm-nodejs sherpa-onnx-core sherpa-onnx-c-api)
@@ -80,8 +154,13 @@ install(TARGETS sherpa-onnx-wasm-nodejs DESTINATION bin/wasm/nodejs)
 install(
   FILES
   ${CMAKE_SOURCE_DIR}/wasm/asr/sherpa-onnx-asr.js
-  ${CMAKE_SOURCE_DIR}/wasm/tts/sherpa-onnx-tts.js
+  ${CMAKE_SOURCE_DIR}/wasm/tts/sherpa-onnx-tts.node.js
   ${CMAKE_SOURCE_DIR}/wasm/kws/sherpa-onnx-kws.js
+  ${CMAKE_SOURCE_DIR}/wasm/vad/sherpa-onnx-vad.js
+  ${CMAKE_SOURCE_DIR}/wasm/nodejs/sherpa-onnx-punctuation.js
+  ${CMAKE_SOURCE_DIR}/wasm/speaker-diarization/sherpa-onnx-speaker-diarization.js
+  ${CMAKE_SOURCE_DIR}/wasm/speech-enhancement/sherpa-onnx-speech-enhancement.js
+  ${CMAKE_SOURCE_DIR}/wasm/nodejs/sherpa-onnx-wave.js
     "$<TARGET_FILE_DIR:sherpa-onnx-wasm-nodejs>/sherpa-onnx-wasm-nodejs.js"
     "$<TARGET_FILE_DIR:sherpa-onnx-wasm-nodejs>/sherpa-onnx-wasm-nodejs.wasm"
   DESTINATION

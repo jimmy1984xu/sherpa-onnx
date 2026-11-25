@@ -3,7 +3,11 @@
 // Copyright (c)  2024  Xiaomi Corporation
 #include <stdio.h>
 
+#include <string>
+#include <vector>
+
 #include "sherpa-onnx/csrc/audio-tagging.h"
+#include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/parse-options.h"
 #include "sherpa-onnx/csrc/wave-reader.h"
 
@@ -38,7 +42,7 @@ for more models.
   if (po.NumArgs() != 1) {
     fprintf(stderr, "\nError: Please provide 1 wave file\n\n");
     po.PrintUsage();
-    exit(EXIT_FAILURE);
+    SHERPA_ONNX_EXIT(EXIT_FAILURE);
   }
 
   fprintf(stderr, "%s\n", config.ToString().c_str());
@@ -58,7 +62,7 @@ for more models.
       sherpa_onnx::ReadWave(wav_filename, &sampling_rate, &is_ok);
 
   if (!is_ok) {
-    fprintf(stderr, "Failed to read %s\n", wav_filename.c_str());
+    fprintf(stderr, "Failed to read '%s'\n", wav_filename.c_str());
     return -1;
   }
 
@@ -78,7 +82,8 @@ for more models.
   int32_t i = 0;
 
   for (const auto &event : results) {
-    fprintf(stderr, "%d: %s\n", i, event.ToString().c_str());
+    fprintf(stderr, "%d: ", i);
+    fprintf(stdout, "%s\n", event.ToString().c_str());
     i += 1;
   }
 

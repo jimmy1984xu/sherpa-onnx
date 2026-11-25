@@ -5,12 +5,20 @@
 
 import os
 import platform
+import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
+import glob
 import setuptools
 from setuptools.command.build_ext import build_ext
+
+
+def need_split_package():
+    ans = os.environ.get("SHERPA_ONNX_SPLIT_PYTHON_PACKAGE", None)
+    return ans is not None
 
 
 def is_for_pypi():
@@ -53,41 +61,44 @@ def get_binaries():
         "sherpa-onnx-microphone-offline-speaker-identification",
         "sherpa-onnx-offline",
         "sherpa-onnx-offline-audio-tagging",
+        "sherpa-onnx-offline-denoiser",
         "sherpa-onnx-offline-language-identification",
         "sherpa-onnx-offline-punctuation",
+        "sherpa-onnx-offline-source-separation",
+        "sherpa-onnx-offline-speaker-diarization",
         "sherpa-onnx-offline-tts",
         "sherpa-onnx-offline-tts-play",
         "sherpa-onnx-offline-websocket-server",
+        "sherpa-onnx-online-denoiser",
+        "sherpa-onnx-online-punctuation",
         "sherpa-onnx-online-websocket-client",
         "sherpa-onnx-online-websocket-server",
+        "sherpa-onnx-vad",
         "sherpa-onnx-vad-microphone",
         "sherpa-onnx-vad-microphone-offline-asr",
+        "sherpa-onnx-vad-microphone-simulated-streaming-asr",
+        "sherpa-onnx-vad-with-offline-asr",
+        "sherpa-onnx-vad-with-online-asr",
+        "sherpa-onnx-version",
+        "sherpa-onnx-pa-devs",
     ]
 
     if enable_alsa():
         binaries += [
             "sherpa-onnx-alsa",
             "sherpa-onnx-alsa-offline",
+            "sherpa-onnx-alsa-offline-audio-tagging",
             "sherpa-onnx-alsa-offline-speaker-identification",
             "sherpa-onnx-offline-tts-play-alsa",
             "sherpa-onnx-vad-alsa",
-            "sherpa-onnx-alsa-offline-audio-tagging",
+            "sherpa-onnx-vad-alsa-offline-asr",
         ]
 
     if is_windows():
         binaries += [
-            "espeak-ng.dll",
-            "kaldi-decoder-core.dll",
-            "kaldi-native-fbank-core.dll",
             "onnxruntime.dll",
-            "piper_phonemize.dll",
             "sherpa-onnx-c-api.dll",
-            "sherpa-onnx-core.dll",
-            "sherpa-onnx-fstfar.lib",
-            "sherpa-onnx-fst.lib",
-            "sherpa-onnx-kaldifst-core.lib",
-            "sherpa-onnx-portaudio.dll",
-            "ucd.dll",
+            "sherpa-onnx-cxx-api.dll",
         ]
 
     return binaries
@@ -126,7 +137,7 @@ class BuildExtension(build_ext):
         # build/lib.linux-x86_64-3.8
         os.makedirs(self.build_lib, exist_ok=True)
 
-        out_bin_dir = Path(self.build_lib).parent / "sherpa_onnx" / "bin"
+        out_bin_dir = Path(self.build_lib).resolve().parent / "sherpa_onnx" / "bin"
         install_dir = Path(self.build_lib).resolve() / "sherpa_onnx"
 
         sherpa_onnx_dir = Path(__file__).parent.parent.resolve()
@@ -138,39 +149,86 @@ class BuildExtension(build_ext):
         if cmake_args == "":
             cmake_args = "-DCMAKE_BUILD_TYPE=Release"
 
-        extra_cmake_args = f" -DCMAKE_INSTALL_PREFIX={install_dir} "
+        extra_cmake_args = ""
+        if not need_split_package():
+            extra_cmake_args += f" -DCMAKE_INSTALL_PREFIX={install_dir} "
         extra_cmake_args += " -DBUILD_SHARED_LIBS=ON "
         extra_cmake_args += " -DBUILD_PIPER_PHONMIZE_EXE=OFF "
         extra_cmake_args += " -DBUILD_PIPER_PHONMIZE_TESTS=OFF "
         extra_cmake_args += " -DBUILD_ESPEAK_NG_EXE=OFF "
         extra_cmake_args += " -DBUILD_ESPEAK_NG_TESTS=OFF "
 
+        if not need_split_package():
+            extra_cmake_args += " -DSHERPA_ONNX_ENABLE_C_API=ON "
+
+        extra_cmake_args += " -DSHERPA_ONNX_BUILD_C_API_EXAMPLES=OFF "
         extra_cmake_args += " -DSHERPA_ONNX_ENABLE_CHECK=OFF "
         extra_cmake_args += " -DSHERPA_ONNX_ENABLE_PYTHON=ON "
         extra_cmake_args += " -DSHERPA_ONNX_ENABLE_PORTAUDIO=ON "
-        extra_cmake_args += " -DSHERPA_ONNX_ENABLE_WEBSOCKET=ON "
+        if not need_split_package():
+            extra_cmake_args += " -DSHERPA_ONNX_ENABLE_WEBSOCKET=ON "
 
         if "PYTHON_EXECUTABLE" not in cmake_args:
             print(f"Setting PYTHON_EXECUTABLE to {sys.executable}")
             cmake_args += f" -DPYTHON_EXECUTABLE={sys.executable}"
 
-        cmake_args += extra_cmake_args
+        # putting `cmake_args` from env variable ${SHERPA_ONNX_CMAKE_ARGS} last,
+        # so they can onverride the "defaults" stored in `extra_cmake_args`
+        cmake_args = extra_cmake_args + cmake_args
 
         if is_windows():
-            build_cmd = f"""
-         cmake {cmake_args} -B {self.build_temp} -S {sherpa_onnx_dir}
-         cmake --build {self.build_temp} --target install --config Release -- -m
-            """
-            print(f"build command is:\n{build_cmd}")
-            ret = os.system(
-                f"cmake {cmake_args} -B {self.build_temp} -S {sherpa_onnx_dir}"
-            )
-            if ret != 0:
-                raise Exception("Failed to configure sherpa")
+            if not need_split_package():
+                build_cmd = f"""
+             cmake {cmake_args} -B {self.build_temp} -S {sherpa_onnx_dir}
+             cmake --build {self.build_temp} --target install --config Release -- -m:2
+                """
+            else:
+                build_cmd = f"""
+             cmake {cmake_args} -B {self.build_temp} -S {sherpa_onnx_dir}
+             cmake --build {self.build_temp} --target _sherpa_onnx --config Release -- -m:2
+                """
 
-            ret = os.system(
-                f"cmake --build {self.build_temp} --target install --config Release -- -m"  # noqa
+            print(f"build command is:\n{build_cmd}")
+
+            cmake_configure_cmd = (
+                f'cmake {cmake_args} -B "{self.build_temp}" -S "{sherpa_onnx_dir}"'
             )
+            print("cmake_configure_cmd", cmake_configure_cmd)
+
+            ret = subprocess.run(cmake_configure_cmd, shell=True).returncode
+
+            if ret != 0:
+                raise Exception("Failed to configure sherpa-onnx")
+
+            if not need_split_package():
+                cmake_build_cmd = [
+                    "cmake",
+                    "--build",
+                    str(self.build_temp),
+                    "--target",
+                    "install",
+                    "--config",
+                    "Release",
+                    "--",
+                    "-m:2",
+                ]
+                print("cmake_build_cmd", cmake_build_cmd)
+                ret = subprocess.run(cmake_build_cmd, shell=False).returncode
+            else:
+                cmake_build_cmd = [
+                    "cmake",
+                    "--build",
+                    str(self.build_temp),
+                    "--target",
+                    "_sherpa_onnx",
+                    "--config",
+                    "Release",
+                    "--",
+                    "-m:2",
+                ]
+                print("cmake_build_cmd", cmake_build_cmd)
+                ret = subprocess.run(cmake_build_cmd, shell=False).returncode
+
             if ret != 0:
                 raise Exception("Failed to build and install sherpa")
         else:
@@ -180,16 +238,70 @@ class BuildExtension(build_ext):
                 print('Setting make_args to "-j4"')
                 make_args = "-j4"
 
-            build_cmd = f"""
-                cd {self.build_temp}
+            if "-G Ninja" in cmake_args:
+                if not need_split_package():
+                    build_cmd = f"""
+                        cd {self.build_temp}
+                        cmake {cmake_args} {sherpa_onnx_dir}
+                        ninja {make_args} install
+                    """
+                else:
+                    build_cmd = f"""
+                        cd {self.build_temp}
+                        cmake {cmake_args} {sherpa_onnx_dir}
+                        ninja {make_args} _sherpa_onnx
+                    """
+            else:
+                if not need_split_package():
+                    build_cmd = f"""
+                        cd {self.build_temp}
 
-                cmake {cmake_args} {sherpa_onnx_dir}
+                        cmake {cmake_args} {sherpa_onnx_dir}
 
-                make {make_args} install/strip
-            """
+                        make {make_args} install/strip
+                    """
+                else:
+                    build_cmd = f"""
+                        cd {self.build_temp}
+
+                        cmake {cmake_args} {sherpa_onnx_dir}
+
+                        make {make_args} _sherpa_onnx
+                    """
             print(f"build command is:\n{build_cmd}")
 
-            ret = os.system(build_cmd)
+            # Parse cmake_args and make_args into lists for safer execution
+            # Use shlex.split() for safer parsing of user-provided arguments
+            cmake_args_list = shlex.split(cmake_args)
+            make_args_list = shlex.split(make_args) if make_args else []
+
+            # Change to build_temp directory and execute commands
+            original_dir = os.getcwd()
+            try:
+                os.chdir(self.build_temp)
+
+                # Run cmake configuration
+                cmake_cmd = ["cmake"] + cmake_args_list + [str(sherpa_onnx_dir)]
+                ret = subprocess.run(cmake_cmd, shell=False).returncode
+                if ret != 0:
+                    raise Exception("Failed to configure sherpa")
+
+                # Run build command
+                if "-G Ninja" in cmake_args:
+                    if not need_split_package():
+                        build_cmd_list = ["ninja"] + make_args_list + ["install"]
+                    else:
+                        build_cmd_list = ["ninja"] + make_args_list + ["_sherpa_onnx"]
+                else:
+                    if not need_split_package():
+                        build_cmd_list = ["make"] + make_args_list + ["install/strip"]
+                    else:
+                        build_cmd_list = ["make"] + make_args_list + ["_sherpa_onnx"]
+
+                ret = subprocess.run(build_cmd_list, shell=False).returncode
+            finally:
+                os.chdir(original_dir)
+
             if ret != 0:
                 raise Exception(
                     "\nBuild sherpa-onnx failed. Please check the error message.\n"
@@ -197,25 +309,60 @@ class BuildExtension(build_ext):
                     "\nClick:\n\thttps://github.com/k2-fsa/sherpa-onnx/issues/new\n"  # noqa
                 )
 
+        if need_split_package():
+            dst = os.path.join(f"{self.build_lib}", "sherpa_onnx", "lib")
+            os.makedirs(dst, exist_ok=True)
+            # Directory listing for debugging - safe with shell=False
+            if is_windows():
+                # On Windows, use PowerShell's Get-ChildItem or just skip the listing
+                # since 'dir' is a shell built-in. For safety, we'll just skip it.
+                pass
+            else:
+                subprocess.run(["ls", "-la", dst], shell=False)
+
+            ext = "pyd" if sys.platform.startswith("win") else "so"
+            pattern = os.path.join(self.build_temp, "**", f"_sherpa_onnx.*.{ext}")
+            matches = glob.glob(pattern, recursive=True)
+            print("matches", list(matches))
+
+            for f in matches:
+                print(f, os.path.join(f"{self.build_lib}", "sherpa_onnx", "lib"))
+                shutil.copy(f"{f}", dst)
+                # Directory listing for debugging - safe with shell=False
+                if is_windows():
+                    # On Windows, use PowerShell's Get-ChildItem or just skip the listing
+                    # since 'dir' is a shell built-in. For safety, we'll just skip it.
+                    pass
+                else:
+                    subprocess.run(["ls", "-la", dst], shell=False)
+
+            return
+
         suffix = ".exe" if is_windows() else ""
         # Remember to also change setup.py
 
         binaries = get_binaries()
 
         for f in binaries:
-            suffix = "" if (".dll" in f or ".lib" in f) else suffix
+            suffix = "" if ".dll" in f else suffix
             src_file = install_dir / "bin" / (f + suffix)
             if not src_file.is_file():
                 src_file = install_dir / "lib" / (f + suffix)
             if not src_file.is_file():
                 src_file = install_dir / ".." / (f + suffix)
 
+            if not src_file.is_file():
+                continue
+
             print(f"Copying {src_file} to {out_bin_dir}/")
             shutil.copy(f"{src_file}", f"{out_bin_dir}/")
 
-        shutil.rmtree(f"{install_dir}/bin")
-        shutil.rmtree(f"{install_dir}/share")
-        shutil.rmtree(f"{install_dir}/lib/pkgconfig")
+        if Path(f"{install_dir}/bin").is_dir():
+            shutil.rmtree(f"{install_dir}/bin")
+        if Path(f"{install_dir}/share").is_dir():
+            shutil.rmtree(f"{install_dir}/share")
+        if Path(f"{install_dir}/lib/pkgconfig").is_dir():
+            shutil.rmtree(f"{install_dir}/lib/pkgconfig")
 
-        if is_windows():
-            shutil.rmtree(f"{install_dir}/lib")
+        if is_macos():
+            os.remove(f"{install_dir}/lib/libonnxruntime.dylib")

@@ -1,18 +1,18 @@
 function(download_piper_phonemize)
   include(FetchContent)
 
-  set(piper_phonemize_URL  "https://github.com/csukuangfj/piper-phonemize/archive/dc6b5f4441bffe521047086930b0fc12686acd56.zip")
-  set(piper_phonemize_URL2 "https://hub.nuaa.cf/csukuangfj/piper-phonemize/archive/dc6b5f4441bffe521047086930b0fc12686acd56.zip")
-  set(piper_phonemize_HASH "SHA256=b9faa04204b1756fa455a962abb1f037041c040133d55be58d11f11ab9b3ce14")
+  set(piper_phonemize_URL  "https://github.com/csukuangfj/piper-phonemize/archive/78a788e0b719013401572d70fef372e77bff8e43.zip")
+  set(piper_phonemize_URL2 "https://hf-mirror.com/csukuangfj/sherpa-onnx-cmake-deps/resolve/main/piper-phonemize-78a788e0b719013401572d70fef372e77bff8e43.zip")
+  set(piper_phonemize_HASH "SHA256=89641a46489a4898754643ce57bda9c9b54b4ca46485fdc02bf0dc84b866645d")
 
   # If you don't have access to the Internet,
   # please pre-download kaldi-decoder
   set(possible_file_locations
-    $ENV{HOME}/Downloads/piper-phonemize-dc6b5f4441bffe521047086930b0fc12686acd56.zip
-    ${CMAKE_SOURCE_DIR}/piper-phonemize-dc6b5f4441bffe521047086930b0fc12686acd56.zip
-    ${CMAKE_BINARY_DIR}/piper-phonemize-dc6b5f4441bffe521047086930b0fc12686acd56.zip
-    /tmp/piper-phonemize-dc6b5f4441bffe521047086930b0fc12686acd56.zip
-    /star-fj/fangjun/download/github/piper-phonemize-dc6b5f4441bffe521047086930b0fc12686acd56.zip
+    $ENV{HOME}/Downloads/piper-phonemize-78a788e0b719013401572d70fef372e77bff8e43.zip
+    ${CMAKE_SOURCE_DIR}/piper-phonemize-78a788e0b719013401572d70fef372e77bff8e43.zip
+    ${CMAKE_BINARY_DIR}/piper-phonemize-78a788e0b719013401572d70fef372e77bff8e43.zip
+    /tmp/piper-phonemize-78a788e0b719013401572d70fef372e77bff8e43.zip
+    /star-fj/fangjun/download/github/piper-phonemize-78a788e0b719013401572d70fef372e77bff8e43.zip
   )
 
   foreach(f IN LISTS possible_file_locations)
@@ -40,7 +40,22 @@ function(download_piper_phonemize)
   message(STATUS "piper-phonemize is downloaded to ${piper_phonemize_SOURCE_DIR}")
   message(STATUS "piper-phonemize binary dir is ${piper_phonemize_BINARY_DIR}")
 
+  if(BUILD_SHARED_LIBS)
+    set(_build_shared_libs_bak ${BUILD_SHARED_LIBS})
+    set(BUILD_SHARED_LIBS OFF)
+  endif()
+
   add_subdirectory(${piper_phonemize_SOURCE_DIR} ${piper_phonemize_BINARY_DIR} EXCLUDE_FROM_ALL)
+
+  if(_build_shared_libs_bak)
+    set_target_properties(piper_phonemize
+      PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        C_VISIBILITY_PRESET hidden
+        CXX_VISIBILITY_PRESET hidden
+    )
+    set(BUILD_SHARED_LIBS ON)
+  endif()
 
   if(WIN32 AND MSVC)
     target_compile_options(piper_phonemize PUBLIC
@@ -53,20 +68,10 @@ function(download_piper_phonemize)
       ${piper_phonemize_SOURCE_DIR}/src/include
   )
 
-  if(SHERPA_ONNX_ENABLE_PYTHON AND WIN32)
-    install(TARGETS
-      piper_phonemize
-    DESTINATION ..)
-  else()
+  if(NOT BUILD_SHARED_LIBS)
     install(TARGETS
       piper_phonemize
     DESTINATION lib)
-  endif()
-
-  if(WIN32 AND BUILD_SHARED_LIBS)
-    install(TARGETS
-      piper_phonemize
-    DESTINATION bin)
   endif()
 endfunction()
 

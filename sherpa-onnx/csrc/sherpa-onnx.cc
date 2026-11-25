@@ -4,16 +4,20 @@
 
 #include <stdio.h>
 
-#include <chrono>  // NOLINT
+#include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "sherpa-onnx/csrc/online-recognizer.h"
+#include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/online-stream.h"
 #include "sherpa-onnx/csrc/parse-options.h"
 #include "sherpa-onnx/csrc/symbol-table.h"
+#include "sherpa-onnx/csrc/timer.h"
 #include "sherpa-onnx/csrc/wave-reader.h"
 
 typedef struct {
@@ -45,7 +49,7 @@ Usage:
 
   ./bin/sherpa-onnx \
     --debug=1 \
-    --zipformer2-ctc-model=./sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-2023-12-13/ctc-epoch-20-avg-1-chunk-16-left-128.int8.onnx \
+    --zipformer2-ctc-model=./sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-2023-12-13/ctc-epoch-20-avg-1-chunk-16-left-128.onnx \
     --tokens=./sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-2023-12-13/tokens.txt \
     ./sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-2023-12-13/test_wavs/DEV_T0000000000.wav \
     ./sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-2023-12-13/test_wavs/DEV_T0000000001.wav \
@@ -83,7 +87,8 @@ for a list of pre-trained models to download.
   po.Read(argc, argv);
   if (po.NumArgs() < 1) {
     po.PrintUsage();
-    exit(EXIT_FAILURE);
+    fprintf(stderr, "Error! Please provide at lease 1 wav file\n");
+    SHERPA_ONNX_EXIT(EXIT_FAILURE);
   }
 
   fprintf(stderr, "%s\n", config.ToString().c_str());
@@ -93,7 +98,10 @@ for a list of pre-trained models to download.
     return -1;
   }
 
+  printf("Start to create recognizer\n");
+  sherpa_onnx::Timer timer;
   sherpa_onnx::OnlineRecognizer recognizer(config);
+  printf("Recognizer created in %.5f s\n", timer.Elapsed());
 
   std::vector<Stream> ss;
 
@@ -109,13 +117,18 @@ for a list of pre-trained models to download.
         sherpa_onnx::ReadWave(wav_filename, &sampling_rate, &is_ok);
 
     if (!is_ok) {
-      fprintf(stderr, "Failed to read %s\n", wav_filename.c_str());
+      fprintf(stderr, "Failed to read '%s'\n", wav_filename.c_str());
       return -1;
     }
 
     const float duration = samples.size() / static_cast<float>(sampling_rate);
 
     auto s = recognizer.CreateStream();
+
+    // std::vector<float> left_paddings(static_cast<int>(0.3 * sampling_rate));
+    // s->AcceptWaveform(sampling_rate, left_paddings.data(),
+    //                   left_paddings.size());
+
     s->AcceptWaveform(sampling_rate, samples.data(), samples.size());
 
     std::vector<float> tail_paddings(static_cast<int>(0.8 * sampling_rate));
@@ -158,8 +171,11 @@ for a list of pre-trained models to download.
     const float rtf = s.elapsed_seconds / s.duration;
 
     os << po.GetArg(i) << "\n";
-    os << std::setprecision(2) << "Elapsed seconds: " << s.elapsed_seconds
-       << ", Real time factor (RTF): " << rtf << "\n";
+    os << "Number of threads: " << config.model_config.num_threads << ", "
+       << std::setprecision(2) << "Elapsed seconds: " << s.elapsed_seconds
+       << ", Audio duration (s): " << s.duration
+       << ", Real time factor (RTF) = " << s.elapsed_seconds << "/"
+       << s.duration << " = " << rtf << "\n";
     const auto r = recognizer.GetResult(s.online_stream.get());
     os << r.text << "\n";
     os << r.AsJsonString() << "\n\n";

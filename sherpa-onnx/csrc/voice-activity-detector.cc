@@ -5,10 +5,23 @@
 #include "sherpa-onnx/csrc/voice-activity-detector.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <memory>
 #include <queue>
 #include <utility>
+#include <vector>
+
+#if __ANDROID_API__ >= 9
+#include "android/asset_manager.h"
+#include "android/asset_manager_jni.h"
+#endif
+
+#if __OHOS__
+#include "rawfile/raw_file_manager.h"
+#endif
 
 #include "sherpa-onnx/csrc/circular-buffer.h"
+#include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/vad-model.h"
 
 namespace sherpa_onnx {
@@ -18,45 +31,76 @@ class VoiceActivityDetector::Impl {
   explicit Impl(const VadModelConfig &config, float buffer_size_in_seconds = 60)
       : model_(VadModel::Create(config)),
         config_(config),
-        buffer_(buffer_size_in_seconds * config.sample_rate) {}
+        buffer_(buffer_size_in_seconds * config.sample_rate),
+        max_allowed_utterance_length_(buffer_size_in_seconds * config.sample_rate) {
+    Init();
+  }
 
-#if __ANDROID_API__ >= 9
-  Impl(AAssetManager *mgr, const VadModelConfig &config,
+  template <typename Manager>
+  Impl(Manager *mgr, const VadModelConfig &config,
        float buffer_size_in_seconds = 60)
       : model_(VadModel::Create(mgr, config)),
         config_(config),
-        buffer_(buffer_size_in_seconds * config.sample_rate) {}
-#endif
+        buffer_(buffer_size_in_seconds * config.sample_rate),
+        max_allowed_utterance_length_(buffer_size_in_seconds * config.sample_rate) {
+    Init();
+  }
+
+  float Compute(const float *samples, int32_t n) {
+    return model_->Compute(samples, n);
+  }
 
   void AcceptWaveform(const float *samples, int32_t n) {
+    if (buffer_.Size() > max_utterance_length_) {
+      model_->SetMinSilenceDuration(new_min_silence_duration_s_);
+      model_->SetThreshold(new_threshold_);
+    } else {
+      if (!config_.silero_vad.model.empty()) {
+        model_->SetMinSilenceDuration(config_.silero_vad.min_silence_duration);
+        model_->SetThreshold(config_.silero_vad.threshold);
+      } else if (!config_.ten_vad.model.empty()) {
+        model_->SetMinSilenceDuration(config_.ten_vad.min_silence_duration);
+        model_->SetThreshold(config_.ten_vad.threshold);
+      } else {
+        SHERPA_ONNX_LOGE("Unknown vad model");
+        SHERPA_ONNX_EXIT(-1);
+      }
+    }
+
     int32_t window_size = model_->WindowSize();
+    int32_t window_shift = model_->WindowShift();
 
     // note n is usually window_size and there is no need to use
     // an extra buffer here
     last_.insert(last_.end(), samples, samples + n);
-    int32_t k = static_cast<int32_t>(last_.size()) / window_size;
+
+    if (last_.size() < window_size) {
+      return;
+    }
+
+    // Note: For v4, window_shift == window_size
+    int32_t k =
+        (static_cast<int32_t>(last_.size()) - window_size) / window_shift + 1;
     const float *p = last_.data();
     bool is_speech = false;
 
-    for (int32_t i = 0; i != k; ++i, p += window_size) {
-      buffer_.Push(p, window_size);
+    for (int32_t i = 0; i < k; ++i, p += window_shift) {
+      buffer_.Push(p, window_shift);
       // NOTE(fangjun): Please don't use a very large n.
       bool this_window_is_speech = model_->IsSpeech(p, window_size);
       is_speech = is_speech || this_window_is_speech;
     }
 
-    last_ = std::vector<float>(
-        p, static_cast<const float *>(last_.data()) + last_.size());
+    last_.erase(last_.begin(), last_.begin() + k * window_shift);
 
     if (is_speech) {
       if (start_ == -1) {
         // beginning of speech
-        start_ = std::max(buffer_.Tail() - 2 * model_->WindowSize() -
-                              model_->MinSpeechDurationSamples(),
-                          buffer_.Head());
+        start_ = ComputeSpeechStart();
       }
     } else {
       // non-speech
+
       if (start_ != -1 && buffer_.Size()) {
         // end of speech, save the speech segment
         int32_t end = buffer_.Tail() - model_->MinSilenceDurationSamples();
@@ -69,12 +113,13 @@ class VoiceActivityDetector::Impl {
 
         segments_.push(std::move(segment));
 
+        last_segment_end_ = end;
+
         buffer_.Pop(end - buffer_.Head());
       }
 
       if (start_ == -1) {
-        int32_t end = buffer_.Tail() - 2 * model_->WindowSize() -
-                      model_->MinSpeechDurationSamples();
+        int32_t end = ComputeSpeechStart();
         int32_t n = std::max(0, end - buffer_.Head());
         if (n > 0) {
           buffer_.Pop(n);
@@ -91,20 +136,150 @@ class VoiceActivityDetector::Impl {
 
   void Clear() { std::queue<SpeechSegment>().swap(segments_); }
 
-  const SpeechSegment &Front() const { return segments_.front(); }
+  const SpeechSegment &Front() const {
+    static SpeechSegment tmp;
+
+    if (Empty()) {
+      SHERPA_ONNX_LOGE(
+          "Make sure you call this method only when Empty() returns false; "
+          "Return an empty segment");
+      return tmp;
+    }
+
+    return segments_.front();
+  }
 
   void Reset() {
     std::queue<SpeechSegment>().swap(segments_);
 
     model_->Reset();
     buffer_.Reset();
+    last_.clear();
 
     start_ = -1;
+
+    last_segment_end_ = 0;
+  }
+
+  void Flush() {
+    if (start_ == -1 || buffer_.Size() == 0) {
+      return;
+    }
+
+    int32_t end = buffer_.Tail();
+    if (end <= start_) {
+      return;
+    }
+
+    std::vector<float> s = buffer_.Get(start_, end - start_);
+
+    SpeechSegment segment;
+
+    segment.start = start_;
+    segment.samples = std::move(s);
+
+    segments_.push(std::move(segment));
+
+    buffer_.Pop(end - buffer_.Head());
+    start_ = -1;
+
+    last_segment_end_ = end;
   }
 
   bool IsSpeechDetected() const { return start_ != -1; }
 
+  SpeechSegment CurrentSpeechSegment() const {
+    SpeechSegment segment;
+    segment.start = start_;
+    if (start_ != -1) {
+      segment.samples = buffer_.Get(start_, buffer_.Tail() - start_ - 1);
+    }
+    return segment;
+  }
+
+  int32_t CurrentSegmentStart() const { return start_; }
+
+  int32_t BufferHead() const { return buffer_.Head(); }
+
+  int32_t BufferTail() const { return buffer_.Tail(); }
+
+  bool CopyBufferRange(int32_t start, int32_t end, float *out, int32_t n) const {
+    if (start < buffer_.Head() || end > buffer_.Tail() || start > end) {
+      return false;
+    }
+
+    int32_t num_samples = end - start;
+    if (n < num_samples) {
+      return false;
+    }
+
+    auto samples = buffer_.Get(start, num_samples);
+    if (static_cast<int32_t>(samples.size()) != num_samples) {
+      return false;
+    }
+
+    std::copy(samples.begin(), samples.end(), out);
+    return true;
+  }
+
+  bool SetMaxUtteranceLength(float max_duration_seconds) {
+    if (max_duration_seconds <= 0) {
+      SHERPA_ONNX_LOGE(
+          "Failed to set max utterance length: max_duration_seconds must be "
+          "> 0. Given: %f",
+          max_duration_seconds);
+      return false;
+    }
+
+    int32_t new_max_utterance_length =
+        static_cast<int32_t>(max_duration_seconds * config_.sample_rate);
+
+    if (new_max_utterance_length >= max_allowed_utterance_length_) {
+      SHERPA_ONNX_LOGE(
+          "Failed to set max utterance length: new value (%d samples, %f "
+          "seconds) exceeds buffer limit (%d samples, %f seconds)",
+          new_max_utterance_length, max_duration_seconds,
+          max_allowed_utterance_length_,
+          static_cast<float>(max_allowed_utterance_length_) /
+              config_.sample_rate);
+      return false;
+    }
+
+    max_utterance_length_ = new_max_utterance_length;
+    return true;
+  }
+
   const VadModelConfig &GetConfig() const { return config_; }
+
+ private:
+  int32_t ComputeSpeechStart() const {
+    int64_t pad_samples = 2LL * model_->WindowSize();
+    if (config_.pre_speech_pad_duration > 0 && config_.sample_rate > 0) {
+      pad_samples = static_cast<int64_t>(
+          config_.pre_speech_pad_duration *
+          static_cast<float>(config_.sample_rate));
+    }
+
+    int64_t candidate = static_cast<int64_t>(buffer_.Tail()) - pad_samples -
+                        model_->MinSpeechDurationSamples();
+    int64_t lower_bound =
+        std::max(static_cast<int64_t>(buffer_.Head()),
+                 static_cast<int64_t>(last_segment_end_));
+    return static_cast<int32_t>(std::max(lower_bound, candidate));
+  }
+
+  void Init() {
+    if (!config_.silero_vad.model.empty()) {
+      max_utterance_length_ =
+          config_.sample_rate * config_.silero_vad.max_speech_duration;
+    } else if (!config_.ten_vad.model.empty()) {
+      max_utterance_length_ =
+          config_.sample_rate * config_.ten_vad.max_speech_duration;
+    } else {
+      SHERPA_ONNX_LOGE("Unsupported VAD model");
+      SHERPA_ONNX_EXIT(-1);
+    }
+  }
 
  private:
   std::queue<SpeechSegment> segments_;
@@ -114,19 +289,24 @@ class VoiceActivityDetector::Impl {
   CircularBuffer buffer_;
   std::vector<float> last_;
 
+  int max_utterance_length_ = -1;  // in samples
+  int max_allowed_utterance_length_ = -1;  // in samples
+  float new_min_silence_duration_s_ = 0.1;
+  float new_threshold_ = 0.90;
+
   int32_t start_ = -1;
+  int32_t last_segment_end_ = 0;
 };
 
 VoiceActivityDetector::VoiceActivityDetector(
     const VadModelConfig &config, float buffer_size_in_seconds /*= 60*/)
     : impl_(std::make_unique<Impl>(config, buffer_size_in_seconds)) {}
 
-#if __ANDROID_API__ >= 9
+template <typename Manager>
 VoiceActivityDetector::VoiceActivityDetector(
-    AAssetManager *mgr, const VadModelConfig &config,
+    Manager *mgr, const VadModelConfig &config,
     float buffer_size_in_seconds /*= 60*/)
     : impl_(std::make_unique<Impl>(mgr, config, buffer_size_in_seconds)) {}
-#endif
 
 VoiceActivityDetector::~VoiceActivityDetector() = default;
 
@@ -144,14 +324,54 @@ const SpeechSegment &VoiceActivityDetector::Front() const {
   return impl_->Front();
 }
 
-void VoiceActivityDetector::Reset() { impl_->Reset(); }
+void VoiceActivityDetector::Reset() const { impl_->Reset(); }
+
+void VoiceActivityDetector::Flush() const { impl_->Flush(); }
 
 bool VoiceActivityDetector::IsSpeechDetected() const {
   return impl_->IsSpeechDetected();
 }
 
+SpeechSegment VoiceActivityDetector::CurrentSpeechSegment() const {
+  return impl_->CurrentSpeechSegment();
+}
+
+int32_t VoiceActivityDetector::CurrentSegmentStart() const {
+  return impl_->CurrentSegmentStart();
+}
+
+int32_t VoiceActivityDetector::BufferHead() const { return impl_->BufferHead(); }
+
+int32_t VoiceActivityDetector::BufferTail() const { return impl_->BufferTail(); }
+
+bool VoiceActivityDetector::CopyBufferRange(int32_t start, int32_t end,
+                                            float *out, int32_t n) const {
+  return impl_->CopyBufferRange(start, end, out, n);
+}
+
+bool VoiceActivityDetector::SetMaxUtteranceLength(
+    float max_duration_seconds) const {
+  return impl_->SetMaxUtteranceLength(max_duration_seconds);
+}
+
 const VadModelConfig &VoiceActivityDetector::GetConfig() const {
   return impl_->GetConfig();
 }
+
+float VoiceActivityDetector::Compute(const float *samples, int32_t n) {
+  return impl_->Compute(samples, n);
+}
+
+#if __ANDROID_API__ >= 9
+template VoiceActivityDetector::VoiceActivityDetector(
+    AAssetManager *mgr, const VadModelConfig &config,
+    float buffer_size_in_seconds = 60);
+#endif
+
+#if __OHOS__
+template VoiceActivityDetector::VoiceActivityDetector(
+    NativeResourceManager *mgr, const VadModelConfig &config,
+    float buffer_size_in_seconds = 60);
+#endif
 
 }  // namespace sherpa_onnx

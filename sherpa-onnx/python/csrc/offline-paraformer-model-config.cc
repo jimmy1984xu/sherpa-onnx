@@ -14,8 +14,11 @@ namespace sherpa_onnx {
 void PybindOfflineParaformerModelConfig(py::module *m) {
   using PyClass = OfflineParaformerModelConfig;
   py::class_<PyClass>(*m, "OfflineParaformerModelConfig")
+      .def(py::init<>())
       .def(py::init<const std::string &>(), py::arg("model"))
       .def_readwrite("model", &PyClass::model)
+      .def_readwrite("hw_compiler", &PyClass::hw_compiler)
+      .def_readwrite("seg_dict", &PyClass::seg_dict)
       .def("__str__", &PyClass::ToString);
 }
 

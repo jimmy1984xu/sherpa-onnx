@@ -9,11 +9,6 @@
 #include <utility>
 #include <vector>
 
-#if __ANDROID_API__ >= 9
-#include "android/asset_manager.h"
-#include "android/asset_manager_jni.h"
-#endif
-
 #include "onnxruntime_cxx_api.h"  // NOLINT
 #include "sherpa-onnx/csrc/online-model-config.h"
 #include "sherpa-onnx/csrc/online-transducer-model.h"
@@ -24,10 +19,9 @@ class OnlineZipformer2TransducerModel : public OnlineTransducerModel {
  public:
   explicit OnlineZipformer2TransducerModel(const OnlineModelConfig &config);
 
-#if __ANDROID_API__ >= 9
-  OnlineZipformer2TransducerModel(AAssetManager *mgr,
+  template <typename Manager>
+  OnlineZipformer2TransducerModel(Manager *mgr,
                                   const OnlineModelConfig &config);
-#endif
 
   std::vector<Ort::Value> StackStates(
       const std::vector<std::vector<Ort::Value>> &states) const override;
@@ -58,6 +52,8 @@ class OnlineZipformer2TransducerModel : public OnlineTransducerModel {
   int32_t VocabSize() const override { return vocab_size_; }
   OrtAllocator *Allocator() override { return allocator_; }
 
+  bool UseWhisperFeature() const override { return use_whisper_feature_; }
+
  private:
   void InitEncoder(void *model_data, size_t model_data_length);
   void InitDecoder(void *model_data, size_t model_data_length);
@@ -65,7 +61,10 @@ class OnlineZipformer2TransducerModel : public OnlineTransducerModel {
 
  private:
   Ort::Env env_;
-  Ort::SessionOptions sess_opts_;
+  Ort::SessionOptions encoder_sess_opts_;
+  Ort::SessionOptions decoder_sess_opts_;
+  Ort::SessionOptions joiner_sess_opts_;
+
   Ort::AllocatorWithDefaultOptions allocator_;
 
   std::unique_ptr<Ort::Session> encoder_sess_;
@@ -106,6 +105,10 @@ class OnlineZipformer2TransducerModel : public OnlineTransducerModel {
   int32_t context_size_ = 0;
   int32_t vocab_size_ = 0;
   int32_t feature_dim_ = 80;
+
+  // for models from
+  // https://github.com/k2-fsa/icefall/blob/master/egs/multi_zh-hans/ASR/RESULTS.md#streaming-with-ctc-head
+  bool use_whisper_feature_ = false;
 };
 
 }  // namespace sherpa_onnx

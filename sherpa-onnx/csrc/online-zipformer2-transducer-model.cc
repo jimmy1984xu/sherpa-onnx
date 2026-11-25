@@ -3,11 +3,11 @@
 // Copyright (c)  2023  Xiaomi Corporation
 
 #include "sherpa-onnx/csrc/online-zipformer2-transducer-model.h"
-
-#include <assert.h>
-#include <math.h>
+#include "sherpa-onnx/csrc/ort-env.h"
 
 #include <algorithm>
+#include <cassert>
+#include <cmath>
 #include <memory>
 #include <numeric>
 #include <sstream>
@@ -20,8 +20,13 @@
 #include "android/asset_manager_jni.h"
 #endif
 
+#if __OHOS__
+#include "rawfile/raw_file_manager.h"
+#endif
+
 #include "onnxruntime_cxx_api.h"  // NOLINT
 #include "sherpa-onnx/csrc/cat.h"
+#include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/online-transducer-decoder.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
@@ -33,32 +38,33 @@ namespace sherpa_onnx {
 
 OnlineZipformer2TransducerModel::OnlineZipformer2TransducerModel(
     const OnlineModelConfig &config)
-    : env_(ORT_LOGGING_LEVEL_WARNING),
+    : env_(CreateOrtEnv()),
+      encoder_sess_opts_(GetSessionOptions(config)),
+      decoder_sess_opts_(GetSessionOptions(config, "decoder")),
+      joiner_sess_opts_(GetSessionOptions(config, "joiner")),
       config_(config),
-      sess_opts_(GetSessionOptions(config)),
       allocator_{} {
-  {
-    auto buf = ReadFile(config.transducer.encoder);
-    InitEncoder(buf.data(), buf.size());
-  }
+  encoder_sess_ = std::make_unique<Ort::Session>(
+      env_, SHERPA_ONNX_TO_ORT_PATH(config.transducer.encoder), encoder_sess_opts_);
+  InitEncoder(nullptr, 0);
 
-  {
-    auto buf = ReadFile(config.transducer.decoder);
-    InitDecoder(buf.data(), buf.size());
-  }
+  decoder_sess_ = std::make_unique<Ort::Session>(
+      env_, SHERPA_ONNX_TO_ORT_PATH(config.transducer.decoder), decoder_sess_opts_);
+  InitDecoder(nullptr, 0);
 
-  {
-    auto buf = ReadFile(config.transducer.joiner);
-    InitJoiner(buf.data(), buf.size());
-  }
+  joiner_sess_ = std::make_unique<Ort::Session>(
+      env_, SHERPA_ONNX_TO_ORT_PATH(config.transducer.joiner), joiner_sess_opts_);
+  InitJoiner(nullptr, 0);
 }
 
-#if __ANDROID_API__ >= 9
+template <typename Manager>
 OnlineZipformer2TransducerModel::OnlineZipformer2TransducerModel(
-    AAssetManager *mgr, const OnlineModelConfig &config)
-    : env_(ORT_LOGGING_LEVEL_WARNING),
+    Manager *mgr, const OnlineModelConfig &config)
+    : env_(CreateOrtEnv()),
       config_(config),
-      sess_opts_(GetSessionOptions(config)),
+      encoder_sess_opts_(GetSessionOptions(config)),
+      decoder_sess_opts_(GetSessionOptions(config, "decoder")),
+      joiner_sess_opts_(GetSessionOptions(config, "joiner")),
       allocator_{} {
   {
     auto buf = ReadFile(mgr, config.transducer.encoder);
@@ -75,12 +81,18 @@ OnlineZipformer2TransducerModel::OnlineZipformer2TransducerModel(
     InitJoiner(buf.data(), buf.size());
   }
 }
-#endif
 
 void OnlineZipformer2TransducerModel::InitEncoder(void *model_data,
                                                   size_t model_data_length) {
-  encoder_sess_ = std::make_unique<Ort::Session>(env_, model_data,
-                                                 model_data_length, sess_opts_);
+  if (model_data) {
+    encoder_sess_ = std::make_unique<Ort::Session>(
+        env_, model_data, model_data_length, encoder_sess_opts_);
+  } else if (!encoder_sess_) {
+    SHERPA_ONNX_LOGE(
+        "Please pass model data or initialize the encoder outside of "
+        "this function");
+    SHERPA_ONNX_EXIT(-1);
+  }
 
   GetInputNames(encoder_sess_.get(), &encoder_input_names_,
                 &encoder_input_names_ptr_);
@@ -94,7 +106,11 @@ void OnlineZipformer2TransducerModel::InitEncoder(void *model_data,
     std::ostringstream os;
     os << "---encoder---\n";
     PrintModelMetadata(os, meta_data);
+#if __OHOS__
+    SHERPA_ONNX_LOGE("%{public}s", os.str().c_str());
+#else
     SHERPA_ONNX_LOGE("%s", os.str().c_str());
+#endif
   }
 
   Ort::AllocatorWithDefaultOptions allocator;  // used in the macro below
@@ -109,6 +125,12 @@ void OnlineZipformer2TransducerModel::InitEncoder(void *model_data,
   SHERPA_ONNX_READ_META_DATA(T_, "T");
   SHERPA_ONNX_READ_META_DATA(decode_chunk_len_, "decode_chunk_len");
 
+  std::string feature_type;
+  SHERPA_ONNX_READ_META_DATA_STR_WITH_DEFAULT(feature_type, "feature", "");
+  if (feature_type == "whisper") {
+    use_whisper_feature_ = true;
+  }
+
   if (config_.debug) {
     auto print = [](const std::vector<int32_t> &v, const char *name) {
       std::ostringstream os;
@@ -116,7 +138,11 @@ void OnlineZipformer2TransducerModel::InitEncoder(void *model_data,
       for (auto i : v) {
         os << i << " ";
       }
+#if __OHOS__
+      SHERPA_ONNX_LOGE("%{public}s\n", os.str().c_str());
+#else
       SHERPA_ONNX_LOGE("%s\n", os.str().c_str());
+#endif
     };
     print(encoder_dims_, "encoder_dims");
     print(query_head_dims_, "query_head_dims");
@@ -125,15 +151,28 @@ void OnlineZipformer2TransducerModel::InitEncoder(void *model_data,
     print(num_encoder_layers_, "num_encoder_layers");
     print(cnn_module_kernels_, "cnn_module_kernels");
     print(left_context_len_, "left_context_len");
+
+#if __OHOS__
+    SHERPA_ONNX_LOGE("T: %{public}d", T_);
+    SHERPA_ONNX_LOGE("decode_chunk_len_: %{public}d", decode_chunk_len_);
+#else
     SHERPA_ONNX_LOGE("T: %d", T_);
     SHERPA_ONNX_LOGE("decode_chunk_len_: %d", decode_chunk_len_);
+#endif
   }
 }
 
 void OnlineZipformer2TransducerModel::InitDecoder(void *model_data,
                                                   size_t model_data_length) {
-  decoder_sess_ = std::make_unique<Ort::Session>(env_, model_data,
-                                                 model_data_length, sess_opts_);
+  if (model_data) {
+    decoder_sess_ = std::make_unique<Ort::Session>(
+        env_, model_data, model_data_length, decoder_sess_opts_);
+  } else if (!decoder_sess_) {
+    SHERPA_ONNX_LOGE(
+        "Please pass model data or initialize the decoder outside of "
+        "this function");
+    SHERPA_ONNX_EXIT(-1);
+  }
 
   GetInputNames(decoder_sess_.get(), &decoder_input_names_,
                 &decoder_input_names_ptr_);
@@ -157,8 +196,15 @@ void OnlineZipformer2TransducerModel::InitDecoder(void *model_data,
 
 void OnlineZipformer2TransducerModel::InitJoiner(void *model_data,
                                                  size_t model_data_length) {
-  joiner_sess_ = std::make_unique<Ort::Session>(env_, model_data,
-                                                model_data_length, sess_opts_);
+  if (model_data) {
+    joiner_sess_ = std::make_unique<Ort::Session>(
+        env_, model_data, model_data_length, joiner_sess_opts_);
+  } else if (!joiner_sess_) {
+    SHERPA_ONNX_LOGE(
+        "Please pass model data or initialize the joiner outside of "
+        "this function");
+    SHERPA_ONNX_EXIT(-1);
+  }
 
   GetInputNames(joiner_sess_.get(), &joiner_input_names_,
                 &joiner_input_names_ptr_);
@@ -179,9 +225,11 @@ void OnlineZipformer2TransducerModel::InitJoiner(void *model_data,
 std::vector<Ort::Value> OnlineZipformer2TransducerModel::StackStates(
     const std::vector<std::vector<Ort::Value>> &states) const {
   int32_t batch_size = static_cast<int32_t>(states.size());
-  int32_t num_encoders = static_cast<int32_t>(num_encoder_layers_.size());
 
   std::vector<const Ort::Value *> buf(batch_size);
+
+  auto allocator =
+      const_cast<OnlineZipformer2TransducerModel *>(this)->allocator_;
 
   std::vector<Ort::Value> ans;
   int32_t num_states = static_cast<int32_t>(states[0].size());
@@ -192,42 +240,42 @@ std::vector<Ort::Value> OnlineZipformer2TransducerModel::StackStates(
       for (int32_t n = 0; n != batch_size; ++n) {
         buf[n] = &states[n][6 * i];
       }
-      auto v = Cat(allocator_, buf, 1);
+      auto v = Cat(allocator, buf, 1);
       ans.push_back(std::move(v));
     }
     {
       for (int32_t n = 0; n != batch_size; ++n) {
         buf[n] = &states[n][6 * i + 1];
       }
-      auto v = Cat(allocator_, buf, 1);
+      auto v = Cat(allocator, buf, 1);
       ans.push_back(std::move(v));
     }
     {
       for (int32_t n = 0; n != batch_size; ++n) {
         buf[n] = &states[n][6 * i + 2];
       }
-      auto v = Cat(allocator_, buf, 1);
+      auto v = Cat(allocator, buf, 1);
       ans.push_back(std::move(v));
     }
     {
       for (int32_t n = 0; n != batch_size; ++n) {
         buf[n] = &states[n][6 * i + 3];
       }
-      auto v = Cat(allocator_, buf, 1);
+      auto v = Cat(allocator, buf, 1);
       ans.push_back(std::move(v));
     }
     {
       for (int32_t n = 0; n != batch_size; ++n) {
         buf[n] = &states[n][6 * i + 4];
       }
-      auto v = Cat(allocator_, buf, 0);
+      auto v = Cat(allocator, buf, 0);
       ans.push_back(std::move(v));
     }
     {
       for (int32_t n = 0; n != batch_size; ++n) {
         buf[n] = &states[n][6 * i + 5];
       }
-      auto v = Cat(allocator_, buf, 0);
+      auto v = Cat(allocator, buf, 0);
       ans.push_back(std::move(v));
     }
   }
@@ -236,7 +284,7 @@ std::vector<Ort::Value> OnlineZipformer2TransducerModel::StackStates(
     for (int32_t n = 0; n != batch_size; ++n) {
       buf[n] = &states[n][num_states - 2];
     }
-    auto v = Cat(allocator_, buf, 0);
+    auto v = Cat(allocator, buf, 0);
     ans.push_back(std::move(v));
   }
 
@@ -244,7 +292,7 @@ std::vector<Ort::Value> OnlineZipformer2TransducerModel::StackStates(
     for (int32_t n = 0; n != batch_size; ++n) {
       buf[n] = &states[n][num_states - 1];
     }
-    auto v = Cat<int64_t>(allocator_, buf, 0);
+    auto v = Cat<int64_t>(allocator, buf, 0);
     ans.push_back(std::move(v));
   }
   return ans;
@@ -255,58 +303,60 @@ OnlineZipformer2TransducerModel::UnStackStates(
     const std::vector<Ort::Value> &states) const {
   int32_t m = std::accumulate(num_encoder_layers_.begin(),
                               num_encoder_layers_.end(), 0);
-  assert(states.size() == m * 6 + 2);
+  assert(static_cast<int32_t>(states.size()) == m * 6 + 2);
 
   int32_t batch_size = states[0].GetTensorTypeAndShapeInfo().GetShape()[1];
-  int32_t num_encoders = num_encoder_layers_.size();
+
+  auto allocator =
+      const_cast<OnlineZipformer2TransducerModel *>(this)->allocator_;
 
   std::vector<std::vector<Ort::Value>> ans;
   ans.resize(batch_size);
 
   for (int32_t i = 0; i != m; ++i) {
     {
-      auto v = Unbind(allocator_, &states[i * 6], 1);
-      assert(v.size() == batch_size);
+      auto v = Unbind(allocator, &states[i * 6], 1);
+      assert(static_cast<int32_t>(v.size()) == batch_size);
 
       for (int32_t n = 0; n != batch_size; ++n) {
         ans[n].push_back(std::move(v[n]));
       }
     }
     {
-      auto v = Unbind(allocator_, &states[i * 6 + 1], 1);
-      assert(v.size() == batch_size);
+      auto v = Unbind(allocator, &states[i * 6 + 1], 1);
+      assert(static_cast<int32_t>(v.size()) == batch_size);
 
       for (int32_t n = 0; n != batch_size; ++n) {
         ans[n].push_back(std::move(v[n]));
       }
     }
     {
-      auto v = Unbind(allocator_, &states[i * 6 + 2], 1);
-      assert(v.size() == batch_size);
+      auto v = Unbind(allocator, &states[i * 6 + 2], 1);
+      assert(static_cast<int32_t>(v.size()) == batch_size);
 
       for (int32_t n = 0; n != batch_size; ++n) {
         ans[n].push_back(std::move(v[n]));
       }
     }
     {
-      auto v = Unbind(allocator_, &states[i * 6 + 3], 1);
-      assert(v.size() == batch_size);
+      auto v = Unbind(allocator, &states[i * 6 + 3], 1);
+      assert(static_cast<int32_t>(v.size()) == batch_size);
 
       for (int32_t n = 0; n != batch_size; ++n) {
         ans[n].push_back(std::move(v[n]));
       }
     }
     {
-      auto v = Unbind(allocator_, &states[i * 6 + 4], 0);
-      assert(v.size() == batch_size);
+      auto v = Unbind(allocator, &states[i * 6 + 4], 0);
+      assert(static_cast<int32_t>(v.size()) == batch_size);
 
       for (int32_t n = 0; n != batch_size; ++n) {
         ans[n].push_back(std::move(v[n]));
       }
     }
     {
-      auto v = Unbind(allocator_, &states[i * 6 + 5], 0);
-      assert(v.size() == batch_size);
+      auto v = Unbind(allocator, &states[i * 6 + 5], 0);
+      assert(static_cast<int32_t>(v.size()) == batch_size);
 
       for (int32_t n = 0; n != batch_size; ++n) {
         ans[n].push_back(std::move(v[n]));
@@ -315,16 +365,16 @@ OnlineZipformer2TransducerModel::UnStackStates(
   }
 
   {
-    auto v = Unbind(allocator_, &states[m * 6], 0);
-    assert(v.size() == batch_size);
+    auto v = Unbind(allocator, &states[m * 6], 0);
+    assert(static_cast<int32_t>(v.size()) == batch_size);
 
     for (int32_t n = 0; n != batch_size; ++n) {
       ans[n].push_back(std::move(v[n]));
     }
   }
   {
-    auto v = Unbind<int64_t>(allocator_, &states[m * 6 + 1], 0);
-    assert(v.size() == batch_size);
+    auto v = Unbind<int64_t>(allocator, &states[m * 6 + 1], 0);
+    assert(static_cast<int32_t>(v.size()) == batch_size);
 
     for (int32_t n = 0; n != batch_size; ++n) {
       ans[n].push_back(std::move(v[n]));
@@ -466,5 +516,15 @@ Ort::Value OnlineZipformer2TransducerModel::RunJoiner(Ort::Value encoder_out,
 
   return std::move(logit[0]);
 }
+
+#if __ANDROID_API__ >= 9
+template OnlineZipformer2TransducerModel::OnlineZipformer2TransducerModel(
+    AAssetManager *mgr, const OnlineModelConfig &config);
+#endif
+
+#if __OHOS__
+template OnlineZipformer2TransducerModel::OnlineZipformer2TransducerModel(
+    NativeResourceManager *mgr, const OnlineModelConfig &config);
+#endif
 
 }  // namespace sherpa_onnx

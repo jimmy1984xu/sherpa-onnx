@@ -38,12 +38,12 @@ Note that `zh` means Chinese, while `en` means English.
 
 (3) Download the VAD model
 Please visit
-https://github.com/snakers4/silero-vad/blob/master/files/silero_vad.onnx
+https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
 to download silero_vad.onnx
 
 For instance,
 
-wget https://github.com/snakers4/silero-vad/raw/master/files/silero_vad.onnx
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
 
 (4) Please refer to ./generate-subtitles.py
 to download a non-streaming ASR model.
@@ -52,7 +52,7 @@ to download a non-streaming ASR model.
 
 Assume the filename of the text file is speaker.txt.
 
-python3 ./python-api-examples/speaker-identification-with-vad.py \
+python3 ./python-api-examples/speaker-identification-with-vad-non-streaming-asr.py \
   --silero-vad-model=/path/to/silero_vad.onnx \
   --speaker-file ./speaker.txt \
   --model ./wespeaker_zh_cnceleb_resnet34.onnx
@@ -183,6 +183,13 @@ def register_non_streaming_asr_model_args(parser):
         type=int,
         default=80,
         help="Feature dimension. Must match the one expected by the model",
+    )
+
+    parser.add_argument(
+        "--sense-voice",
+        default="",
+        type=str,
+        help="Path to sense voice model",
     )
 
 
@@ -316,6 +323,15 @@ def create_recognizer(args) -> sherpa_onnx.OfflineRecognizer:
             language=args.whisper_language,
             task=args.whisper_task,
             tail_paddings=args.whisper_tail_paddings,
+        )
+    elif args.sense_voice:
+        assert_file_exists(args.sense_voice)
+        recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+            model=args.sense_voice,
+            tokens=args.tokens,
+            num_threads=args.num_threads,
+            use_itn=True,
+            debug=args.debug,
         )
     else:
         raise ValueError("Please specify at least one model")

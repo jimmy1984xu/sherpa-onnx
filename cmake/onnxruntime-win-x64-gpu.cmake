@@ -19,18 +19,19 @@ if(NOT SHERPA_ONNX_ENABLE_GPU)
   message(FATAL_ERROR "This file is for NVIDIA GPU only. Given SHERPA_ONNX_ENABLE_GPU: ${SHERPA_ONNX_ENABLE_GPU}")
 endif()
 
-set(onnxruntime_URL  "https://github.com/microsoft/onnxruntime/releases/download/v1.17.1/onnxruntime-win-x64-gpu-1.17.1.zip")
-set(onnxruntime_URL2 "https://hub.nuaa.cf/microsoft/onnxruntime/releases/download/v1.17.1/onnxruntime-win-x64-gpu-1.17.1.zip")
-set(onnxruntime_HASH "SHA256=b7a66f50ad146c2ccb43471d2d3b5ad78084c2d4ddbd3ea82d65f86c867408b2")
+# Requires cuda 12.x, cudnn 9.x
+set(onnxruntime_URL  "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-gpu-1.24.4.zip")
+set(onnxruntime_URL2 "https://hf-mirror.com/csukuangfj/onnxruntime-libs/resolve/main/1.24.4/onnxruntime-win-x64-gpu-1.24.4.zip")
+set(onnxruntime_HASH "SHA256=ef3337a0b8184eb8beec310f7c83bd50376b3eefc43aab84ac8e452f6987df0a")
 
 # If you don't have access to the Internet,
 # please download onnxruntime to one of the following locations.
 # You can add more if you want.
 set(possible_file_locations
-  $ENV{HOME}/Downloads/onnxruntime-win-x64-gpu-1.17.1.zip
-  ${CMAKE_SOURCE_DIR}/onnxruntime-win-x64-gpu-1.17.1.zip
-  ${CMAKE_BINARY_DIR}/onnxruntime-win-x64-gpu-1.17.1.zip
-  /tmp/onnxruntime-win-x64-gpu-1.17.1.zip
+  $ENV{HOME}/Downloads/onnxruntime-win-x64-gpu-1.24.4.zip
+  ${CMAKE_SOURCE_DIR}/onnxruntime-win-x64-gpu-1.24.4.zip
+  ${CMAKE_BINARY_DIR}/onnxruntime-win-x64-gpu-1.24.4.zip
+  /tmp/onnxruntime-win-x64-gpu-1.24.4.zip
 )
 
 foreach(f IN LISTS possible_file_locations)
@@ -82,60 +83,9 @@ file(COPY ${onnxruntime_SOURCE_DIR}/lib/onnxruntime.dll
     ${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE}
 )
 
-# for onnxruntime_providers_cuda.dll
-
-find_library(location_onnxruntime_providers_cuda_lib onnxruntime_providers_cuda
-  PATHS
-  "${onnxruntime_SOURCE_DIR}/lib"
-  NO_CMAKE_SYSTEM_PATH
-)
-message(STATUS "location_onnxruntime_providers_cuda_lib: ${location_onnxruntime_providers_cuda_lib}")
-
-add_library(onnxruntime_providers_cuda SHARED IMPORTED)
-set_target_properties(onnxruntime_providers_cuda PROPERTIES
-  IMPORTED_LOCATION ${location_onnxruntime_providers_cuda_lib}
-  INTERFACE_INCLUDE_DIRECTORIES "${onnxruntime_SOURCE_DIR}/include"
-)
-
-set_property(TARGET onnxruntime_providers_cuda
-  PROPERTY
-    IMPORTED_IMPLIB "${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_cuda.lib"
-)
-
-# for onnxruntime_providers_shared.dll
-
-find_library(location_onnxruntime_providers_shared_lib onnxruntime_providers_shared
-  PATHS
-  "${onnxruntime_SOURCE_DIR}/lib"
-  NO_CMAKE_SYSTEM_PATH
-)
-message(STATUS "location_onnxruntime_providers_shared_lib: ${location_onnxruntime_providers_shared_lib}")
-add_library(onnxruntime_providers_shared SHARED IMPORTED)
-set_target_properties(onnxruntime_providers_shared PROPERTIES
-  IMPORTED_LOCATION ${location_onnxruntime_providers_shared_lib}
-  INTERFACE_INCLUDE_DIRECTORIES "${onnxruntime_SOURCE_DIR}/include"
-)
-set_property(TARGET onnxruntime_providers_shared
-  PROPERTY
-    IMPORTED_IMPLIB "${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_shared.lib"
-)
-
-file(
-  COPY
-    ${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_cuda.dll
-    ${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_shared.dll
-  DESTINATION
-    ${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE}
-)
-
 file(GLOB onnxruntime_lib_files "${onnxruntime_SOURCE_DIR}/lib/*.dll")
 
 message(STATUS "onnxruntime lib files: ${onnxruntime_lib_files}")
 
-if(SHERPA_ONNX_ENABLE_PYTHON)
-  install(FILES ${onnxruntime_lib_files} DESTINATION ..)
-else()
-  install(FILES ${onnxruntime_lib_files} DESTINATION lib)
-endif()
-
+install(FILES ${onnxruntime_lib_files} DESTINATION lib)
 install(FILES ${onnxruntime_lib_files} DESTINATION bin)

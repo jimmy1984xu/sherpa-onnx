@@ -6,11 +6,6 @@
 
 #include <memory>
 
-#if __ANDROID_API__ >= 9
-#include "android/asset_manager.h"
-#include "android/asset_manager_jni.h"
-#endif
-
 #include "sherpa-onnx/csrc/vad-model.h"
 
 namespace sherpa_onnx {
@@ -19,9 +14,8 @@ class SileroVadModel : public VadModel {
  public:
   explicit SileroVadModel(const VadModelConfig &config);
 
-#if __ANDROID_API__ >= 9
-  SileroVadModel(AAssetManager *mgr, const VadModelConfig &config);
-#endif
+  template <typename Manager>
+  SileroVadModel(Manager *mgr, const VadModelConfig &config);
 
   ~SileroVadModel() override;
 
@@ -37,10 +31,21 @@ class SileroVadModel : public VadModel {
    */
   bool IsSpeech(const float *samples, int32_t n) override;
 
+  float Compute(const float *samples, int32_t n) override;
+
+  // For silero vad V4, it is WindowShift().
+  // For silero vad V5, it is WindowShift()+64 for 16kHz and
+  //                          WindowShift()+32 for 8kHz
   int32_t WindowSize() const override;
+
+  // 512
+  int32_t WindowShift() const override;
 
   int32_t MinSilenceDurationSamples() const override;
   int32_t MinSpeechDurationSamples() const override;
+
+  void SetMinSilenceDuration(float s) override;
+  void SetThreshold(float threshold) override;
 
  private:
   class Impl;

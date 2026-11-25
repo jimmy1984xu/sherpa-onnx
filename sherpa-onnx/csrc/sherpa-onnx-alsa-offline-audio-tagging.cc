@@ -7,8 +7,11 @@
 #include <stdlib.h>
 
 #include <algorithm>
-#include <mutex>   // NOLINT
+#include <mutex>  // NOLINT
+#include <string>
 #include <thread>  // NOLINT
+#include <utility>
+#include <vector>
 
 #include "sherpa-onnx/csrc/alsa.h"
 #include "sherpa-onnx/csrc/audio-tagging.h"
@@ -61,7 +64,7 @@ static void Record(const char *device_name, int32_t expected_sample_rate) {
   if (alsa.GetExpectedSampleRate() != expected_sample_rate) {
     fprintf(stderr, "sample rate: %d != %d\n", alsa.GetExpectedSampleRate(),
             expected_sample_rate);
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
   }
 
   int32_t chunk = 0.1 * alsa.GetActualSampleRate();
@@ -124,7 +127,7 @@ as the device_name.
   if (po.NumArgs() != 1) {
     fprintf(stderr, "Please provide only 1 argument: the device name\n");
     po.PrintUsage();
-    exit(EXIT_FAILURE);
+    SHERPA_ONNX_EXIT(EXIT_FAILURE);
   }
 
   fprintf(stderr, "%s\n", config.ToString().c_str());

@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "Eigen/Dense"
 #include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/online-lm.h"
@@ -33,8 +34,16 @@ static OnlineRecognizerResult Convert(const OnlineParaformerDecoderResult &src,
   bool mergeable = false;
 
   for (int32_t i = 0; i != src.tokens.size(); ++i) {
-    auto sym = sym_table[src.tokens[i]];
+    const int32_t token_id = static_cast<int32_t>(src.tokens[i]);
+    if (!sym_table.Contains(token_id)) {
+      continue;
+    }
+    auto sym = sym_table[token_id];
     r.tokens.push_back(sym);
+
+    if (sym.empty()) {
+      continue;
+    }
 
     if ((sym.back() != '@') || (sym.size() > 2 && sym[sym.size() - 2] != '@')) {
       // sym does not end with "@@"
@@ -53,9 +62,9 @@ static OnlineRecognizerResult Convert(const OnlineParaformerDecoderResult &src,
         mergeable = false;
 
         if (i > 0) {
-          const uint8_t *p = reinterpret_cast<const uint8_t *>(
-              sym_table[src.tokens[i - 1]].c_str());
-          if (p[0] < 0x80) {
+          const uint8_t p = reinterpret_cast<const uint8_t *>(
+              sym_table[src.tokens[i - 1]].c_str())[0];
+          if (p < 0x80) {
             // put a space between ascii and non-ascii
             text.append(" ");
           }
@@ -63,7 +72,9 @@ static OnlineRecognizerResult Convert(const OnlineParaformerDecoderResult &src,
         text.append(sym);
       }
     } else {
-      // this sym ends with @@
+      if (sym.size() < 3) {
+        continue;
+      }
       sym = std::string(sym.data(), sym.size() - 2);
       if (mergeable) {
         text.append(sym);
@@ -96,16 +107,23 @@ static void Scale(const float *x, int32_t n, float scale, float *y) {
 class OnlineRecognizerParaformerImpl : public OnlineRecognizerImpl {
  public:
   explicit OnlineRecognizerParaformerImpl(const OnlineRecognizerConfig &config)
-      : config_(config),
+      : OnlineRecognizerImpl(config),
+        config_(config),
         model_(config.model_config),
-        sym_(config.model_config.tokens),
         endpoint_(config_.endpoint_config) {
+    if (!config.model_config.tokens_buf.empty()) {
+      sym_ = SymbolTable(config.model_config.tokens_buf, false);
+    } else {
+      /// assuming tokens_buf and tokens are guaranteed not being both empty
+      sym_ = SymbolTable(config.model_config.tokens, true);
+    }
+
     if (config.decoding_method != "greedy_search") {
       SHERPA_ONNX_LOGE(
           "Unsupported decoding method: %s. Support only greedy_search at "
           "present",
           config.decoding_method.c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
 
     // Paraformer models assume input samples are in the range
@@ -113,28 +131,33 @@ class OnlineRecognizerParaformerImpl : public OnlineRecognizerImpl {
     config_.feat_config.normalize_samples = false;
   }
 
-#if __ANDROID_API__ >= 9
-  explicit OnlineRecognizerParaformerImpl(AAssetManager *mgr,
+  template <typename Manager>
+  explicit OnlineRecognizerParaformerImpl(Manager *mgr,
                                           const OnlineRecognizerConfig &config)
-      : config_(config),
+      : OnlineRecognizerImpl(mgr, config),
+        config_(config),
         model_(mgr, config.model_config),
-        sym_(mgr, config.model_config.tokens),
         endpoint_(config_.endpoint_config) {
+    if (!config.model_config.tokens_buf.empty()) {
+      sym_ = SymbolTable(config.model_config.tokens_buf, false);
+    } else {
+      sym_ = SymbolTable(mgr, config.model_config.tokens);
+    }
     if (config.decoding_method != "greedy_search") {
       SHERPA_ONNX_LOGE("Unsupported decoding method: %s",
                        config.decoding_method.c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
 
     // Paraformer models assume input samples are in the range
     // [-32768, 32767], so we set normalize_samples to false
     config_.feat_config.normalize_samples = false;
   }
-#endif
+
   OnlineRecognizerParaformerImpl(const OnlineRecognizerParaformerImpl &) =
       delete;
 
-  OnlineRecognizerParaformerImpl operator=(
+  OnlineRecognizerParaformerImpl &operator=(
       const OnlineRecognizerParaformerImpl &) = delete;
 
   std::unique_ptr<OnlineStream> CreateStream() const override {
@@ -147,7 +170,16 @@ class OnlineRecognizerParaformerImpl : public OnlineRecognizerImpl {
   }
 
   bool IsReady(OnlineStream *s) const override {
-    return s->GetNumProcessedFrames() + chunk_size_ < s->NumFramesReady();
+    if (s->GetNumProcessedFrames() + chunk_size_ < s->NumFramesReady()) {
+      return true;
+    }
+    // is_final: accept short chunks (less than chunk_size_ frames)
+    // Users should call SetOption("is_final", "1") before the last decode.
+    if (s->GetOptionInt("is_final", 0) &&
+        s->GetNumProcessedFrames() < s->NumFramesReady()) {
+      return true;
+    }
+    return false;
   }
 
   void DecodeStreams(OnlineStream **ss, int32_t n) const override {
@@ -160,7 +192,10 @@ class OnlineRecognizerParaformerImpl : public OnlineRecognizerImpl {
   OnlineRecognizerResult GetResult(OnlineStream *s) const override {
     auto decoder_result = s->GetParaformerResult();
 
-    return Convert(decoder_result, sym_);
+    auto r = Convert(decoder_result, sym_);
+    r.text = ApplyInverseTextNormalization(std::move(r.text));
+    r.text = ApplyHomophoneReplacer(std::move(r.text));
+    return r;
   }
 
   bool IsEndpoint(OnlineStream *s) const override {
@@ -183,8 +218,14 @@ class OnlineRecognizerParaformerImpl : public OnlineRecognizerImpl {
   }
 
   void Reset(OnlineStream *s) const override {
-    OnlineParaformerDecoderResult r;
-    s->SetParaformerResult(r);
+    // segment is incremented only when the last result is not empty
+    const auto &r = s->GetParaformerResult();
+    if (!r.tokens.empty()) {
+      s->GetCurrentSegment() += 1;
+    }
+
+    OnlineParaformerDecoderResult empty;
+    s->SetParaformerResult(empty);
 
     s->GetStates().clear();
     s->GetParaformerEncoderOutCache().clear();
@@ -200,8 +241,26 @@ class OnlineRecognizerParaformerImpl : public OnlineRecognizerImpl {
  private:
   void DecodeStream(OnlineStream *s) const {
     const auto num_processed_frames = s->GetNumProcessedFrames();
-    std::vector<float> frames = s->GetFrames(num_processed_frames, chunk_size_);
-    s->GetNumProcessedFrames() += chunk_size_ - 1;
+    int32_t available_frames = s->NumFramesReady() - num_processed_frames;
+    bool is_final = s->GetOptionInt("is_final", 0);
+
+    // For the final short chunk (fewer frames than chunk_size_):
+    // read the remaining frames and pad with zeros to chunk_size_.
+    bool is_short_final = is_final && available_frames < chunk_size_;
+
+    std::vector<float> frames =
+        s->GetFrames(num_processed_frames,
+                     is_short_final ? available_frames : chunk_size_);
+
+    if (is_short_final) {
+      int32_t feat_dim_raw = config_.feat_config.feature_dim;
+      frames.resize(chunk_size_ * feat_dim_raw, 0.0f);
+      // Consume all remaining frames (no overlap needed).
+      s->GetNumProcessedFrames() += available_frames;
+    } else {
+      // Normal: advance by chunk_size_ - 1 to keep 1-frame overlap.
+      s->GetNumProcessedFrames() += chunk_size_ - 1;
+    }
 
     frames = ApplyLFR(frames);
     ApplyCMVN(&frames);
@@ -401,19 +460,18 @@ class OnlineRecognizerParaformerImpl : public OnlineRecognizerImpl {
   void ApplyCMVN(std::vector<float> *v) const {
     const std::vector<float> &neg_mean = model_.NegativeMean();
     const std::vector<float> &inv_stddev = model_.InverseStdDev();
+    int dim = static_cast<int>(neg_mean.size());
+    int num_frames = static_cast<int>(v->size()) / dim;
 
-    int32_t dim = neg_mean.size();
-    int32_t num_frames = v->size() / dim;
+    Eigen::Map<
+        Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>
+        mat(v->data(), num_frames, dim);
 
-    float *p = v->data();
+    Eigen::Map<const Eigen::RowVectorXf> neg_mean_vec(neg_mean.data(), dim);
+    Eigen::Map<const Eigen::RowVectorXf> inv_stddev_vec(inv_stddev.data(), dim);
 
-    for (int32_t i = 0; i != num_frames; ++i) {
-      for (int32_t k = 0; k != dim; ++k) {
-        p[k] = (p[k] + neg_mean[k]) * inv_stddev[k];
-      }
-
-      p += dim;
-    }
+    mat.array() = (mat.array().rowwise() + neg_mean_vec.array()).rowwise() *
+                  inv_stddev_vec.array();
   }
 
   void PositionalEncoding(std::vector<float> *v, int32_t t_offset) const {

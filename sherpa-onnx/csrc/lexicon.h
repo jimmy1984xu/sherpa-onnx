@@ -6,16 +6,12 @@
 #define SHERPA_ONNX_CSRC_LEXICON_H_
 
 #include <cstdint>
+#include <istream>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-
-#if __ANDROID_API__ >= 9
-#include "android/asset_manager.h"
-#include "android/asset_manager_jni.h"
-#endif
 
 #include "sherpa-onnx/csrc/offline-tts-frontend.h"
 
@@ -30,20 +26,19 @@ class Lexicon : public OfflineTtsFrontend {
           const std::string &punctuations, const std::string &language,
           bool debug = false);
 
-#if __ANDROID_API__ >= 9
-  Lexicon(AAssetManager *mgr, const std::string &lexicon,
-          const std::string &tokens, const std::string &punctuations,
-          const std::string &language, bool debug = false);
-#endif
+  template <typename Manager>
+  Lexicon(Manager *mgr, const std::string &lexicon, const std::string &tokens,
+          const std::string &punctuations, const std::string &language,
+          bool debug = false);
 
-  std::vector<std::vector<int64_t>> ConvertTextToTokenIds(
+  std::vector<TokenIDs> ConvertTextToTokenIds(
       const std::string &text, const std::string &voice = "") const override;
 
  private:
-  std::vector<std::vector<int64_t>> ConvertTextToTokenIdsNotChinese(
+  std::vector<TokenIDs> ConvertTextToTokenIdsNotChinese(
       const std::string &text) const;
 
-  std::vector<std::vector<int64_t>> ConvertTextToTokenIdsChinese(
+  std::vector<TokenIDs> ConvertTextToTokenIdsChinese(
       const std::string &text) const;
 
   void InitLanguage(const std::string &lang);
@@ -62,8 +57,8 @@ class Lexicon : public OfflineTtsFrontend {
   std::unordered_map<std::string, std::vector<int32_t>> word2ids_;
   std::unordered_set<std::string> punctuations_;
   std::unordered_map<std::string, int32_t> token2id_;
-  Language language_;
-  bool debug_;
+  Language language_ = Language::kUnknown;
+  bool debug_ = false;
 };
 
 }  // namespace sherpa_onnx

@@ -12,9 +12,11 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <memory>
 
 #include "onnxruntime_cxx_api.h"  // NOLINT
 #include "sherpa-onnx/csrc/context-graph.h"
+#include "sherpa-onnx/csrc/lodr-fst.h"
 #include "sherpa-onnx/csrc/math.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
 
@@ -30,17 +32,17 @@ struct Hypothesis {
 
   // The acoustic probability for each token in ys.
   // Used for keyword spotting task.
-  // For transducer mofified beam-search and greedy-search,
+  // For transducer modified beam-search and greedy-search,
   // this is filled with log_posterior scores.
   std::vector<float> ys_probs;
 
   // lm_probs[i] contains the lm score for each token in ys.
-  // Used only in transducer mofified beam-search.
+  // Used only in transducer modified beam-search.
   // Elements filled only if LM is used.
   std::vector<float> lm_probs;
 
   // context_scores[i] contains the context-graph score for each token in ys.
-  // Used only in transducer mofified beam-search.
+  // Used only in transducer modified beam-search.
   // Elements filled only if `ContextGraph` is used.
   std::vector<float> context_scores;
 
@@ -51,10 +53,18 @@ struct Hypothesis {
   // LM log prob if any.
   double lm_log_prob = 0;
 
-  // the nn lm score for next token given the current ys
+  // the nn lm score for next token given the current ys,
+  // when using shallow fusion
   CopyableOrtValue nn_lm_scores;
+
+  // cur scored tokens by RNN LM, when rescoring
+  int32_t cur_scored_pos = 0;
+
   // the nn lm states
   std::vector<CopyableOrtValue> nn_lm_states;
+
+  // the LODR states
+  std::shared_ptr<LodrStateCost> lodr_state;
 
   const ContextState *context_state;
 
@@ -129,15 +139,14 @@ class Hypotheses {
     return os.str();
   }
 
-  const auto begin() const { return hyps_dict_.begin(); }
-  const auto end() const { return hyps_dict_.end(); }
+  auto begin() const { return hyps_dict_.begin(); }
+  auto end() const { return hyps_dict_.end(); }
 
   auto begin() { return hyps_dict_.begin(); }
   auto end() { return hyps_dict_.end(); }
 
   void Clear() { hyps_dict_.clear(); }
 
- private:
   // Return a list of hyps contained in this object.
   std::vector<Hypothesis> Vec() const {
     std::vector<Hypothesis> ans;

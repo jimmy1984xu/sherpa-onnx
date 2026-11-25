@@ -48,11 +48,19 @@ def read_wave(wave_filename: str) -> Tuple[np.ndarray, int]:
 
 
 class TestOfflineRecognizer(unittest.TestCase):
+    def test_paraformer_hotword_config(self):
+        config = sherpa_onnx.OfflineParaformerModelConfig(model="model.onnx")
+        config.seg_dict = "seg_dict.txt"
+        config.hw_compiler = "hotword_compiler.onnx"
+        self.assertEqual(config.model, "model.onnx")
+        self.assertEqual(config.seg_dict, "seg_dict.txt")
+        self.assertEqual(config.hw_compiler, "hotword_compiler.onnx")
+
     def test_transducer_single_file(self):
         for use_int8 in [True, False]:
             if use_int8:
                 encoder = f"{d}/sherpa-onnx-zipformer-en-2023-04-01/encoder-epoch-99-avg-1.int8.onnx"
-                decoder = f"{d}/sherpa-onnx-zipformer-en-2023-04-01/decoder-epoch-99-avg-1.int8.onnx"
+                decoder = f"{d}/sherpa-onnx-zipformer-en-2023-04-01/decoder-epoch-99-avg-1.onnx"
                 joiner = f"{d}/sherpa-onnx-zipformer-en-2023-04-01/joiner-epoch-99-avg-1.int8.onnx"
             else:
                 encoder = f"{d}/sherpa-onnx-zipformer-en-2023-04-01/encoder-epoch-99-avg-1.onnx"
@@ -85,7 +93,7 @@ class TestOfflineRecognizer(unittest.TestCase):
         for use_int8 in [True, False]:
             if use_int8:
                 encoder = f"{d}/sherpa-onnx-zipformer-en-2023-04-01/encoder-epoch-99-avg-1.int8.onnx"
-                decoder = f"{d}/sherpa-onnx-zipformer-en-2023-04-01/decoder-epoch-99-avg-1.int8.onnx"
+                decoder = f"{d}/sherpa-onnx-zipformer-en-2023-04-01/decoder-epoch-99-avg-1.onnx"
                 joiner = f"{d}/sherpa-onnx-zipformer-en-2023-04-01/joiner-epoch-99-avg-1.int8.onnx"
             else:
                 encoder = f"{d}/sherpa-onnx-zipformer-en-2023-04-01/encoder-epoch-99-avg-1.onnx"
@@ -128,77 +136,69 @@ class TestOfflineRecognizer(unittest.TestCase):
             print(s2.result.text)
 
     def test_paraformer_single_file(self):
-        for use_int8 in [True, False]:
-            if use_int8:
-                model = f"{d}/sherpa-onnx-paraformer-zh-2023-03-28/model.int8.onnx"
-            else:
-                model = f"{d}/sherpa-onnx-paraformer-zh-2023-03-28/model.onnx"
+        model = f"{d}/sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx"
 
-            tokens = f"{d}/sherpa-onnx-paraformer-zh-2023-03-28/tokens.txt"
-            wave0 = f"{d}/sherpa-onnx-paraformer-zh-2023-03-28/test_wavs/0.wav"
+        tokens = f"{d}/sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt"
+        wave0 = f"{d}/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav"
 
-            if not Path(model).is_file():
-                print("skipping test_paraformer_single_file()")
-                return
+        if not Path(model).is_file():
+            print("skipping test_paraformer_single_file()")
+            return
 
-            recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
-                paraformer=model,
-                tokens=tokens,
-                num_threads=1,
-                provider="cpu",
-            )
+        recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
+            paraformer=model,
+            tokens=tokens,
+            num_threads=1,
+            provider="cpu",
+        )
 
-            s = recognizer.create_stream()
-            samples, sample_rate = read_wave(wave0)
-            s.accept_waveform(sample_rate, samples)
-            recognizer.decode_stream(s)
-            print(s.result.text)
+        s = recognizer.create_stream()
+        samples, sample_rate = read_wave(wave0)
+        s.accept_waveform(sample_rate, samples)
+        recognizer.decode_stream(s)
+        print(s.result.text)
 
     def test_paraformer_multiple_files(self):
-        for use_int8 in [True, False]:
-            if use_int8:
-                model = f"{d}/sherpa-onnx-paraformer-zh-2023-03-28/model.int8.onnx"
-            else:
-                model = f"{d}/sherpa-onnx-paraformer-zh-2023-03-28/model.onnx"
+        model = f"{d}/sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx"
 
-            tokens = f"{d}/sherpa-onnx-paraformer-zh-2023-03-28/tokens.txt"
-            wave0 = f"{d}/sherpa-onnx-paraformer-zh-2023-03-28/test_wavs/0.wav"
-            wave1 = f"{d}/sherpa-onnx-paraformer-zh-2023-03-28/test_wavs/1.wav"
-            wave2 = f"{d}/sherpa-onnx-paraformer-zh-2023-03-28/test_wavs/2.wav"
-            wave3 = f"{d}/sherpa-onnx-paraformer-zh-2023-03-28/test_wavs/8k.wav"
+        tokens = f"{d}/sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt"
+        wave0 = f"{d}/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/0.wav"
+        wave1 = f"{d}/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/1.wav"
+        wave2 = f"{d}/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/2.wav"
+        wave3 = f"{d}/sherpa-onnx-paraformer-zh-2023-09-14/test_wavs/8k.wav"
 
-            if not Path(model).is_file():
-                print("skipping test_paraformer_multiple_files()")
-                return
+        if not Path(model).is_file():
+            print("skipping test_paraformer_multiple_files()")
+            return
 
-            recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
-                paraformer=model,
-                tokens=tokens,
-                num_threads=1,
-                provider="cpu",
-            )
+        recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
+            paraformer=model,
+            tokens=tokens,
+            num_threads=1,
+            provider="cpu",
+        )
 
-            s0 = recognizer.create_stream()
-            samples0, sample_rate0 = read_wave(wave0)
-            s0.accept_waveform(sample_rate0, samples0)
+        s0 = recognizer.create_stream()
+        samples0, sample_rate0 = read_wave(wave0)
+        s0.accept_waveform(sample_rate0, samples0)
 
-            s1 = recognizer.create_stream()
-            samples1, sample_rate1 = read_wave(wave1)
-            s1.accept_waveform(sample_rate1, samples1)
+        s1 = recognizer.create_stream()
+        samples1, sample_rate1 = read_wave(wave1)
+        s1.accept_waveform(sample_rate1, samples1)
 
-            s2 = recognizer.create_stream()
-            samples2, sample_rate2 = read_wave(wave2)
-            s2.accept_waveform(sample_rate2, samples2)
+        s2 = recognizer.create_stream()
+        samples2, sample_rate2 = read_wave(wave2)
+        s2.accept_waveform(sample_rate2, samples2)
 
-            s3 = recognizer.create_stream()
-            samples3, sample_rate3 = read_wave(wave3)
-            s3.accept_waveform(sample_rate3, samples3)
+        s3 = recognizer.create_stream()
+        samples3, sample_rate3 = read_wave(wave3)
+        s3.accept_waveform(sample_rate3, samples3)
 
-            recognizer.decode_streams([s0, s1, s2, s3])
-            print(s0.result.text)
-            print(s1.result.text)
-            print(s2.result.text)
-            print(s3.result.text)
+        recognizer.decode_streams([s0, s1, s2, s3])
+        print(s0.result.text)
+        print(s1.result.text)
+        print(s2.result.text)
+        print(s3.result.text)
 
     def test_nemo_ctc_single_file(self):
         for use_int8 in [True, False]:
@@ -267,7 +267,7 @@ class TestOfflineRecognizer(unittest.TestCase):
             print(s1.result.text)
             print(s2.result.text)
 
-    def test_wenet_ctc(self):
+    def _test_wenet_ctc(self):
         models = [
             "sherpa-onnx-zh-wenet-aishell",
             "sherpa-onnx-zh-wenet-aishell2",

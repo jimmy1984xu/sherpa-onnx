@@ -8,12 +8,8 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
-
-#if __ANDROID_API__ >= 9
-#include "android/asset_manager.h"
-#include "android/asset_manager_jni.h"
-#endif
 
 #include "sherpa-onnx/csrc/offline-tts-model-config.h"
 #include "sherpa-onnx/csrc/parse-options.h"
@@ -35,16 +31,22 @@ struct OfflineTtsConfig {
   // Maximum number of sentences that we process at a time.
   // This is to avoid OOM for very long input text.
   // If you set it to -1, then we process all sentences in a single batch.
-  int32_t max_num_sentences = 2;
+  int32_t max_num_sentences = 1;
+
+  // A silence interval contains audio samples with value close to 0.
+  //
+  // the duration of the new interval is old_duration * silence_scale.
+  float silence_scale = 0.2;
 
   OfflineTtsConfig() = default;
   OfflineTtsConfig(const OfflineTtsModelConfig &model,
                    const std::string &rule_fsts, const std::string &rule_fars,
-                   int32_t max_num_sentences)
+                   int32_t max_num_sentences, float silence_scale)
       : model(model),
         rule_fsts(rule_fsts),
         rule_fars(rule_fars),
-        max_num_sentences(max_num_sentences) {}
+        max_num_sentences(max_num_sentences),
+        silence_scale(silence_scale) {}
 
   void Register(ParseOptions *po);
   bool Validate() const;
@@ -55,11 +57,44 @@ struct OfflineTtsConfig {
 struct GeneratedAudio {
   std::vector<float> samples;
   int32_t sample_rate;
+
+  // Silence means pause here.
+  // If scale > 1, then it increases the duration of a pause
+  // If scale < 1, then it reduces the duration of a pause
+  GeneratedAudio ScaleSilence(float scale) const;
+};
+
+struct GenerationConfig {
+  float silence_scale = 0.2;
+
+  float speed = 1.0f;  // used only by some models.
+  int32_t sid = 0;     // used only by models support multi-speakers
+
+  std::vector<float> reference_audio;  // mono, [-1, 1]
+  int32_t reference_sample_rate = 0;   // sample rate of reference_audio
+  std::string reference_text;          // not all models require this
+  int32_t num_steps = 5;               // number of steps in flow matching
+
+  // model specific
+  // Please see the Generate method of each model in ./offline-tts-xx-impl.h
+  // e.g., in ./offline-tts-pocket-impl.h
+  std::unordered_map<std::string, std::string> extra;
+
+  std::string GetExtraString(const std::string &key,
+                             const std::string &def = "") const;
+
+  int32_t GetExtraInt(const std::string &key, int32_t def) const;
+
+  float GetExtraFloat(const std::string &key, float def) const;
+
+  std::string ToString() const;
 };
 
 class OfflineTtsImpl;
 
-using GeneratedAudioCallback = std::function<void(
+// If the callback returns 0, then it stops generating
+// if the callback returns 1, then it keeps generating
+using GeneratedAudioCallback = std::function<int32_t(
     const float * /*samples*/, int32_t /*n*/, float /*progress*/)>;
 
 class OfflineTts {
@@ -67,9 +102,8 @@ class OfflineTts {
   ~OfflineTts();
   explicit OfflineTts(const OfflineTtsConfig &config);
 
-#if __ANDROID_API__ >= 9
-  OfflineTts(AAssetManager *mgr, const OfflineTtsConfig &config);
-#endif
+  template <typename Manager>
+  OfflineTts(Manager *mgr, const OfflineTtsConfig &config);
 
   // @param text A string containing words separated by spaces
   // @param sid Speaker ID. Used only for multi-speaker models, e.g., models
@@ -84,8 +118,34 @@ class OfflineTts {
   //                 keep a reference to it. The caller can copy the data if
   //                 he/she wants to access the samples after the callback
   //                 returns. The callback is called in the current thread.
+  [[deprecated("Use Generate(text, GenerationConfig, callback) instead")]]
   GeneratedAudio Generate(const std::string &text, int64_t sid = 0,
                           float speed = 1.0,
+                          GeneratedAudioCallback callback = nullptr) const;
+
+  // @param text The string to be synthesized.
+  // @param prompt_text The transcribe of `prompt_sampes`.
+  // @param prompt_samples The prompt audio samples (mono PCM floats in [-1,1]).
+  // @param sample_rate The sample rate of `prompt_audio` in Hz.
+  // @param speed The speed for the generated speech. E.g., 2 means 2x faster.
+  // @param num_steps The number of flow steps to generate the audio.
+  // @param callback If not NULL, it is called whenever config.max_num_sentences
+  //                 sentences have been processed. Note that the passed
+  //                 pointer `samples` for the callback might be invalidated
+  //                 after the callback is returned, so the caller should not
+  //                 keep a reference to it. The caller can copy the data if
+  //                 he/she wants to access the samples after the callback
+  //                 returns. The callback is called in the current thread.
+  [[deprecated("Use Generate(text, GenerationConfig, callback) instead")]]
+  GeneratedAudio Generate(const std::string &text,
+                          const std::string &prompt_text,
+                          const std::vector<float> &prompt_samples,
+                          int32_t sample_rate, float speed = 1.0,
+                          int32_t num_steps = 4,
+                          GeneratedAudioCallback callback = nullptr) const;
+
+  GeneratedAudio Generate(const std::string &text,
+                          const GenerationConfig &config,
                           GeneratedAudioCallback callback = nullptr) const;
 
   // Return the sample rate of the generated audio

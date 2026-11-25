@@ -3,21 +3,28 @@
 // Copyright (c)  2023  Xiaomi Corporation
 
 #include "sherpa-onnx/csrc/online-zipformer2-ctc-model.h"
-
-#include <assert.h>
-#include <math.h>
+#include "sherpa-onnx/csrc/ort-env.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
+#include <memory>
 #include <numeric>
 #include <string>
+#include <utility>
+#include <vector>
 
 #if __ANDROID_API__ >= 9
 #include "android/asset_manager.h"
 #include "android/asset_manager_jni.h"
 #endif
 
+#if __OHOS__
+#include "rawfile/raw_file_manager.h"
+#endif
+
 #include "sherpa-onnx/csrc/cat.h"
+#include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
 #include "sherpa-onnx/csrc/session.h"
@@ -30,19 +37,18 @@ class OnlineZipformer2CtcModel::Impl {
  public:
   explicit Impl(const OnlineModelConfig &config)
       : config_(config),
-        env_(ORT_LOGGING_LEVEL_ERROR),
+        env_(CreateOrtEnv()),
         sess_opts_(GetSessionOptions(config)),
         allocator_{} {
-    {
-      auto buf = ReadFile(config.zipformer2_ctc.model);
-      Init(buf.data(), buf.size());
-    }
+    sess_ = std::make_unique<Ort::Session>(
+        env_, SHERPA_ONNX_TO_ORT_PATH(config.zipformer2_ctc.model), sess_opts_);
+    Init(nullptr, 0);
   }
 
-#if __ANDROID_API__ >= 9
-  Impl(AAssetManager *mgr, const OnlineModelConfig &config)
+  template <typename Manager>
+  Impl(Manager *mgr, const OnlineModelConfig &config)
       : config_(config),
-        env_(ORT_LOGGING_LEVEL_WARNING),
+        env_(CreateOrtEnv()),
         sess_opts_(GetSessionOptions(config)),
         allocator_{} {
     {
@@ -50,7 +56,6 @@ class OnlineZipformer2CtcModel::Impl {
       Init(buf.data(), buf.size());
     }
   }
-#endif
 
   std::vector<Ort::Value> Forward(Ort::Value features,
                                   std::vector<Ort::Value> states) {
@@ -72,7 +77,9 @@ class OnlineZipformer2CtcModel::Impl {
 
   int32_t ChunkShift() const { return decode_chunk_len_; }
 
-  OrtAllocator *Allocator() const { return allocator_; }
+  bool UseWhisperFeature() const { return use_whisper_feature_; }
+
+  OrtAllocator *Allocator() { return allocator_; }
 
   // Return a vector containing 3 tensors
   // - attn_cache
@@ -88,9 +95,8 @@ class OnlineZipformer2CtcModel::Impl {
   }
 
   std::vector<Ort::Value> StackStates(
-      std::vector<std::vector<Ort::Value>> states) const {
+      std::vector<std::vector<Ort::Value>> states) {
     int32_t batch_size = static_cast<int32_t>(states.size());
-    int32_t num_encoders = static_cast<int32_t>(num_encoder_layers_.size());
 
     std::vector<const Ort::Value *> buf(batch_size);
 
@@ -162,13 +168,12 @@ class OnlineZipformer2CtcModel::Impl {
   }
 
   std::vector<std::vector<Ort::Value>> UnStackStates(
-      std::vector<Ort::Value> states) const {
+      std::vector<Ort::Value> states) {
     int32_t m = std::accumulate(num_encoder_layers_.begin(),
                                 num_encoder_layers_.end(), 0);
     assert(states.size() == m * 6 + 2);
 
     int32_t batch_size = states[0].GetTensorTypeAndShapeInfo().GetShape()[1];
-    int32_t num_encoders = num_encoder_layers_.size();
 
     std::vector<std::vector<Ort::Value>> ans;
     ans.resize(batch_size);
@@ -246,8 +251,15 @@ class OnlineZipformer2CtcModel::Impl {
 
  private:
   void Init(void *model_data, size_t model_data_length) {
-    sess_ = std::make_unique<Ort::Session>(env_, model_data, model_data_length,
-                                           sess_opts_);
+    if (model_data) {
+      sess_ = std::make_unique<Ort::Session>(
+          env_, model_data, model_data_length, sess_opts_);
+    } else if (!sess_) {
+      SHERPA_ONNX_LOGE(
+          "Please pass model data or initialize the session outside of "
+          "this function");
+      SHERPA_ONNX_EXIT(-1);
+    }
 
     GetInputNames(sess_.get(), &input_names_, &input_names_ptr_);
 
@@ -259,7 +271,11 @@ class OnlineZipformer2CtcModel::Impl {
       std::ostringstream os;
       os << "---zipformer2_ctc---\n";
       PrintModelMetadata(os, meta_data);
+#if __OHOS__
+      SHERPA_ONNX_LOGE("%{public}s", os.str().c_str());
+#else
       SHERPA_ONNX_LOGE("%s", os.str().c_str());
+#endif
     }
 
     Ort::AllocatorWithDefaultOptions allocator;  // used in the macro below
@@ -273,6 +289,12 @@ class OnlineZipformer2CtcModel::Impl {
 
     SHERPA_ONNX_READ_META_DATA(T_, "T");
     SHERPA_ONNX_READ_META_DATA(decode_chunk_len_, "decode_chunk_len");
+
+    std::string feature_type;
+    SHERPA_ONNX_READ_META_DATA_STR_WITH_DEFAULT(feature_type, "feature", "");
+    if (feature_type == "whisper") {
+      use_whisper_feature_ = true;
+    }
 
     {
       auto shape =
@@ -413,17 +435,20 @@ class OnlineZipformer2CtcModel::Impl {
   int32_t T_ = 0;
   int32_t decode_chunk_len_ = 0;
   int32_t vocab_size_ = 0;
+
+  // for models from
+  // https://github.com/k2-fsa/icefall/blob/master/egs/multi_zh-hans/ASR/RESULTS.md#streaming-with-ctc-head
+  bool use_whisper_feature_ = false;
 };
 
 OnlineZipformer2CtcModel::OnlineZipformer2CtcModel(
     const OnlineModelConfig &config)
     : impl_(std::make_unique<Impl>(config)) {}
 
-#if __ANDROID_API__ >= 9
+template <typename Manager>
 OnlineZipformer2CtcModel::OnlineZipformer2CtcModel(
-    AAssetManager *mgr, const OnlineModelConfig &config)
+    Manager *mgr, const OnlineModelConfig &config)
     : impl_(std::make_unique<Impl>(mgr, config)) {}
-#endif
 
 OnlineZipformer2CtcModel::~OnlineZipformer2CtcModel() = default;
 
@@ -444,6 +469,10 @@ int32_t OnlineZipformer2CtcModel::ChunkShift() const {
   return impl_->ChunkShift();
 }
 
+bool OnlineZipformer2CtcModel::UseWhisperFeature() const {
+  return impl_->UseWhisperFeature();
+}
+
 OrtAllocator *OnlineZipformer2CtcModel::Allocator() const {
   return impl_->Allocator();
 }
@@ -461,5 +490,15 @@ std::vector<std::vector<Ort::Value>> OnlineZipformer2CtcModel::UnStackStates(
     std::vector<Ort::Value> states) const {
   return impl_->UnStackStates(std::move(states));
 }
+
+#if __ANDROID_API__ >= 9
+template OnlineZipformer2CtcModel::OnlineZipformer2CtcModel(
+    AAssetManager *mgr, const OnlineModelConfig &config);
+#endif
+
+#if __OHOS__
+template OnlineZipformer2CtcModel::OnlineZipformer2CtcModel(
+    NativeResourceManager *mgr, const OnlineModelConfig &config);
+#endif
 
 }  // namespace sherpa_onnx

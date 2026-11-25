@@ -4,6 +4,9 @@
 
 #include "sherpa-onnx/csrc/offline-tts-vits-model-config.h"
 
+#include <string>
+#include <vector>
+
 #include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 
@@ -16,6 +19,8 @@ void OfflineTtsVitsModelConfig::Register(ParseOptions *po) {
   po->Register("vits-data-dir", &data_dir,
                "Path to the directory containing dict for espeak-ng. If it is "
                "given, --vits-lexicon is ignored.");
+  po->Register("vits-dict-dir", &dict_dir,
+               "Not used. You don't need to provide a value for it");
   po->Register("vits-noise-scale", &noise_scale, "noise_scale for VITS models");
   po->Register("vits-noise-scale-w", &noise_scale_w,
                "noise_scale_w for VITS models");
@@ -30,7 +35,7 @@ bool OfflineTtsVitsModelConfig::Validate() const {
   }
 
   if (!FileExists(model)) {
-    SHERPA_ONNX_LOGE("--vits-model: %s does not exist", model.c_str());
+    SHERPA_ONNX_LOGE("--vits-model: '%s' does not exist", model.c_str());
     return false;
   }
 
@@ -40,34 +45,44 @@ bool OfflineTtsVitsModelConfig::Validate() const {
   }
 
   if (!FileExists(tokens)) {
-    SHERPA_ONNX_LOGE("--vits-tokens: %s does not exist", tokens.c_str());
+    SHERPA_ONNX_LOGE("--vits-tokens: '%s' does not exist", tokens.c_str());
     return false;
   }
 
   if (!data_dir.empty()) {
     if (!FileExists(data_dir + "/phontab")) {
-      SHERPA_ONNX_LOGE("%s/phontab does not exist. Skipping test",
-                       data_dir.c_str());
+      SHERPA_ONNX_LOGE(
+          "'%s/phontab' does not exist. Please check --vits-data-dir",
+          data_dir.c_str());
       return false;
     }
 
     if (!FileExists(data_dir + "/phonindex")) {
-      SHERPA_ONNX_LOGE("%s/phonindex does not exist. Skipping test",
-                       data_dir.c_str());
+      SHERPA_ONNX_LOGE(
+          "'%s/phonindex' does not exist. Please check --vits-data-dir",
+          data_dir.c_str());
       return false;
     }
 
     if (!FileExists(data_dir + "/phondata")) {
-      SHERPA_ONNX_LOGE("%s/phondata does not exist. Skipping test",
-                       data_dir.c_str());
+      SHERPA_ONNX_LOGE(
+          "'%s/phondata' does not exist. Please check --vits-data-dir",
+          data_dir.c_str());
       return false;
     }
 
     if (!FileExists(data_dir + "/intonations")) {
-      SHERPA_ONNX_LOGE("%s/intonations does not exist. Skipping test",
-                       data_dir.c_str());
+      SHERPA_ONNX_LOGE(
+          "'%s/intonations' does not exist. Please check --vits-data-dir",
+          data_dir.c_str());
       return false;
     }
+  }
+
+  if (!dict_dir.empty()) {
+    SHERPA_ONNX_LOGE(
+        "From sherpa-onnx v1.12.15, you don't need to provide dict_dir for "
+        "this model. Ignore it");
   }
 
   return true;

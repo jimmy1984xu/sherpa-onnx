@@ -42,7 +42,7 @@ OfflineTransducerModifiedBeamSearchDecoder::Decode(
   std::vector<ContextGraphPtr> context_graphs(batch_size, nullptr);
 
   for (int32_t i = 0; i < batch_size; ++i) {
-    const ContextState *context_state;
+    const ContextState *context_state = nullptr;
     if (ss != nullptr) {
       context_graphs[i] =
           ss[packed_encoder_out.sorted_indexes[i]]->GetContextGraph();
@@ -131,13 +131,20 @@ OfflineTransducerModifiedBeamSearchDecoder::Decode(
 
         float context_score = 0;
         auto context_state = new_hyp.context_state;
-        if (new_token != 0) {
-          // blank id is fixed to 0
+        // blank is hardcoded to 0
+        // also, it treats unk as blank
+        if (new_token != 0 && new_token != unk_id_) {
           new_hyp.ys.push_back(new_token);
           new_hyp.timestamps.push_back(t);
+
+          // Store the token log probability (subtract prev log_prob to get
+          // original)
+          float token_log_prob = p_logprob[k] - prev[hyp_index].log_prob;
+          new_hyp.ys_probs.push_back(token_log_prob);
+
           if (context_graphs[i] != nullptr) {
-            auto context_res =
-                context_graphs[i]->ForwardOneStep(context_state, new_token);
+            auto context_res = context_graphs[i]->ForwardOneStep(
+                context_state, new_token, false /* non-strict mode */);
             context_score = std::get<0>(context_res);
             new_hyp.context_state = std::get<1>(context_res);
           }
@@ -183,6 +190,7 @@ OfflineTransducerModifiedBeamSearchDecoder::Decode(
     // strip leading blanks
     r.tokens = {hyp.ys.begin() + context_size, hyp.ys.end()};
     r.timestamps = std::move(hyp.timestamps);
+    r.ys_log_probs = std::move(hyp.ys_probs);
   }
 
   return unsorted_ans;

@@ -3,10 +3,15 @@
 // Copyright (c)  2024  Xiaomi Corporation
 
 #include "sherpa-onnx/csrc/offline-zipformer-audio-tagging-model.h"
+#include "sherpa-onnx/csrc/ort-env.h"
+#include "sherpa-onnx/csrc/macros.h"
 
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
 #include "sherpa-onnx/csrc/session.h"
 #include "sherpa-onnx/csrc/text-utils.h"
@@ -17,17 +22,18 @@ class OfflineZipformerAudioTaggingModel::Impl {
  public:
   explicit Impl(const AudioTaggingModelConfig &config)
       : config_(config),
-        env_(ORT_LOGGING_LEVEL_ERROR),
+        env_(CreateOrtEnv()),
         sess_opts_(GetSessionOptions(config)),
         allocator_{} {
-    auto buf = ReadFile(config_.zipformer.model);
-    Init(buf.data(), buf.size());
+    sess_ = std::make_unique<Ort::Session>(
+        env_, SHERPA_ONNX_TO_ORT_PATH(config_.zipformer.model), sess_opts_);
+    Init(nullptr, 0);
   }
 
 #if __ANDROID_API__ >= 9
   Impl(AAssetManager *mgr, const AudioTaggingModelConfig &config)
       : config_(config),
-        env_(ORT_LOGGING_LEVEL_ERROR),
+        env_(CreateOrtEnv()),
         sess_opts_(GetSessionOptions(config)),
         allocator_{} {
     auto buf = ReadFile(mgr, config_.zipformer.model);
@@ -47,12 +53,19 @@ class OfflineZipformerAudioTaggingModel::Impl {
 
   int32_t NumEventClasses() const { return num_event_classes_; }
 
-  OrtAllocator *Allocator() const { return allocator_; }
+  OrtAllocator *Allocator() { return allocator_; }
 
  private:
   void Init(void *model_data, size_t model_data_length) {
-    sess_ = std::make_unique<Ort::Session>(env_, model_data, model_data_length,
-                                           sess_opts_);
+    if (model_data) {
+      sess_ = std::make_unique<Ort::Session>(
+          env_, model_data, model_data_length, sess_opts_);
+    } else if (!sess_) {
+      SHERPA_ONNX_LOGE(
+          "Please pass model data or initialize the session outside of "
+          "this function");
+      SHERPA_ONNX_EXIT(-1);
+    }
 
     GetInputNames(sess_.get(), &input_names_, &input_names_ptr_);
 

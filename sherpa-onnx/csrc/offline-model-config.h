@@ -6,8 +6,19 @@
 
 #include <string>
 
+#include "sherpa-onnx/csrc/offline-canary-model-config.h"
+#include "sherpa-onnx/csrc/offline-cohere-transcribe-model-config.h"
+#include "sherpa-onnx/csrc/offline-dolphin-model-config.h"
+#include "sherpa-onnx/csrc/offline-fire-red-asr-ctc-model-config.h"
+#include "sherpa-onnx/csrc/offline-fire-red-asr-model-config.h"
+#include "sherpa-onnx/csrc/offline-funasr-nano-model-config.h"
+#include "sherpa-onnx/csrc/offline-medasr-ctc-model-config.h"
+#include "sherpa-onnx/csrc/offline-qwen3-asr-model-config.h"
+#include "sherpa-onnx/csrc/offline-moonshine-model-config.h"
 #include "sherpa-onnx/csrc/offline-nemo-enc-dec-ctc-model-config.h"
+#include "sherpa-onnx/csrc/offline-omnilingual-asr-ctc-model-config.h"
 #include "sherpa-onnx/csrc/offline-paraformer-model-config.h"
+#include "sherpa-onnx/csrc/offline-sense-voice-model-config.h"
 #include "sherpa-onnx/csrc/offline-tdnn-model-config.h"
 #include "sherpa-onnx/csrc/offline-transducer-model-config.h"
 #include "sherpa-onnx/csrc/offline-wenet-ctc-model-config.h"
@@ -21,9 +32,21 @@ struct OfflineModelConfig {
   OfflineParaformerModelConfig paraformer;
   OfflineNemoEncDecCtcModelConfig nemo_ctc;
   OfflineWhisperModelConfig whisper;
+  OfflineFireRedAsrModelConfig fire_red_asr;
   OfflineTdnnModelConfig tdnn;
   OfflineZipformerCtcModelConfig zipformer_ctc;
   OfflineWenetCtcModelConfig wenet_ctc;
+  OfflineSenseVoiceModelConfig sense_voice;
+  OfflineMoonshineModelConfig moonshine;
+  OfflineDolphinModelConfig dolphin;
+  OfflineCanaryModelConfig canary;
+  OfflineCohereTranscribeModelConfig cohere_transcribe;
+  OfflineOmnilingualAsrCtcModelConfig omnilingual;
+  OfflineFunASRNanoModelConfig funasr_nano;
+  OfflineMedAsrCtcModelConfig medasr;
+  OfflineFireRedAsrCtcModelConfig fire_red_asr_ctc;
+  OfflineQwen3ASRModelConfig qwen3_asr;
+  std::string telespeech_ctc;
 
   std::string tokens;
   int32_t num_threads = 2;
@@ -41,28 +64,59 @@ struct OfflineModelConfig {
   // All other values are invalid and lead to loading the model twice.
   std::string model_type;
 
+  std::string modeling_unit = "cjkchar";
+  std::string bpe_vocab;
+
   OfflineModelConfig() = default;
   OfflineModelConfig(const OfflineTransducerModelConfig &transducer,
                      const OfflineParaformerModelConfig &paraformer,
                      const OfflineNemoEncDecCtcModelConfig &nemo_ctc,
                      const OfflineWhisperModelConfig &whisper,
+                     const OfflineFireRedAsrModelConfig &fire_red_asr,
                      const OfflineTdnnModelConfig &tdnn,
                      const OfflineZipformerCtcModelConfig &zipformer_ctc,
                      const OfflineWenetCtcModelConfig &wenet_ctc,
+                     const OfflineSenseVoiceModelConfig &sense_voice,
+                     const OfflineMoonshineModelConfig &moonshine,
+                     const OfflineDolphinModelConfig &dolphin,
+                     const OfflineCanaryModelConfig &canary,
+                     const OfflineCohereTranscribeModelConfig &cohere_transcribe,
+                     const OfflineOmnilingualAsrCtcModelConfig &omnilingual,
+                     const OfflineFunASRNanoModelConfig &funasr_nano,
+                     const OfflineMedAsrCtcModelConfig &medasr,
+                     const OfflineFireRedAsrCtcModelConfig &fire_red_asr_ctc,
+                     const OfflineQwen3ASRModelConfig &qwen3_asr,
+                     const std::string &telespeech_ctc,
                      const std::string &tokens, int32_t num_threads, bool debug,
-                     const std::string &provider, const std::string &model_type)
+                     const std::string &provider, const std::string &model_type,
+                     const std::string &modeling_unit,
+                     const std::string &bpe_vocab)
       : transducer(transducer),
         paraformer(paraformer),
         nemo_ctc(nemo_ctc),
         whisper(whisper),
+        fire_red_asr(fire_red_asr),
         tdnn(tdnn),
         zipformer_ctc(zipformer_ctc),
         wenet_ctc(wenet_ctc),
+        sense_voice(sense_voice),
+        moonshine(moonshine),
+        dolphin(dolphin),
+        canary(canary),
+        cohere_transcribe(cohere_transcribe),
+        omnilingual(omnilingual),
+        funasr_nano(funasr_nano),
+        medasr(medasr),
+        fire_red_asr_ctc(fire_red_asr_ctc),
+        qwen3_asr(qwen3_asr),
+        telespeech_ctc(telespeech_ctc),
         tokens(tokens),
         num_threads(num_threads),
         debug(debug),
         provider(provider),
-        model_type(model_type) {}
+        model_type(model_type),
+        modeling_unit(modeling_unit),
+        bpe_vocab(bpe_vocab) {}
 
   void Register(ParseOptions *po);
   bool Validate() const;

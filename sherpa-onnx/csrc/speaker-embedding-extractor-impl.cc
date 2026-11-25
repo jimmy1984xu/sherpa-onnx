@@ -2,17 +2,32 @@
 //
 // Copyright (c)  2024  Xiaomi Corporation
 #include "sherpa-onnx/csrc/speaker-embedding-extractor-impl.h"
+#include "sherpa-onnx/csrc/ort-env.h"
 
+#include <memory>
+
+#if __ANDROID_API__ >= 9
+#include "android/asset_manager.h"
+#include "android/asset_manager_jni.h"
+#endif
+
+#if __OHOS__
+#include "rawfile/raw_file_manager.h"
+#endif
+
+#include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
+#include "sherpa-onnx/csrc/session.h"
 #include "sherpa-onnx/csrc/speaker-embedding-extractor-general-impl.h"
 #include "sherpa-onnx/csrc/speaker-embedding-extractor-nemo-impl.h"
+#include "sherpa-onnx/csrc/text-utils.h"
 
 namespace sherpa_onnx {
 
 namespace {
 
-enum class ModelType {
+enum class ModelType : std::uint8_t {
   kWeSpeaker,
   k3dSpeaker,
   kNeMo,
@@ -21,9 +36,60 @@ enum class ModelType {
 
 }  // namespace
 
+static ModelType GetModelType(const std::string &model_path, bool debug) {
+  Ort::Env env = CreateOrtEnv();
+  Ort::SessionOptions sess_opts;
+  sess_opts.SetIntraOpNumThreads(1);
+  sess_opts.SetInterOpNumThreads(1);
+
+  auto sess = std::make_unique<Ort::Session>(
+      env, SHERPA_ONNX_TO_ORT_PATH(model_path), sess_opts);
+
+
+  Ort::ModelMetadata meta_data = sess->GetModelMetadata();
+  if (debug) {
+    std::ostringstream os;
+    PrintModelMetadata(os, meta_data);
+#if __OHOS__
+    SHERPA_ONNX_LOGE("%{public}s", os.str().c_str());
+#else
+    SHERPA_ONNX_LOGE("%s", os.str().c_str());
+#endif
+  }
+
+  Ort::AllocatorWithDefaultOptions allocator;
+  auto model_type =
+      LookupCustomModelMetaData(meta_data, "framework", allocator);
+  if (model_type.empty()) {
+    SHERPA_ONNX_LOGE(
+        "No model_type in the metadata!\n"
+        "Please make sure you have added metadata to the model.\n\n"
+        "For instance, you can use\n"
+        "https://github.com/k2-fsa/sherpa-onnx/blob/master/scripts/wespeaker/"
+        "add_meta_data.py"
+        "to add metadata to models from WeSpeaker\n");
+    return ModelType::kUnknown;
+  }
+
+  if (model_type == "wespeaker") {
+    return ModelType::kWeSpeaker;
+  } else if (model_type == "3d-speaker") {
+    return ModelType::k3dSpeaker;
+  } else if (model_type == "nemo") {
+    return ModelType::kNeMo;
+  } else {
+#if __OHOS__
+    SHERPA_ONNX_LOGE("Unsupported model_type: %{public}s", model_type.c_str());
+#else
+    SHERPA_ONNX_LOGE("Unsupported model_type: %s", model_type.c_str());
+#endif
+    return ModelType::kUnknown;
+  }
+}
+
 static ModelType GetModelType(char *model_data, size_t model_data_length,
                               bool debug) {
-  Ort::Env env(ORT_LOGGING_LEVEL_WARNING);
+  Ort::Env env = CreateOrtEnv();
   Ort::SessionOptions sess_opts;
   sess_opts.SetIntraOpNumThreads(1);
   sess_opts.SetInterOpNumThreads(1);
@@ -35,13 +101,17 @@ static ModelType GetModelType(char *model_data, size_t model_data_length,
   if (debug) {
     std::ostringstream os;
     PrintModelMetadata(os, meta_data);
+#if __OHOS__
+    SHERPA_ONNX_LOGE("%{public}s", os.str().c_str());
+#else
     SHERPA_ONNX_LOGE("%s", os.str().c_str());
+#endif
   }
 
   Ort::AllocatorWithDefaultOptions allocator;
   auto model_type =
-      meta_data.LookupCustomMetadataMapAllocated("framework", allocator);
-  if (!model_type) {
+      LookupCustomModelMetaData(meta_data, "framework", allocator);
+  if (model_type.empty()) {
     SHERPA_ONNX_LOGE(
         "No model_type in the metadata!\n"
         "Please make sure you have added metadata to the model.\n\n"
@@ -52,14 +122,18 @@ static ModelType GetModelType(char *model_data, size_t model_data_length,
     return ModelType::kUnknown;
   }
 
-  if (model_type.get() == std::string("wespeaker")) {
+  if (model_type == "wespeaker") {
     return ModelType::kWeSpeaker;
-  } else if (model_type.get() == std::string("3d-speaker")) {
+  } else if (model_type == "3d-speaker") {
     return ModelType::k3dSpeaker;
-  } else if (model_type.get() == std::string("nemo")) {
+  } else if (model_type == "nemo") {
     return ModelType::kNeMo;
   } else {
-    SHERPA_ONNX_LOGE("Unsupported model_type: %s", model_type.get());
+#if __OHOS__
+    SHERPA_ONNX_LOGE("Unsupported model_type: %{public}s", model_type.c_str());
+#else
+    SHERPA_ONNX_LOGE("Unsupported model_type: %s", model_type.c_str());
+#endif
     return ModelType::kUnknown;
   }
 }
@@ -67,12 +141,14 @@ static ModelType GetModelType(char *model_data, size_t model_data_length,
 std::unique_ptr<SpeakerEmbeddingExtractorImpl>
 SpeakerEmbeddingExtractorImpl::Create(
     const SpeakerEmbeddingExtractorConfig &config) {
+  if (config.provider == "neon") {
+    return std::make_unique<SpeakerEmbeddingExtractorNeMoImpl>(config);
+  }
+
   ModelType model_type = ModelType::kUnknown;
 
   {
-    auto buffer = ReadFile(config.model);
-
-    model_type = GetModelType(buffer.data(), buffer.size(), config.debug);
+    model_type = GetModelType(config.model, config.debug);
   }
 
   switch (model_type) {
@@ -91,10 +167,14 @@ SpeakerEmbeddingExtractorImpl::Create(
   return nullptr;
 }
 
-#if __ANDROID_API__ >= 9
+template <typename Manager>
 std::unique_ptr<SpeakerEmbeddingExtractorImpl>
 SpeakerEmbeddingExtractorImpl::Create(
-    AAssetManager *mgr, const SpeakerEmbeddingExtractorConfig &config) {
+    Manager *mgr, const SpeakerEmbeddingExtractorConfig &config) {
+  if (config.provider == "neon") {
+    return Create(config);
+  }
+
   ModelType model_type = ModelType::kUnknown;
 
   {
@@ -120,6 +200,17 @@ SpeakerEmbeddingExtractorImpl::Create(
   // unreachable code
   return nullptr;
 }
+
+#if __ANDROID_API__ >= 9
+template std::unique_ptr<SpeakerEmbeddingExtractorImpl>
+SpeakerEmbeddingExtractorImpl::Create(
+    AAssetManager *mgr, const SpeakerEmbeddingExtractorConfig &config);
+#endif
+
+#if __OHOS__
+template std::unique_ptr<SpeakerEmbeddingExtractorImpl>
+SpeakerEmbeddingExtractorImpl::Create(
+    NativeResourceManager *mgr, const SpeakerEmbeddingExtractorConfig &config);
 #endif
 
 }  // namespace sherpa_onnx

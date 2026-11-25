@@ -10,6 +10,7 @@
 
 #include "portaudio.h"  // NOLINT
 #include "sherpa-onnx/csrc/display.h"
+#include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/keyword-spotter.h"
 #include "sherpa-onnx/csrc/microphone.h"
 
@@ -31,7 +32,7 @@ static int32_t RecordCallback(const void *input_buffer,
   return stop ? paComplete : paContinue;
 }
 
-static void Handler(int32_t sig) {
+static void Handler(int32_t /*sig*/) {
   stop = true;
   fprintf(stderr, "\nCaught Ctrl + C. Exiting...\n");
 }
@@ -64,7 +65,7 @@ for a list of pre-trained models to download.
   po.Read(argc, argv);
   if (po.NumArgs() != 0) {
     po.PrintUsage();
-    exit(EXIT_FAILURE);
+    SHERPA_ONNX_EXIT(EXIT_FAILURE);
   }
 
   fprintf(stderr, "%s\n", config.ToString().c_str());
@@ -79,16 +80,12 @@ for a list of pre-trained models to download.
 
   sherpa_onnx::Microphone mic;
 
-  PaDeviceIndex num_devices = Pa_GetDeviceCount();
-  fprintf(stderr, "Num devices: %d\n", num_devices);
-
   int32_t device_index = Pa_GetDefaultInputDevice();
-
   if (device_index == paNoDevice) {
     fprintf(stderr, "No default input device found\n");
     fprintf(stderr, "If you are using Linux, please switch to \n");
     fprintf(stderr, " ./bin/sherpa-onnx-keyword-spotter-alsa \n");
-    exit(EXIT_FAILURE);
+    SHERPA_ONNX_EXIT(EXIT_FAILURE);
   }
 
   const char *pDeviceIndex = std::getenv("SHERPA_ONNX_MIC_DEVICE");
@@ -97,54 +94,18 @@ for a list of pre-trained models to download.
     device_index = atoi(pDeviceIndex);
   }
 
-  for (int32_t i = 0; i != num_devices; ++i) {
-    const PaDeviceInfo *info = Pa_GetDeviceInfo(i);
-    fprintf(stderr, " %s %d %s\n", (i == device_index) ? "*" : " ", i,
-            info->name);
-  }
-
-  PaStreamParameters param;
-  param.device = device_index;
-
-  fprintf(stderr, "Use device: %d\n", param.device);
-
-  const PaDeviceInfo *info = Pa_GetDeviceInfo(param.device);
-  fprintf(stderr, "  Name: %s\n", info->name);
-  fprintf(stderr, "  Max input channels: %d\n", info->maxInputChannels);
-
-  param.channelCount = 1;
-  param.sampleFormat = paFloat32;
-
-  param.suggestedLatency = info->defaultLowInputLatency;
-  param.hostApiSpecificStreamInfo = nullptr;
+  mic.PrintDevices(device_index);
 
   const char *pSampleRateStr = std::getenv("SHERPA_ONNX_MIC_SAMPLE_RATE");
   if (pSampleRateStr) {
-    fprintf(stderr, "Use sample rate %f for mic\n", mic_sample_rate);
     mic_sample_rate = atof(pSampleRateStr);
+    fprintf(stderr, "Use sample rate %f for mic\n", mic_sample_rate);
   }
 
-  float sample_rate = 16000;
-
-  PaStream *stream;
-  PaError err =
-      Pa_OpenStream(&stream, &param, nullptr, /* &outputParameters, */
-                    mic_sample_rate,
-                    0,          // frames per buffer
-                    paClipOff,  // we won't output out of range samples
-                                // so don't bother clipping them
-                    RecordCallback, s.get());
-  if (err != paNoError) {
-    fprintf(stderr, "portaudio error: %s\n", Pa_GetErrorText(err));
-    exit(EXIT_FAILURE);
-  }
-
-  err = Pa_StartStream(stream);
-  fprintf(stderr, "Started\n");
-
-  if (err != paNoError) {
-    fprintf(stderr, "portaudio error: %s\n", Pa_GetErrorText(err));
-    exit(EXIT_FAILURE);
+  if (!mic.OpenDevice(device_index, mic_sample_rate, 1, RecordCallback,
+                      s.get())) {
+    fprintf(stderr, "portaudio error: %d\n", device_index);
+    SHERPA_ONNX_EXIT(EXIT_FAILURE);
   }
 
   int32_t keyword_index = 0;
@@ -152,22 +113,18 @@ for a list of pre-trained models to download.
   while (!stop) {
     while (spotter.IsReady(s.get())) {
       spotter.DecodeStream(s.get());
-    }
 
-    const auto r = spotter.GetResult(s.get());
-    if (!r.keyword.empty()) {
-      display.Print(keyword_index, r.AsJsonString());
-      fflush(stderr);
-      keyword_index++;
+      const auto r = spotter.GetResult(s.get());
+      if (!r.keyword.empty()) {
+        display.Print(keyword_index, r.AsJsonString());
+        fflush(stderr);
+        keyword_index++;
+
+        spotter.Reset(s.get());
+      }
     }
 
     Pa_Sleep(20);  // sleep for 20ms
-  }
-
-  err = Pa_CloseStream(stream);
-  if (err != paNoError) {
-    fprintf(stderr, "portaudio error: %s\n", Pa_GetErrorText(err));
-    exit(EXIT_FAILURE);
   }
 
   return 0;

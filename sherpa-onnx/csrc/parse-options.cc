@@ -11,13 +11,13 @@
 
 #include "sherpa-onnx/csrc/parse-options.h"
 
-#include <ctype.h>
-
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <string>
 
 #include "sherpa-onnx/csrc/log.h"
 #include "sherpa-onnx/csrc/macros.h"
@@ -33,7 +33,7 @@ ParseOptions::ParseOptions(const std::string &prefix, ParseOptions *po)
   } else {
     other_parser_ = po;
   }
-  if (po != nullptr && po->prefix_ != "") {
+  if (po != nullptr && !po->prefix_.empty()) {
     prefix_ = po->prefix_ + std::string(".") + prefix;
   } else {
     prefix_ = prefix;
@@ -46,6 +46,11 @@ void ParseOptions::Register(const std::string &name, bool *ptr,
 }
 
 void ParseOptions::Register(const std::string &name, int32_t *ptr,
+                            const std::string &doc) {
+  RegisterTmpl(name, ptr, doc);
+}
+
+void ParseOptions::Register(const std::string &name, int64_t *ptr,
                             const std::string &doc) {
   RegisterTmpl(name, ptr, doc);
 }
@@ -127,6 +132,15 @@ void ParseOptions::RegisterSpecific(const std::string &name,
 }
 
 void ParseOptions::RegisterSpecific(const std::string &name,
+                                    const std::string &idx, int64_t *i,
+                                    const std::string &doc, bool is_standard) {
+  int64_map_[idx] = i;
+  std::ostringstream ss;
+  ss << doc << " (int64, default = " << *i << ")";
+  doc_map_[idx] = DocInfo(name, ss.str(), is_standard);
+}
+
+void ParseOptions::RegisterSpecific(const std::string &name,
                                     const std::string &idx, uint32_t *u,
                                     const std::string &doc, bool is_standard) {
   uint_map_[idx] = u;
@@ -164,34 +178,35 @@ void ParseOptions::RegisterSpecific(const std::string &name,
 void ParseOptions::DisableOption(const std::string &name) {
   if (argv_ != nullptr) {
     SHERPA_ONNX_LOGE("DisableOption must not be called after calling Read().");
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
   }
   if (doc_map_.erase(name) == 0) {
     SHERPA_ONNX_LOGE("Option %s was not registered so cannot be disabled: ",
                      name.c_str());
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
   }
   bool_map_.erase(name);
   int_map_.erase(name);
+  int64_map_.erase(name);
   uint_map_.erase(name);
   float_map_.erase(name);
   double_map_.erase(name);
   string_map_.erase(name);
 }
 
-int ParseOptions::NumArgs() const { return positional_args_.size(); }
+int32_t ParseOptions::NumArgs() const { return positional_args_.size(); }
 
-std::string ParseOptions::GetArg(int i) const {
-  if (i < 1 || i > static_cast<int>(positional_args_.size())) {
+std::string ParseOptions::GetArg(int32_t i) const {
+  if (i < 1 || i > static_cast<int32_t>(positional_args_.size())) {
     SHERPA_ONNX_LOGE("ParseOptions::GetArg, invalid index %d", i);
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
   }
 
   return positional_args_[i - 1];
 }
 
 // We currently do not support any other options.
-enum ShellType { kBash = 0 };
+enum ShellType : std::uint8_t { kBash = 0 };
 
 // This can be changed in the code if it ever does need to be changed (as it's
 // unlikely that one compilation of this tool-set would use both shells).
@@ -213,7 +228,7 @@ static bool MustBeQuoted(const std::string &str, ShellType st) {
   if (*c == '\0') {
     return true;  // Must quote empty string
   } else {
-    const char *ok_chars[2];
+    std::array<const char *, 2> ok_chars{};
 
     // These seem not to be interpreted as long as there are no other "bad"
     // characters involved (e.g. "," would be interpreted as part of something
@@ -229,7 +244,7 @@ static bool MustBeQuoted(const std::string &str, ShellType st) {
       // are OK. All others are forbidden (this is easier since the shell
       // interprets most non-alphanumeric characters).
       if (!isalnum(*c)) {
-        const char *d;
+        const char *d = nullptr;
         for (d = ok_chars[st]; *d != '\0'; ++d) {
           if (*c == *d) break;
         }
@@ -246,10 +261,7 @@ static bool MustBeQuoted(const std::string &str, ShellType st) {
 // Our aim is to print out the command line in such a way that if it's
 // pasted into a shell of ShellType "st" (only bash for now), it
 // will get passed to the program in the same way.
-static std::string QuoteAndEscape(const std::string &str, ShellType st) {
-  // Only Bash is supported (for the moment).
-  SHERPA_ONNX_CHECK_EQ(st, kBash) << "Invalid shell type.";
-
+static std::string QuoteAndEscape(const std::string &str, ShellType /*st*/) {
   // For now we use the following rules:
   // In the normal case, we quote with single-quote "'", and to escape
   // a single-quote we use the string: '\'' (interpreted as closing the
@@ -269,22 +281,22 @@ static std::string QuoteAndEscape(const std::string &str, ShellType st) {
     escape_str = "\\\"";  // should never be accessed.
   }
 
-  char buf[2];
+  std::array<char, 2> buf{};
   buf[1] = '\0';
 
   buf[0] = quote_char;
-  std::string ans = buf;
+  std::string ans = buf.data();
   const char *c = str.c_str();
   for (; *c != '\0'; ++c) {
     if (*c == quote_char) {
       ans += escape_str;
     } else {
       buf[0] = *c;
-      ans += buf;
+      ans += buf.data();
     }
   }
   buf[0] = quote_char;
-  ans += buf;
+  ans += buf.data();
   return ans;
 }
 
@@ -293,11 +305,11 @@ std::string ParseOptions::Escape(const std::string &str) {
   return MustBeQuoted(str, kShellType) ? QuoteAndEscape(str, kShellType) : str;
 }
 
-int ParseOptions::Read(int argc, const char *const argv[]) {
+int32_t ParseOptions::Read(int32_t argc, const char *const *argv) {
   argc_ = argc;
   argv_ = argv;
   std::string key, value;
-  int i;
+  int32_t i = 0;
 
   // first pass: look for config parameter, look for priority
   for (i = 1; i < argc; ++i) {
@@ -306,15 +318,15 @@ int ParseOptions::Read(int argc, const char *const argv[]) {
         // a lone "--" marks the end of named options
         break;
       }
-      bool has_equal_sign;
+      bool has_equal_sign = false;
       SplitLongArg(argv[i], &key, &value, &has_equal_sign);
       NormalizeArgName(&key);
       Trim(&value);
-      if (key.compare("config") == 0) {
+      if (key == "config") {
         ReadConfigFile(value);
-      } else if (key.compare("help") == 0) {
+      } else if (key == "help") {
         PrintUsage();
-        exit(0);
+        SHERPA_ONNX_EXIT(0);
       }
     }
   }
@@ -330,14 +342,14 @@ int ParseOptions::Read(int argc, const char *const argv[]) {
         double_dash_seen = true;
         break;
       }
-      bool has_equal_sign;
+      bool has_equal_sign = false;
       SplitLongArg(argv[i], &key, &value, &has_equal_sign);
       NormalizeArgName(&key);
       Trim(&value);
       if (!SetOption(key, value, has_equal_sign)) {
         PrintUsage(true);
         SHERPA_ONNX_LOGE("Invalid option %s", argv[i]);
-        exit(-1);
+        SHERPA_ONNX_EXIT(-1);
       }
     } else {
       break;
@@ -349,14 +361,14 @@ int ParseOptions::Read(int argc, const char *const argv[]) {
     if ((std::strcmp(argv[i], "--") == 0) && !double_dash_seen) {
       double_dash_seen = true;
     } else {
-      positional_args_.push_back(std::string(argv[i]));
+      positional_args_.emplace_back(argv[i]);
     }
   }
 
   // if the user did not suppress this with --print-args = false....
   if (print_args_) {
     std::ostringstream strm;
-    for (int j = 0; j < argc; ++j) strm << Escape(argv[j]) << " ";
+    for (int32_t j = 0; j < argc; ++j) strm << Escape(argv[j]) << " ";
     strm << '\n';
     SHERPA_ONNX_LOGE("%s", strm.str().c_str());
   }
@@ -368,14 +380,14 @@ void ParseOptions::PrintUsage(bool print_command_line /*=false*/) const {
   os << '\n' << usage_ << '\n';
   // first we print application-specific options
   bool app_specific_header_printed = false;
-  for (auto it = doc_map_.begin(); it != doc_map_.end(); ++it) {
-    if (it->second.is_standard_ == false) {  // application-specific option
+  for (const auto &it : doc_map_) {
+    if (it.second.is_standard_ == false) {  // application-specific option
       if (app_specific_header_printed == false) {  // header was not yet printed
         os << "Options:" << '\n';
         app_specific_header_printed = true;
       }
-      os << "  --" << std::setw(25) << std::left << it->second.name_ << " : "
-         << it->second.use_msg_ << '\n';
+      os << "  --" << std::setw(25) << std::left << it.second.name_ << " : "
+         << it.second.use_msg_ << '\n';
     }
   }
   if (app_specific_header_printed == true) {
@@ -384,17 +396,17 @@ void ParseOptions::PrintUsage(bool print_command_line /*=false*/) const {
 
   // then the standard options
   os << "Standard options:" << '\n';
-  for (auto it = doc_map_.begin(); it != doc_map_.end(); ++it) {
-    if (it->second.is_standard_ == true) {  // we have standard option
-      os << "  --" << std::setw(25) << std::left << it->second.name_ << " : "
-         << it->second.use_msg_ << '\n';
+  for (const auto &it : doc_map_) {
+    if (it.second.is_standard_ == true) {  // we have standard option
+      os << "  --" << std::setw(25) << std::left << it.second.name_ << " : "
+         << it.second.use_msg_ << '\n';
     }
   }
   os << '\n';
   if (print_command_line) {
     std::ostringstream strm;
     strm << "Command line was: ";
-    for (int j = 0; j < argc_; ++j) strm << Escape(argv_[j]) << " ";
+    for (int32_t j = 0; j < argc_; ++j) strm << Escape(argv_[j]) << " ";
     strm << '\n';
     os << strm.str();
   }
@@ -405,13 +417,15 @@ void ParseOptions::PrintUsage(bool print_command_line /*=false*/) const {
 void ParseOptions::PrintConfig(std::ostream &os) const {
   os << '\n' << "[[ Configuration of UI-Registered options ]]" << '\n';
   std::string key;
-  for (auto it = doc_map_.begin(); it != doc_map_.end(); ++it) {
-    key = it->first;
-    os << it->second.name_ << " = ";
+  for (const auto &it : doc_map_) {
+    key = it.first;
+    os << it.second.name_ << " = ";
     if (bool_map_.end() != bool_map_.find(key)) {
       os << (*bool_map_.at(key) ? "true" : "false");
     } else if (int_map_.end() != int_map_.find(key)) {
       os << (*int_map_.at(key));
+    } else if (int64_map_.end() != int64_map_.find(key)) {
+      os << (*int64_map_.at(key));
     } else if (uint_map_.end() != uint_map_.find(key)) {
       os << (*uint_map_.at(key));
     } else if (float_map_.end() != float_map_.find(key)) {
@@ -423,7 +437,7 @@ void ParseOptions::PrintConfig(std::ostream &os) const {
     } else {
       SHERPA_ONNX_LOGE("PrintConfig: unrecognized option %s [code error]",
                        key.c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
     os << '\n';
   }
@@ -434,7 +448,7 @@ void ParseOptions::ReadConfigFile(const std::string &filename) {
   std::ifstream is(filename.c_str(), std::ifstream::in);
   if (!is.good()) {
     SHERPA_ONNX_LOGE("Cannot open config file: %s", filename.c_str());
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
   }
 
   std::string line, key, value;
@@ -442,13 +456,13 @@ void ParseOptions::ReadConfigFile(const std::string &filename) {
   while (std::getline(is, line)) {
     ++line_number;
     // trim out the comments
-    size_t pos;
-    if ((pos = line.find_first_of('#')) != std::string::npos) {
+    size_t pos = line.find_first_of('#');
+    if (pos != std::string::npos) {
       line.erase(pos);
     }
     // skip empty lines
     Trim(&line);
-    if (line.length() == 0) continue;
+    if (line.empty()) continue;
 
     if (line.substr(0, 2) != "--") {
       SHERPA_ONNX_LOGE(
@@ -457,11 +471,11 @@ void ParseOptions::ReadConfigFile(const std::string &filename) {
           "be of the form --x=y.  Note: config files intended to "
           "be sourced by shell scripts lack the '--'.",
           filename.c_str(), line_number);
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
 
     // parse option
-    bool has_equal_sign;
+    bool has_equal_sign = false;
     SplitLongArg(line, &key, &value, &has_equal_sign);
     NormalizeArgName(&key);
     Trim(&value);
@@ -469,7 +483,7 @@ void ParseOptions::ReadConfigFile(const std::string &filename) {
       PrintUsage(true);
       SHERPA_ONNX_LOGE("Invalid option %s in config file %s: line %d",
                        line.c_str(), filename.c_str(), line_number);
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
   }
 }
@@ -487,7 +501,7 @@ void ParseOptions::SplitLongArg(const std::string &in, std::string *key,
   } else if (pos == 2) {  // we also don't allow empty keys: --=value
     PrintUsage(true);
     SHERPA_ONNX_LOGE("Invalid option (no key): %s", in.c_str());
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
   } else {                         // normal case: --option=value
     *key = in.substr(2, pos - 2);  // 2 because starts with --.
     *value = in.substr(pos + 1);
@@ -527,13 +541,15 @@ void ParseOptions::Trim(std::string *str) const {
 bool ParseOptions::SetOption(const std::string &key, const std::string &value,
                              bool has_equal_sign) {
   if (bool_map_.end() != bool_map_.find(key)) {
-    if (has_equal_sign && value == "") {
+    if (has_equal_sign && value.empty()) {
       SHERPA_ONNX_LOGE("Invalid option --%s=", key.c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
     *(bool_map_[key]) = ToBool(value);
   } else if (int_map_.end() != int_map_.find(key)) {
     *(int_map_[key]) = ToInt(value);
+  } else if (int64_map_.end() != int64_map_.find(key)) {
+    *(int64_map_[key]) = ToInt64(value);
   } else if (uint_map_.end() != uint_map_.find(key)) {
     *(uint_map_[key]) = ToUint(value);
   } else if (float_map_.end() != float_map_.find(key)) {
@@ -544,7 +560,7 @@ bool ParseOptions::SetOption(const std::string &key, const std::string &value,
     if (!has_equal_sign) {
       SHERPA_ONNX_LOGE("Invalid option --%s (option format is --x=y).",
                        key.c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
     *(string_map_[key]) = value;
   } else {
@@ -557,12 +573,10 @@ bool ParseOptions::ToBool(std::string str) const {
   std::transform(str.begin(), str.end(), str.begin(), ::tolower);
 
   // allow "" as a valid option for "true", so that --x is the same as --x=true
-  if ((str.compare("true") == 0) || (str.compare("t") == 0) ||
-      (str.compare("1") == 0) || (str.compare("") == 0)) {
+  if (str == "true" || str == "t" || str == "1" || str.empty()) {
     return true;
   }
-  if ((str.compare("false") == 0) || (str.compare("f") == 0) ||
-      (str.compare("0") == 0)) {
+  if (str == "false" || str == "f" || str == "0") {
     return false;
   }
   // if it is neither true nor false:
@@ -570,7 +584,7 @@ bool ParseOptions::ToBool(std::string str) const {
   SHERPA_ONNX_LOGE(
       "Invalid format for boolean argument [expected true or false]: %s",
       str.c_str());
-  exit(-1);
+  SHERPA_ONNX_EXIT(-1);
   return false;  // never reached
 }
 
@@ -578,7 +592,16 @@ int32_t ParseOptions::ToInt(const std::string &str) const {
   int32_t ret = 0;
   if (!ConvertStringToInteger(str, &ret)) {
     SHERPA_ONNX_LOGE("Invalid integer option \"%s\"", str.c_str());
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
+  }
+  return ret;
+}
+
+int64_t ParseOptions::ToInt64(const std::string &str) const {
+  int64_t ret = 0;
+  if (!ConvertStringToInteger(str, &ret)) {
+    SHERPA_ONNX_LOGE("Invalid integer int64 option \"%s\"", str.c_str());
+    SHERPA_ONNX_EXIT(-1);
   }
   return ret;
 }
@@ -587,25 +610,25 @@ uint32_t ParseOptions::ToUint(const std::string &str) const {
   uint32_t ret = 0;
   if (!ConvertStringToInteger(str, &ret)) {
     SHERPA_ONNX_LOGE("Invalid integer option \"%s\"", str.c_str());
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
   }
   return ret;
 }
 
 float ParseOptions::ToFloat(const std::string &str) const {
-  float ret;
+  float ret = 0;
   if (!ConvertStringToReal(str, &ret)) {
     SHERPA_ONNX_LOGE("Invalid floating-point option \"%s\"", str.c_str());
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
   }
   return ret;
 }
 
 double ParseOptions::ToDouble(const std::string &str) const {
-  double ret;
+  double ret = 0;
   if (!ConvertStringToReal(str, &ret)) {
     SHERPA_ONNX_LOGE("Invalid floating-point option \"%s\"", str.c_str());
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
   }
   return ret;
 }
@@ -614,6 +637,8 @@ double ParseOptions::ToDouble(const std::string &str) const {
 template void ParseOptions::RegisterTmpl(const std::string &name, bool *ptr,
                                          const std::string &doc);
 template void ParseOptions::RegisterTmpl(const std::string &name, int32_t *ptr,
+                                         const std::string &doc);
+template void ParseOptions::RegisterTmpl(const std::string &name, int64_t *ptr,
                                          const std::string &doc);
 template void ParseOptions::RegisterTmpl(const std::string &name, uint32_t *ptr,
                                          const std::string &doc);
@@ -629,6 +654,9 @@ template void ParseOptions::RegisterStandard(const std::string &name, bool *ptr,
                                              const std::string &doc);
 template void ParseOptions::RegisterStandard(const std::string &name,
                                              int32_t *ptr,
+                                             const std::string &doc);
+template void ParseOptions::RegisterStandard(const std::string &name,
+                                             int64_t *ptr,
                                              const std::string &doc);
 template void ParseOptions::RegisterStandard(const std::string &name,
                                              uint32_t *ptr,
@@ -648,6 +676,9 @@ template void ParseOptions::RegisterCommon(const std::string &name, bool *ptr,
                                            bool is_standard);
 template void ParseOptions::RegisterCommon(const std::string &name,
                                            int32_t *ptr, const std::string &doc,
+                                           bool is_standard);
+template void ParseOptions::RegisterCommon(const std::string &name,
+                                           int64_t *ptr, const std::string &doc,
                                            bool is_standard);
 template void ParseOptions::RegisterCommon(const std::string &name,
                                            uint32_t *ptr,

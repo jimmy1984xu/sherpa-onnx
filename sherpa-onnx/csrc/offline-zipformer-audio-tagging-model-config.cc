@@ -4,6 +4,10 @@
 
 #include "sherpa-onnx/csrc/offline-zipformer-audio-tagging-model-config.h"
 
+#include <memory>
+#include <string>
+#include <utility>
+
 #include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 
@@ -21,7 +25,7 @@ bool OfflineZipformerAudioTaggingModelConfig::Validate() const {
   }
 
   if (!FileExists(model)) {
-    SHERPA_ONNX_LOGE("--zipformer-model: %s does not exist", model.c_str());
+    SHERPA_ONNX_LOGE("--zipformer-model: '%s' does not exist", model.c_str());
     return false;
   }
 

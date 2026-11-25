@@ -10,11 +10,14 @@
 #include <fstream>
 #include <mutex>  // NOLINT
 #include <sstream>
+#include <string>
 #include <thread>  // NOLINT
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "sherpa-onnx/csrc/alsa.h"
 #include "sherpa-onnx/csrc/macros.h"
-#include "sherpa-onnx/csrc/microphone.h"
 #include "sherpa-onnx/csrc/speaker-embedding-extractor.h"
 #include "sherpa-onnx/csrc/speaker-embedding-manager.h"
 #include "sherpa-onnx/csrc/wave-reader.h"
@@ -66,7 +69,7 @@ static void Record(const char *device_name, int32_t expected_sample_rate) {
   if (alsa.GetExpectedSampleRate() != expected_sample_rate) {
     fprintf(stderr, "sample rate: %d != %d\n", alsa.GetExpectedSampleRate(),
             expected_sample_rate);
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
   }
 
   int32_t chunk = 0.1 * alsa.GetActualSampleRate();
@@ -96,8 +99,8 @@ static std::vector<std::vector<float>> ComputeEmbeddings(
         sherpa_onnx::ReadWave(f, &sampling_rate, &is_ok);
 
     if (!is_ok) {
-      fprintf(stderr, "Failed to read %s\n", f.c_str());
-      exit(-1);
+      fprintf(stderr, "Failed to read '%s'\n", f.c_str());
+      SHERPA_ONNX_EXIT(-1);
     }
 
     auto s = extractor->CreateStream();
@@ -116,7 +119,7 @@ ReadSpeakerFile(const std::string &filename) {
   std::ifstream is(filename);
   if (!is) {
     fprintf(stderr, "Failed to open %s", filename.c_str());
-    exit(0);
+    SHERPA_ONNX_EXIT(0);
   }
 
   std::string line;
@@ -131,7 +134,7 @@ ReadSpeakerFile(const std::string &filename) {
     iss >> name >> path;
     if (!iss || !iss.eof() || name.empty() || path.empty()) {
       fprintf(stderr, "Invalid line: %s\n", line.c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
     ans[name].push_back(path);
   }
@@ -215,7 +218,7 @@ as the device_name.
   if (po.NumArgs() != 1) {
     fprintf(stderr, "Please provide only 1 argument: the device name\n");
     po.PrintUsage();
-    exit(EXIT_FAILURE);
+    SHERPA_ONNX_EXIT(EXIT_FAILURE);
   }
 
   fprintf(stderr, "%s\n", config.ToString().c_str());

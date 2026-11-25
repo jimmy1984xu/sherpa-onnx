@@ -11,6 +11,7 @@
 
 #include "Eigen/Dense"
 #include "sherpa-onnx/csrc/speaker-embedding-extractor-impl.h"
+#include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/speaker-embedding-extractor-nemo-model.h"
 #include "sherpa-onnx/csrc/transpose.h"
 
@@ -22,11 +23,10 @@ class SpeakerEmbeddingExtractorNeMoImpl : public SpeakerEmbeddingExtractorImpl {
       const SpeakerEmbeddingExtractorConfig &config)
       : model_(config) {}
 
-#if __ANDROID_API__ >= 9
+  template <typename Manager>
   SpeakerEmbeddingExtractorNeMoImpl(
-      AAssetManager *mgr, const SpeakerEmbeddingExtractorConfig &config)
+      Manager *mgr, const SpeakerEmbeddingExtractorConfig &config)
       : model_(mgr, config) {}
-#endif
 
   int32_t Dim() const override { return model_.GetMetaData().output_dim; }
 
@@ -54,9 +54,15 @@ class SpeakerEmbeddingExtractorNeMoImpl : public SpeakerEmbeddingExtractorImpl {
   std::vector<float> Compute(OnlineStream *s) const override {
     int32_t num_frames = s->NumFramesReady() - s->GetNumProcessedFrames();
     if (num_frames <= 0) {
+#if __OHOS__
+      SHERPA_ONNX_LOGE(
+          "Please make sure IsReady(s) returns true. num_frames: %{public}d",
+          num_frames);
+#else
       SHERPA_ONNX_LOGE(
           "Please make sure IsReady(s) returns true. num_frames: %d",
           num_frames);
+#endif
       return {};
     }
 
@@ -72,9 +78,15 @@ class SpeakerEmbeddingExtractorNeMoImpl : public SpeakerEmbeddingExtractorImpl {
       if (meta_data.feature_normalize_type == "per_feature") {
         NormalizePerFeature(features.data(), num_frames, feat_dim);
       } else {
+#if __OHOS__
+        SHERPA_ONNX_LOGE("Unsupported feature_normalize_type: %{public}s",
+                         meta_data.feature_normalize_type.c_str());
+#else
+
         SHERPA_ONNX_LOGE("Unsupported feature_normalize_type: %s",
                          meta_data.feature_normalize_type.c_str());
-        exit(-1);
+#endif
+        SHERPA_ONNX_EXIT(-1);
       }
     }
 
@@ -119,10 +131,11 @@ class SpeakerEmbeddingExtractorNeMoImpl : public SpeakerEmbeddingExtractorImpl {
 
     auto EX = m.colwise().mean();
     auto EX2 = m.array().pow(2).colwise().sum() / num_frames;
-    auto variance = EX2 - EX.array().pow(2);
+    auto variance = (EX2 - EX.array().pow(2)).max(1e-5f);
+
     auto stddev = variance.array().sqrt();
 
-    m = (m.rowwise() - EX).array().rowwise() / stddev.array();
+    m = (m.rowwise() - EX).array().rowwise() / (stddev.array() + 1e-5f);
   }
 
  private:

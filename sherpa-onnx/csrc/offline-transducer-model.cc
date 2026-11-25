@@ -3,15 +3,29 @@
 // Copyright (c)  2023  Xiaomi Corporation
 
 #include "sherpa-onnx/csrc/offline-transducer-model.h"
+#include "sherpa-onnx/csrc/ort-env.h"
 
 #include <algorithm>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
+#if __ANDROID_API__ >= 9
+#include "android/asset_manager.h"
+#include "android/asset_manager_jni.h"
+#endif
+
+#if __OHOS__
+#include "rawfile/raw_file_manager.h"
+#endif
+
+#include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/offline-transducer-decoder.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
 #include "sherpa-onnx/csrc/session.h"
+#include "sherpa-onnx/csrc/text-utils.h"
 
 namespace sherpa_onnx {
 
@@ -19,29 +33,29 @@ class OfflineTransducerModel::Impl {
  public:
   explicit Impl(const OfflineModelConfig &config)
       : config_(config),
-        env_(ORT_LOGGING_LEVEL_WARNING),
+        env_(CreateOrtEnv()),
         sess_opts_(GetSessionOptions(config)),
         allocator_{} {
-    {
-      auto buf = ReadFile(config.transducer.encoder_filename);
-      InitEncoder(buf.data(), buf.size());
-    }
+    encoder_sess_ = std::make_unique<Ort::Session>(
+        env_, SHERPA_ONNX_TO_ORT_PATH(config.transducer.encoder_filename),
+        sess_opts_);
+    InitEncoder(nullptr, 0);
 
-    {
-      auto buf = ReadFile(config.transducer.decoder_filename);
-      InitDecoder(buf.data(), buf.size());
-    }
+    decoder_sess_ = std::make_unique<Ort::Session>(
+        env_, SHERPA_ONNX_TO_ORT_PATH(config.transducer.decoder_filename),
+        sess_opts_);
+    InitDecoder(nullptr, 0);
 
-    {
-      auto buf = ReadFile(config.transducer.joiner_filename);
-      InitJoiner(buf.data(), buf.size());
-    }
+    joiner_sess_ = std::make_unique<Ort::Session>(
+        env_, SHERPA_ONNX_TO_ORT_PATH(config.transducer.joiner_filename),
+        sess_opts_);
+    InitJoiner(nullptr, 0);
   }
 
-#if __ANDROID_API__ >= 9
-  Impl(AAssetManager *mgr, const OfflineModelConfig &config)
+  template <typename Manager>
+  Impl(Manager *mgr, const OfflineModelConfig &config)
       : config_(config),
-        env_(ORT_LOGGING_LEVEL_WARNING),
+        env_(CreateOrtEnv()),
         sess_opts_(GetSessionOptions(config)),
         allocator_{} {
     {
@@ -59,7 +73,6 @@ class OfflineTransducerModel::Impl {
       InitJoiner(buf.data(), buf.size());
     }
   }
-#endif
 
   std::pair<Ort::Value, Ort::Value> RunEncoder(Ort::Value features,
                                                Ort::Value features_length) {
@@ -95,11 +108,11 @@ class OfflineTransducerModel::Impl {
   int32_t VocabSize() const { return vocab_size_; }
   int32_t ContextSize() const { return context_size_; }
   int32_t SubsamplingFactor() const { return 4; }
-  OrtAllocator *Allocator() const { return allocator_; }
+  OrtAllocator *Allocator() { return allocator_; }
 
   Ort::Value BuildDecoderInput(
       const std::vector<OfflineTransducerDecoderResult> &results,
-      int32_t end_index) const {
+      int32_t end_index) {
     assert(end_index <= results.size());
 
     int32_t batch_size = end_index;
@@ -122,7 +135,7 @@ class OfflineTransducerModel::Impl {
   }
 
   Ort::Value BuildDecoderInput(const std::vector<Hypothesis> &results,
-                               int32_t end_index) const {
+                               int32_t end_index) {
     assert(end_index <= results.size());
 
     int32_t batch_size = end_index;
@@ -146,8 +159,15 @@ class OfflineTransducerModel::Impl {
 
  private:
   void InitEncoder(void *model_data, size_t model_data_length) {
-    encoder_sess_ = std::make_unique<Ort::Session>(
-        env_, model_data, model_data_length, sess_opts_);
+    if (model_data) {
+      encoder_sess_ = std::make_unique<Ort::Session>(
+          env_, model_data, model_data_length, sess_opts_);
+    } else if (!encoder_sess_) {
+      SHERPA_ONNX_LOGE(
+          "Please pass model data or initialize the encoder session outside of "
+          "this function");
+      SHERPA_ONNX_EXIT(-1);
+    }
 
     GetInputNames(encoder_sess_.get(), &encoder_input_names_,
                   &encoder_input_names_ptr_);
@@ -161,13 +181,24 @@ class OfflineTransducerModel::Impl {
       std::ostringstream os;
       os << "---encoder---\n";
       PrintModelMetadata(os, meta_data);
+#if __OHOS__
+      SHERPA_ONNX_LOGE("%{public}s\n", os.str().c_str());
+#else
       SHERPA_ONNX_LOGE("%s\n", os.str().c_str());
+#endif
     }
   }
 
   void InitDecoder(void *model_data, size_t model_data_length) {
-    decoder_sess_ = std::make_unique<Ort::Session>(
-        env_, model_data, model_data_length, sess_opts_);
+    if (model_data) {
+      decoder_sess_ = std::make_unique<Ort::Session>(
+          env_, model_data, model_data_length, sess_opts_);
+    } else if (!decoder_sess_) {
+      SHERPA_ONNX_LOGE(
+          "Please pass model data or initialize the decoder session outside of "
+          "this function");
+      SHERPA_ONNX_EXIT(-1);
+    }
 
     GetInputNames(decoder_sess_.get(), &decoder_input_names_,
                   &decoder_input_names_ptr_);
@@ -190,8 +221,15 @@ class OfflineTransducerModel::Impl {
   }
 
   void InitJoiner(void *model_data, size_t model_data_length) {
-    joiner_sess_ = std::make_unique<Ort::Session>(
-        env_, model_data, model_data_length, sess_opts_);
+    if (model_data) {
+      joiner_sess_ = std::make_unique<Ort::Session>(
+          env_, model_data, model_data_length, sess_opts_);
+    } else if (!joiner_sess_) {
+      SHERPA_ONNX_LOGE(
+          "Please pass model data or initialize the joiner session outside of "
+          "this function");
+      SHERPA_ONNX_EXIT(-1);
+    }
 
     GetInputNames(joiner_sess_.get(), &joiner_input_names_,
                   &joiner_input_names_ptr_);
@@ -244,11 +282,10 @@ class OfflineTransducerModel::Impl {
 OfflineTransducerModel::OfflineTransducerModel(const OfflineModelConfig &config)
     : impl_(std::make_unique<Impl>(config)) {}
 
-#if __ANDROID_API__ >= 9
-OfflineTransducerModel::OfflineTransducerModel(AAssetManager *mgr,
+template <typename Manager>
+OfflineTransducerModel::OfflineTransducerModel(Manager *mgr,
                                                const OfflineModelConfig &config)
     : impl_(std::make_unique<Impl>(mgr, config)) {}
-#endif
 
 OfflineTransducerModel::~OfflineTransducerModel() = default;
 
@@ -290,5 +327,15 @@ Ort::Value OfflineTransducerModel::BuildDecoderInput(
     const std::vector<Hypothesis> &results, int32_t end_index) const {
   return impl_->BuildDecoderInput(results, end_index);
 }
+
+#if __ANDROID_API__ >= 9
+template OfflineTransducerModel::OfflineTransducerModel(
+    AAssetManager *mgr, const OfflineModelConfig &config);
+#endif
+
+#if __OHOS__
+template OfflineTransducerModel::OfflineTransducerModel(
+    NativeResourceManager *mgr, const OfflineModelConfig &config);
+#endif
 
 }  // namespace sherpa_onnx

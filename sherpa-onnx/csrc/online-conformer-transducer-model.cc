@@ -3,10 +3,10 @@
 // Copyright (c)  2023 Jingzhao Ou (jingzhao.ou@gmail.com)
 
 #include "sherpa-onnx/csrc/online-conformer-transducer-model.h"
-
-#include <assert.h>
+#include "sherpa-onnx/csrc/ort-env.h"
 
 #include <algorithm>
+#include <cassert>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -18,8 +18,13 @@
 #include "android/asset_manager_jni.h"
 #endif
 
+#if __OHOS__
+#include "rawfile/raw_file_manager.h"
+#endif
+
 #include "onnxruntime_cxx_api.h"  // NOLINT
 #include "sherpa-onnx/csrc/cat.h"
+#include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/online-transducer-decoder.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
@@ -31,30 +36,27 @@ namespace sherpa_onnx {
 
 OnlineConformerTransducerModel::OnlineConformerTransducerModel(
     const OnlineModelConfig &config)
-    : env_(ORT_LOGGING_LEVEL_WARNING),
+    : env_(CreateOrtEnv()),
       config_(config),
       sess_opts_(GetSessionOptions(config)),
       allocator_{} {
-  {
-    auto buf = ReadFile(config.transducer.encoder);
-    InitEncoder(buf.data(), buf.size());
-  }
+  encoder_sess_ = std::make_unique<Ort::Session>(
+      env_, SHERPA_ONNX_TO_ORT_PATH(config.transducer.encoder), sess_opts_);
+  InitEncoder(nullptr, 0);
 
-  {
-    auto buf = ReadFile(config.transducer.decoder);
-    InitDecoder(buf.data(), buf.size());
-  }
+  decoder_sess_ = std::make_unique<Ort::Session>(
+      env_, SHERPA_ONNX_TO_ORT_PATH(config.transducer.decoder), sess_opts_);
+  InitDecoder(nullptr, 0);
 
-  {
-    auto buf = ReadFile(config.transducer.joiner);
-    InitJoiner(buf.data(), buf.size());
-  }
+  joiner_sess_ = std::make_unique<Ort::Session>(
+      env_, SHERPA_ONNX_TO_ORT_PATH(config.transducer.joiner), sess_opts_);
+  InitJoiner(nullptr, 0);
 }
 
-#if __ANDROID_API__ >= 9
+template <typename Manager>
 OnlineConformerTransducerModel::OnlineConformerTransducerModel(
-    AAssetManager *mgr, const OnlineModelConfig &config)
-    : env_(ORT_LOGGING_LEVEL_WARNING),
+    Manager *mgr, const OnlineModelConfig &config)
+    : env_(CreateOrtEnv()),
       config_(config),
       sess_opts_(GetSessionOptions(config)),
       allocator_{} {
@@ -73,12 +75,18 @@ OnlineConformerTransducerModel::OnlineConformerTransducerModel(
     InitJoiner(buf.data(), buf.size());
   }
 }
-#endif
 
 void OnlineConformerTransducerModel::InitEncoder(void *model_data,
                                                  size_t model_data_length) {
-  encoder_sess_ = std::make_unique<Ort::Session>(env_, model_data,
-                                                 model_data_length, sess_opts_);
+  if (model_data) {
+    encoder_sess_ = std::make_unique<Ort::Session>(
+        env_, model_data, model_data_length, sess_opts_);
+  } else if (!encoder_sess_) {
+    SHERPA_ONNX_LOGE(
+        "Please pass model data or initialize the encoder outside of "
+        "this function");
+    SHERPA_ONNX_EXIT(-1);
+  }
 
   GetInputNames(encoder_sess_.get(), &encoder_input_names_,
                 &encoder_input_names_ptr_);
@@ -92,7 +100,11 @@ void OnlineConformerTransducerModel::InitEncoder(void *model_data,
     std::ostringstream os;
     os << "---encoder---\n";
     PrintModelMetadata(os, meta_data);
+#if __OHOS__
+    SHERPA_ONNX_LOGE("%{public}s", os.str().c_str());
+#else
     SHERPA_ONNX_LOGE("%s", os.str().c_str());
+#endif
   }
 
   Ort::AllocatorWithDefaultOptions allocator;  // used in the macro below
@@ -107,8 +119,15 @@ void OnlineConformerTransducerModel::InitEncoder(void *model_data,
 
 void OnlineConformerTransducerModel::InitDecoder(void *model_data,
                                                  size_t model_data_length) {
-  decoder_sess_ = std::make_unique<Ort::Session>(env_, model_data,
-                                                 model_data_length, sess_opts_);
+  if (model_data) {
+    decoder_sess_ = std::make_unique<Ort::Session>(
+        env_, model_data, model_data_length, sess_opts_);
+  } else if (!decoder_sess_) {
+    SHERPA_ONNX_LOGE(
+        "Please pass model data or initialize the decoder outside of "
+        "this function");
+    SHERPA_ONNX_EXIT(-1);
+  }
 
   GetInputNames(decoder_sess_.get(), &decoder_input_names_,
                 &decoder_input_names_ptr_);
@@ -122,7 +141,11 @@ void OnlineConformerTransducerModel::InitDecoder(void *model_data,
     std::ostringstream os;
     os << "---decoder---\n";
     PrintModelMetadata(os, meta_data);
+#if __OHOS__
+    SHERPA_ONNX_LOGE("%{public}s", os.str().c_str());
+#else
     SHERPA_ONNX_LOGE("%s", os.str().c_str());
+#endif
   }
 
   Ort::AllocatorWithDefaultOptions allocator;  // used in the macro below
@@ -132,8 +155,15 @@ void OnlineConformerTransducerModel::InitDecoder(void *model_data,
 
 void OnlineConformerTransducerModel::InitJoiner(void *model_data,
                                                 size_t model_data_length) {
-  joiner_sess_ = std::make_unique<Ort::Session>(env_, model_data,
-                                                model_data_length, sess_opts_);
+  if (model_data) {
+    joiner_sess_ = std::make_unique<Ort::Session>(
+        env_, model_data, model_data_length, sess_opts_);
+  } else if (!joiner_sess_) {
+    SHERPA_ONNX_LOGE(
+        "Please pass model data or initialize the joiner outside of "
+        "this function");
+    SHERPA_ONNX_EXIT(-1);
+  }
 
   GetInputNames(joiner_sess_.get(), &joiner_input_names_,
                 &joiner_input_names_ptr_);
@@ -164,8 +194,11 @@ std::vector<Ort::Value> OnlineConformerTransducerModel::StackStates(
     conv_vec[i] = &states[i][1];
   }
 
-  Ort::Value attn = Cat(allocator_, attn_vec, 2);
-  Ort::Value conv = Cat(allocator_, conv_vec, 2);
+  auto allocator =
+      const_cast<OnlineConformerTransducerModel *>(this)->allocator_;
+
+  Ort::Value attn = Cat(allocator, attn_vec, 2);
+  Ort::Value conv = Cat(allocator, conv_vec, 2);
 
   std::vector<Ort::Value> ans;
   ans.reserve(2);
@@ -184,8 +217,11 @@ OnlineConformerTransducerModel::UnStackStates(
 
   std::vector<std::vector<Ort::Value>> ans(batch_size);
 
-  std::vector<Ort::Value> attn_vec = Unbind(allocator_, &states[0], 2);
-  std::vector<Ort::Value> conv_vec = Unbind(allocator_, &states[1], 2);
+  auto allocator =
+      const_cast<OnlineConformerTransducerModel *>(this)->allocator_;
+
+  std::vector<Ort::Value> attn_vec = Unbind(allocator, &states[0], 2);
+  std::vector<Ort::Value> conv_vec = Unbind(allocator, &states[1], 2);
 
   assert(attn_vec.size() == batch_size);
   assert(conv_vec.size() == batch_size);
@@ -267,5 +303,15 @@ Ort::Value OnlineConformerTransducerModel::RunJoiner(Ort::Value encoder_out,
 
   return std::move(logit[0]);
 }
+
+#if __ANDROID_API__ >= 9
+template OnlineConformerTransducerModel::OnlineConformerTransducerModel(
+    AAssetManager *mgr, const OnlineModelConfig &config);
+#endif
+
+#if __OHOS__
+template OnlineConformerTransducerModel::OnlineConformerTransducerModel(
+    NativeResourceManager *mgr, const OnlineModelConfig &config);
+#endif
 
 }  // namespace sherpa_onnx

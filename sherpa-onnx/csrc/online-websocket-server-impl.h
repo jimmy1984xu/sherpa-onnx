@@ -9,14 +9,14 @@
 #include <fstream>
 #include <map>
 #include <memory>
-#include <mutex>  // NOLINT
+#include <mutex>
 #include <set>
 #include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
-#include "asio.hpp"
+#include "asio.hpp"  // NOLINT
 #include "sherpa-onnx/csrc/online-recognizer.h"
 #include "sherpa-onnx/csrc/online-stream.h"
 #include "sherpa-onnx/csrc/parse-options.h"
@@ -84,6 +84,8 @@ class OnlineWebsocketDecoder {
 
   // signal that there will be no more audio samples for a stream
   void InputFinished(std::shared_ptr<Connection> c);
+
+  void Warmup() const;
 
   void Run();
 

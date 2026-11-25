@@ -1,0 +1,36 @@
+{
+  "format": 1,
+  "programs": [
+    {
+      "binary_type": "executable",
+      "bytes": 78028,
+      "compile_ms": 757.477846,
+      "name": "beam_v2.clbin",
+      "options": "-cl-std=CL2.0",
+      "role": "beam",
+      "source": "/data/local/tmp/transai-release-audit-20261112/clean-v2.cl",
+      "source_sha256": "41a444e372343a836f89840c61250a1c58a2cef991e27ea653a29098bdd625cc",
+      "sha256": "4d5d50a9bbeb9c61fb074ae1bed43736d50d657d840336f7d05e2f4f77c79ca4"
+    },
+    {
+      "binary_type": "executable",
+      "bytes": 81876,
+      "compile_ms": 789.463692,
+      "name": "beam_v3.clbin",
+      "options": "-cl-std=CL2.0",
+      "role": "beam",
+      "source": "/data/local/tmp/transai-release-audit-20261112/clean-v3.cl",
+      "source_sha256": "35ce2deb261d35dd0fcdd82ccf7d7a85c8bf0bf8036cb94ac1f2672516f30044",
+      "sha256": "ae1d66a09956494eeddc90a271b0f646425bc03feed6ee4c144cb4a77287ab32"
+    }
+  ],
+  "target": {
+    "device": "Mali-G720-Immortalis MC12 r0p0",
+    "device_version": "OpenCL 3.0 v1.r44p1-01eac0.752a1773b62256ce31b4bd662a0e2fa0",
+    "driver": "3.0",
+    "driver_uuid": "f2070168a2262a16cba7d327b278cd61",
+    "opencl_c_version": "OpenCL C 3.0 v1.r44p1-01eac0.752a1773b62256ce31b4bd662a0e2fa0",
+    "vendor": "ARM",
+    "vendor_id": 3362783232
+  }
+}

@@ -9,9 +9,10 @@ import base64
 from typing import Tuple
 
 import kaldi_native_fbank as knf
+import numpy as np
 import onnxruntime as ort
+import soundfile as sf
 import torch
-import torchaudio
 
 
 def get_args():
@@ -56,6 +57,12 @@ def get_args():
     )
 
     parser.add_argument(
+        "--test-attention",
+        action="store_true",
+        help="Test cross-attention outputs (requires attention-enabled model)",
+    )
+
+    parser.add_argument(
         "sound_file",
         type=str,
         help="Path to the test wave",
@@ -89,6 +96,7 @@ class OnnxModel:
         self.n_text_layer = int(meta["n_text_layer"])
         self.n_text_ctx = int(meta["n_text_ctx"])
         self.n_text_state = int(meta["n_text_state"])
+        self.n_mels = int(meta["n_mels"])
         self.sot = int(meta["sot"])
         self.eot = int(meta["eot"])
         self.translate = int(meta["translate"])
@@ -98,7 +106,6 @@ class OnnxModel:
         self.blank = int(meta["blank_id"])
 
         self.sot_sequence = list(map(int, meta["sot_sequence"].split(",")))
-
         self.sot_sequence.append(self.no_timestamps)
 
         self.all_language_tokens = list(
@@ -140,12 +147,15 @@ class OnnxModel:
         n_layer_cross_k: torch.Tensor,
         n_layer_cross_v: torch.Tensor,
         offset: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        logits, out_n_layer_self_k_cache, out_n_layer_self_v_cache = self.decoder.run(
+        return_attention: bool = False,
+    ):
+        # Caller must verify decoder has 4 outputs before passing return_attention=True
+        logits, out_n_layer_self_k_cache, out_n_layer_self_v_cache, *rest = self.decoder.run(
             [
                 self.decoder.get_outputs()[0].name,
                 self.decoder.get_outputs()[1].name,
                 self.decoder.get_outputs()[2].name,
+                *([self.decoder.get_outputs()[3].name] if return_attention else []),
             ],
             {
                 self.decoder.get_inputs()[0].name: tokens.numpy(),
@@ -160,6 +170,7 @@ class OnnxModel:
             torch.from_numpy(logits),
             torch.from_numpy(out_n_layer_self_k_cache),
             torch.from_numpy(out_n_layer_self_v_cache),
+            torch.from_numpy(rest[0]) if return_attention else None,
         )
 
     def get_self_cache(self) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -200,7 +211,7 @@ class OnnxModel:
         offset = torch.zeros(1, dtype=torch.int64)
         n_layer_self_k_cache, n_layer_self_v_cache = self.get_self_cache()
 
-        logits, n_layer_self_k_cache, n_layer_self_v_cache = self.run_decoder(
+        logits, n_layer_self_k_cache, n_layer_self_v_cache, _ = self.run_decoder(
             tokens=tokens,
             n_layer_self_k_cache=n_layer_self_k_cache,
             n_layer_self_v_cache=n_layer_self_v_cache,
@@ -226,7 +237,45 @@ def load_tokens(filename):
     return tokens
 
 
-def compute_features(filename: str) -> torch.Tensor:
+def verify_attention(attention_weights, n_audio_ctx, tokens, token_table):
+    """Verify attention weights and print approximate timestamps."""
+    if not attention_weights:
+        print("No attention weights to verify")
+        return
+
+    n_heads = attention_weights[0].shape[1]
+    print("\n--- Attention Verification ---")
+    print(f"Alignment heads: {n_heads}, Audio frames: {n_audio_ctx}, Tokens: {len(tokens)}")
+
+    for i, attn in enumerate(attention_weights):
+        expected = (1, n_heads, 1, n_audio_ctx)
+        if tuple(attn.shape) != expected:
+            print(f"  Token {i}: expected shape {expected}, got {tuple(attn.shape)}")
+
+    print("\n--- Approximate Timestamps ---")
+    for i, attn in enumerate(attention_weights):
+        peak_frame = attn.mean(dim=1).squeeze().argmax().item()
+        timestamp = peak_frame * 0.02
+        token_str = token_table.get(tokens[i], f"<{tokens[i]}>")
+        try:
+            token_display = base64.b64decode(token_str).decode()
+        except Exception:
+            token_display = token_str
+        print(f"  Token {i} ({token_display!r}): ~{timestamp:.2f}s")
+
+
+def load_audio(filename: str) -> Tuple[np.ndarray, int]:
+    data, sample_rate = sf.read(
+        filename,
+        always_2d=True,
+        dtype="float32",
+    )
+    data = data[:, 0]  # use only the first channel
+    samples = np.ascontiguousarray(data)
+    return samples, sample_rate
+
+
+def compute_features(filename: str, dim: int = 80) -> torch.Tensor:
     """
     Args:
       filename:
@@ -234,16 +283,18 @@ def compute_features(filename: str) -> torch.Tensor:
     Returns:
       Return a 1-D float32 tensor of shape (1, 80, 3000) containing the features.
     """
-    wave, sample_rate = torchaudio.load(filename)
-    audio = wave[0].contiguous()  # only use the first channel
+    wave, sample_rate = load_audio(filename)
     if sample_rate != 16000:
-        audio = torchaudio.functional.resample(
-            audio, orig_freq=sample_rate, new_freq=16000
-        )
+        import librosa
+
+        wave = librosa.resample(wave, orig_sr=sample_rate, target_sr=16000)
+        sample_rate = 16000
 
     features = []
-    online_whisper_fbank = knf.OnlineWhisperFbank(knf.FrameExtractionOptions())
-    online_whisper_fbank.accept_waveform(16000, audio.numpy())
+    opts = knf.WhisperFeatureOptions()
+    opts.dim = dim
+    online_whisper_fbank = knf.OnlineWhisperFbank(opts)
+    online_whisper_fbank.accept_waveform(16000, wave)
     online_whisper_fbank.input_finished()
     for i in range(online_whisper_fbank.num_frames_ready):
         f = online_whisper_fbank.get_frame(i)
@@ -280,8 +331,17 @@ def compute_features(filename: str) -> torch.Tensor:
 def main():
     args = get_args()
 
-    mel = compute_features(args.sound_file)
     model = OnnxModel(args.encoder, args.decoder)
+
+    if args.test_attention and len(model.decoder.get_outputs()) < 4:
+        raise RuntimeError(
+            "--test-attention requires a model with cross-attention outputs. "
+            "Use export-onnx-with-attention.py to export a compatible model."
+        )
+
+    n_mels = model.n_mels
+
+    mel = compute_features(args.sound_file, dim=n_mels)
 
     n_layer_cross_k, n_layer_cross_v = model.run_encoder(mel)
 
@@ -313,9 +373,10 @@ def main():
 
     n_layer_self_k_cache, n_layer_self_v_cache = model.get_self_cache()
 
+    print(model.sot_sequence)
     tokens = torch.tensor([model.sot_sequence], dtype=torch.int64)
     offset = torch.zeros(1, dtype=torch.int64)
-    logits, n_layer_self_k_cache, n_layer_self_v_cache = model.run_decoder(
+    logits, n_layer_self_k_cache, n_layer_self_v_cache, _ = model.run_decoder(
         tokens=tokens,
         n_layer_self_k_cache=n_layer_self_k_cache,
         n_layer_self_v_cache=n_layer_self_v_cache,
@@ -331,20 +392,24 @@ def main():
     # for greedy search, we don't need to compute softmax or log_softmax
     max_token_id = logits.argmax(dim=-1)
     results = []
+    all_attention_weights = []
     for i in range(model.n_text_ctx):
         if max_token_id == model.eot:
             break
         results.append(max_token_id.item())
         tokens = torch.tensor([[results[-1]]])
 
-        logits, n_layer_self_k_cache, n_layer_self_v_cache = model.run_decoder(
+        logits, n_layer_self_k_cache, n_layer_self_v_cache, attn = model.run_decoder(
             tokens=tokens,
             n_layer_self_k_cache=n_layer_self_k_cache,
             n_layer_self_v_cache=n_layer_self_v_cache,
             n_layer_cross_k=n_layer_cross_k,
             n_layer_cross_v=n_layer_cross_v,
             offset=offset,
+            return_attention=args.test_attention,
         )
+        if attn is not None:
+            all_attention_weights.append(attn)
         offset += 1
         logits = logits[0, -1]
         model.suppress_tokens(logits, is_initial=False)
@@ -356,6 +421,10 @@ def main():
             s += base64.b64decode(token_table[i])
 
     print(s.decode().strip())
+
+    if args.test_attention:
+        n_audio_ctx = n_layer_cross_k.shape[2]
+        verify_attention(all_attention_weights, n_audio_ctx, results, token_table)
 
 
 if __name__ == "__main__":

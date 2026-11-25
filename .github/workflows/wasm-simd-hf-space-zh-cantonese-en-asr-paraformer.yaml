@@ -1,9 +1,11 @@
 name: wasm-simd-hf-space-zh-cantonese-en-asr-paraformer
 
 on:
-  release:
-    types:
-      - published
+  push:
+    branches:
+      - wasm
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
 
   workflow_dispatch:
 
@@ -23,8 +25,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Update version
+        shell: bash
+        run: |
+          ./new-release.sh
+          git diff .
+
       - name: Install emsdk
         uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 4.0.23
+          actions-cache-folder: 'emsdk-cache'
 
       - name: View emsdk version
         shell: bash
@@ -80,6 +92,14 @@ jobs:
           name: sherpa-onnx-wasm-simd-zh-cantonese-en-asr-paraformer
           path: ./sherpa-onnx-wasm-simd-*.tar.bz2
 
+      - name: Release
+        if: (github.repository_owner == 'csukuangfj' || github.repository_owner == 'k2-fsa') && github.event_name == 'push' && contains(github.ref, 'refs/tags/')
+        uses: svenstaro/upload-release-action@v2
+        with:
+          file_glob: true
+          overwrite: true
+          file: ./*.tar.bz2
+
       - name: Publish to huggingface
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -96,6 +116,7 @@ jobs:
 
             rm -rf huggingface
             export GIT_LFS_SKIP_SMUDGE=1
+            export GIT_CLONE_PROTECTION_ACTIVE=false
 
             git clone https://huggingface.co/spaces/k2-fsa/web-assembly-asr-sherpa-onnx-zh-cantonese-en-paraformer huggingface
             cd huggingface
@@ -133,6 +154,7 @@ jobs:
 
             rm -rf ms
             export GIT_LFS_SKIP_SMUDGE=1
+            export GIT_CLONE_PROTECTION_ACTIVE=false
 
             git clone https://www.modelscope.cn/studios/k2-fsa/web-assembly-asr-sherpa-onnx-zh-cantonese-en-paraformer.git ms
             cd ms

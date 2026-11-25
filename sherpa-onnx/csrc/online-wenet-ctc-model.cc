@@ -3,16 +3,25 @@
 // Copyright (c)  2023  Xiaomi Corporation
 
 #include "sherpa-onnx/csrc/online-wenet-ctc-model.h"
+#include "sherpa-onnx/csrc/ort-env.h"
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #if __ANDROID_API__ >= 9
 #include "android/asset_manager.h"
 #include "android/asset_manager_jni.h"
 #endif
 
+#if __OHOS__
+#include "rawfile/raw_file_manager.h"
+#endif
+
+#include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
 #include "sherpa-onnx/csrc/session.h"
@@ -24,19 +33,18 @@ class OnlineWenetCtcModel::Impl {
  public:
   explicit Impl(const OnlineModelConfig &config)
       : config_(config),
-        env_(ORT_LOGGING_LEVEL_ERROR),
+        env_(CreateOrtEnv()),
         sess_opts_(GetSessionOptions(config)),
         allocator_{} {
-    {
-      auto buf = ReadFile(config.wenet_ctc.model);
-      Init(buf.data(), buf.size());
-    }
+    sess_ = std::make_unique<Ort::Session>(
+        env_, SHERPA_ONNX_TO_ORT_PATH(config.wenet_ctc.model), sess_opts_);
+    Init(nullptr, 0);
   }
 
-#if __ANDROID_API__ >= 9
-  Impl(AAssetManager *mgr, const OnlineModelConfig &config)
+  template <typename Manager>
+  Impl(Manager *mgr, const OnlineModelConfig &config)
       : config_(config),
-        env_(ORT_LOGGING_LEVEL_WARNING),
+        env_(CreateOrtEnv()),
         sess_opts_(GetSessionOptions(config)),
         allocator_{} {
     {
@@ -44,7 +52,6 @@ class OnlineWenetCtcModel::Impl {
       Init(buf.data(), buf.size());
     }
   }
-#endif
 
   std::vector<Ort::Value> Forward(Ort::Value x,
                                   std::vector<Ort::Value> states) {
@@ -97,9 +104,11 @@ class OnlineWenetCtcModel::Impl {
            right_context_ + 1;
   }
 
-  int32_t ChunkShift() const { return required_cache_size_; }
+  int32_t ChunkShift() const {
+    return config_.wenet_ctc.chunk_size * subsampling_factor_;
+  }
 
-  OrtAllocator *Allocator() const { return allocator_; }
+  OrtAllocator *Allocator() { return allocator_; }
 
   // Return a vector containing 3 tensors
   // - attn_cache
@@ -125,8 +134,15 @@ class OnlineWenetCtcModel::Impl {
 
  private:
   void Init(void *model_data, size_t model_data_length) {
-    sess_ = std::make_unique<Ort::Session>(env_, model_data, model_data_length,
-                                           sess_opts_);
+    if (model_data) {
+      sess_ = std::make_unique<Ort::Session>(
+          env_, model_data, model_data_length, sess_opts_);
+    } else if (!sess_) {
+      SHERPA_ONNX_LOGE(
+          "Please pass model data or initialize the session outside of "
+          "this function");
+      SHERPA_ONNX_EXIT(-1);
+    }
 
     GetInputNames(sess_.get(), &input_names_, &input_names_ptr_);
 
@@ -137,7 +153,11 @@ class OnlineWenetCtcModel::Impl {
     if (config_.debug) {
       std::ostringstream os;
       PrintModelMetadata(os, meta_data);
-      SHERPA_ONNX_LOGE("%s\n", os.str().c_str());
+#if __OHOS__
+      SHERPA_ONNX_LOGE("%{public}s", os.str().c_str());
+#else
+      SHERPA_ONNX_LOGE("%s", os.str().c_str());
+#endif
     }
 
     Ort::AllocatorWithDefaultOptions allocator;  // used in the macro below
@@ -192,15 +212,15 @@ class OnlineWenetCtcModel::Impl {
   std::vector<std::string> output_names_;
   std::vector<const char *> output_names_ptr_;
 
-  int32_t head_;
-  int32_t num_blocks_;
-  int32_t output_size_;
-  int32_t cnn_module_kernel_;
-  int32_t right_context_;
-  int32_t subsampling_factor_;
-  int32_t vocab_size_;
+  int32_t head_ = 0;
+  int32_t num_blocks_ = 0;
+  int32_t output_size_ = 0;
+  int32_t cnn_module_kernel_ = 0;
+  int32_t right_context_ = 0;
+  int32_t subsampling_factor_ = 0;
+  int32_t vocab_size_ = 0;
 
-  int32_t required_cache_size_;
+  int32_t required_cache_size_ = 0;
 
   Ort::Value attn_cache_{nullptr};
   Ort::Value conv_cache_{nullptr};
@@ -210,11 +230,10 @@ class OnlineWenetCtcModel::Impl {
 OnlineWenetCtcModel::OnlineWenetCtcModel(const OnlineModelConfig &config)
     : impl_(std::make_unique<Impl>(config)) {}
 
-#if __ANDROID_API__ >= 9
-OnlineWenetCtcModel::OnlineWenetCtcModel(AAssetManager *mgr,
+template <typename Manager>
+OnlineWenetCtcModel::OnlineWenetCtcModel(Manager *mgr,
                                          const OnlineModelConfig &config)
     : impl_(std::make_unique<Impl>(mgr, config)) {}
-#endif
 
 OnlineWenetCtcModel::~OnlineWenetCtcModel() = default;
 
@@ -244,6 +263,7 @@ std::vector<Ort::Value> OnlineWenetCtcModel::StackStates(
   if (states.size() != 1) {
     SHERPA_ONNX_LOGE("wenet CTC model supports only batch_size==1. Given: %d",
                      static_cast<int32_t>(states.size()));
+    SHERPA_ONNX_EXIT(-1);
   }
 
   return std::move(states[0]);
@@ -255,5 +275,15 @@ std::vector<std::vector<Ort::Value>> OnlineWenetCtcModel::UnStackStates(
   ans[0] = std::move(states);
   return ans;
 }
+
+#if __ANDROID_API__ >= 9
+template OnlineWenetCtcModel::OnlineWenetCtcModel(
+    AAssetManager *mgr, const OnlineModelConfig &config);
+#endif
+
+#if __OHOS__
+template OnlineWenetCtcModel::OnlineWenetCtcModel(
+    NativeResourceManager *mgr, const OnlineModelConfig &config);
+#endif
 
 }  // namespace sherpa_onnx

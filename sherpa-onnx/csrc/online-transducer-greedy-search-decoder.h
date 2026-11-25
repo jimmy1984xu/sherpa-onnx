@@ -16,8 +16,12 @@ class OnlineTransducerGreedySearchDecoder : public OnlineTransducerDecoder {
  public:
   OnlineTransducerGreedySearchDecoder(OnlineTransducerModel *model,
                                       int32_t unk_id,
-                                      float blank_penalty)
-      : model_(model), unk_id_(unk_id), blank_penalty_(blank_penalty) {}
+                                      float blank_penalty,
+                                      float temperature_scale)
+      : model_(model),
+      unk_id_(unk_id),
+      blank_penalty_(blank_penalty),
+      temperature_scale_(temperature_scale) {}
 
   OnlineTransducerDecoderResult GetEmptyResult() const override;
 
@@ -30,6 +34,7 @@ class OnlineTransducerGreedySearchDecoder : public OnlineTransducerDecoder {
   OnlineTransducerModel *model_;  // Not owned
   int32_t unk_id_;
   float blank_penalty_;
+  float temperature_scale_;
 };
 
 }  // namespace sherpa_onnx

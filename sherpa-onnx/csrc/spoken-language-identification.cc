@@ -4,7 +4,13 @@
 
 #include "sherpa-onnx/csrc/spoken-language-identification.h"
 
+#include <memory>
 #include <string>
+
+#if __ANDROID_API__ >= 9
+#include "android/asset_manager.h"
+#include "android/asset_manager_jni.h"
+#endif
 
 #include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
@@ -38,7 +44,8 @@ bool SpokenLanguageIdentificationWhisperConfig::Validate() const {
   }
 
   if (!FileExists(encoder)) {
-    SHERPA_ONNX_LOGE("whisper encoder file %s does not exist", encoder.c_str());
+    SHERPA_ONNX_LOGE("whisper encoder file '%s' does not exist",
+                     encoder.c_str());
     return false;
   }
 
@@ -48,7 +55,8 @@ bool SpokenLanguageIdentificationWhisperConfig::Validate() const {
   }
 
   if (!FileExists(decoder)) {
-    SHERPA_ONNX_LOGE("whisper decoder file %s does not exist", decoder.c_str());
+    SHERPA_ONNX_LOGE("whisper decoder file '%s' does not exist",
+                     decoder.c_str());
     return false;
   }
 
@@ -102,6 +110,12 @@ std::string SpokenLanguageIdentificationConfig::ToString() const {
 SpokenLanguageIdentification::SpokenLanguageIdentification(
     const SpokenLanguageIdentificationConfig &config)
     : impl_(SpokenLanguageIdentificationImpl::Create(config)) {}
+
+#if __ANDROID_API__ >= 9
+SpokenLanguageIdentification::SpokenLanguageIdentification(
+    AAssetManager *mgr, const SpokenLanguageIdentificationConfig &config)
+    : impl_(SpokenLanguageIdentificationImpl::Create(mgr, config)) {}
+#endif
 
 SpokenLanguageIdentification::~SpokenLanguageIdentification() = default;
 

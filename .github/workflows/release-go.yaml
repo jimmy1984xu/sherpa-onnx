@@ -1,6 +1,10 @@
 name: release-go
 
 on:
+  push:
+    branches:
+      - release
+      - release-go
   workflow_dispatch:
 
 concurrency:
@@ -14,6 +18,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Update version
+        shell: bash
+        run: |
+          ./new-release.sh
+          git diff .
 
       - name: Add SSH key
         run: |

@@ -47,7 +47,7 @@ assets fangjun$ tree -L 1
 ## Paraformer
 
 ```
-wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2
+wget -q https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2
 tar xvf sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2
 rm sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2
 
@@ -59,7 +59,7 @@ rm -rf sherpa-onnx-streaming-paraformer-bilingual-zh-en
 
 cd ../
 
-sed -i.bak s/"type = 0"/"type = 1"/g ./sherpa-onnx.js
+sed -i.bak s/"type = 0"/"type = 1"/g ./sherpa-onnx-asr.js
 sed -i.bak s/Zipformer/Paraformer/g ./index.html
 
 cd ../..
@@ -80,3 +80,10 @@ assets fangjun$ tree -L 1
 
 0 directories, 4 files
 ```
+
+You can find example build scripts at:
+
+  - Streaming Zipformer (English + Chinese): https://github.com/k2-fsa/sherpa-onnx/blob/master/.github/workflows/ wasm-simd-hf-space-zh-en-asr-zipformer.yaml
+  - Streaming Zipformer (English): https://github.com/k2-fsa/sherpa-onnx/blob/master/.github/workflows/wasm-simd-hf-space-en-asr-zipformer.yaml
+  - Streaming Paraformer (English + Chinese): https://github.com/k2-fsa/sherpa-onnx/blob/master/.github/workflows/wasm-simd-hf-space-zh-en-asr-paraformer.yaml
+  - Streaming Paraformer (English + Chinese + Cantonese): https://github.com/k2-fsa/sherpa-onnx/blob/master/.github/workflows/wasm-simd-hf-space-zh-cantonese-en-asr-paraformer.yaml

@@ -9,13 +9,9 @@
 #include <string>
 #include <vector>
 
-#if __ANDROID_API__ >= 9
-#include "android/asset_manager.h"
-#include "android/asset_manager_jni.h"
-#endif
-
 #include "sherpa-onnx/csrc/endpoint.h"
 #include "sherpa-onnx/csrc/features.h"
+#include "sherpa-onnx/csrc/homophone-replacer.h"
 #include "sherpa-onnx/csrc/online-ctc-fst-decoder-config.h"
 #include "sherpa-onnx/csrc/online-lm-config.h"
 #include "sherpa-onnx/csrc/online-model-config.h"
@@ -47,6 +43,8 @@ struct OnlineRecognizerResult {
   /// log-domain scores from "hot-phrase" contextual boosting
   std::vector<float> context_scores;
 
+  std::vector<int32_t> words;
+
   /// ID of this segment
   /// When an endpoint is detected, it is incremented
   int32_t segment = 0;
@@ -55,8 +53,13 @@ struct OnlineRecognizerResult {
   /// When an endpoint is detected, it will change
   float start_time = 0;
 
-  /// True if the end of this segment is reached
+  /// True if the end of this segment is reached, i.e., an endpoint is detected
+  /// used only in ./online-websocket-server-impl.cc
   bool is_final = false;
+
+  /// used only in ./online-websocket-server-impl.cc
+  /// If it is true, it means the server has processed all received samples
+  bool is_eof = false;
 
   /** Return a json string.
    *
@@ -71,6 +74,7 @@ struct OnlineRecognizerResult {
    *     "segment": x,
    *     "start_time": x,
    *     "is_final": true|false
+   *     "is_eof": true|false
    *   }
    */
   std::string AsJsonString() const;
@@ -82,6 +86,7 @@ struct OnlineRecognizerConfig {
   OnlineLMConfig lm_config;
   EndpointConfig endpoint_config;
   OnlineCtcFstDecoderConfig ctc_fst_decoder_config;
+
   bool enable_endpoint = true;
 
   std::string decoding_method = "greedy_search";
@@ -91,10 +96,30 @@ struct OnlineRecognizerConfig {
   int32_t max_active_paths = 4;
 
   /// used only for modified_beam_search
-  float hotwords_score = 1.5;
   std::string hotwords_file;
+  float hotwords_score = 1.5;
 
   float blank_penalty = 0.0;
+
+  float temperature_scale = 2.0;
+
+  // If there are multiple rules, they are applied from left to right.
+  std::string rule_fsts;
+
+  // If there are multiple FST archives, they are applied from left to right.
+  std::string rule_fars;
+
+  // True to reset encoder_state on an endpoint after empty segment.
+  // Done in `Reset()` method, after an endpoint was detected,
+  // currently only in `OnlineRecognizerTransducerImpl`.
+  bool reset_encoder = false;
+
+  HomophoneReplacerConfig hr;
+
+  /// used only for modified_beam_search, if hotwords_buf is non-empty,
+  /// the hotwords will be loaded from the buffered string instead of from the
+  /// "hotwords_file"
+  std::string hotwords_buf;
 
   OnlineRecognizerConfig() = default;
 
@@ -105,7 +130,10 @@ struct OnlineRecognizerConfig {
       const OnlineCtcFstDecoderConfig &ctc_fst_decoder_config,
       bool enable_endpoint, const std::string &decoding_method,
       int32_t max_active_paths, const std::string &hotwords_file,
-      float hotwords_score, float blank_penalty)
+      float hotwords_score, float blank_penalty, float temperature_scale,
+      const std::string &rule_fsts, const std::string &rule_fars,
+      bool reset_encoder, const HomophoneReplacerConfig &hr,
+      const std::string &hotwords_buf = {})
       : feat_config(feat_config),
         model_config(model_config),
         lm_config(lm_config),
@@ -114,9 +142,15 @@ struct OnlineRecognizerConfig {
         enable_endpoint(enable_endpoint),
         decoding_method(decoding_method),
         max_active_paths(max_active_paths),
-        hotwords_score(hotwords_score),
         hotwords_file(hotwords_file),
-        blank_penalty(blank_penalty) {}
+        hotwords_score(hotwords_score),
+        blank_penalty(blank_penalty),
+        temperature_scale(temperature_scale),
+        rule_fsts(rule_fsts),
+        rule_fars(rule_fars),
+        reset_encoder(reset_encoder),
+        hr(hr),
+        hotwords_buf(hotwords_buf) {}
 
   void Register(ParseOptions *po);
   bool Validate() const;
@@ -130,9 +164,8 @@ class OnlineRecognizer {
  public:
   explicit OnlineRecognizer(const OnlineRecognizerConfig &config);
 
-#if __ANDROID_API__ >= 9
-  OnlineRecognizer(AAssetManager *mgr, const OnlineRecognizerConfig &config);
-#endif
+  template <typename Manager>
+  OnlineRecognizer(Manager *mgr, const OnlineRecognizerConfig &config);
 
   ~OnlineRecognizer();
 
@@ -161,6 +194,15 @@ class OnlineRecognizer {
     OnlineStream *ss[1] = {s};
     DecodeStreams(ss, 1);
   }
+
+  /**
+   * Warmups up onnxruntime sessions by apply optimization and
+   * allocating memory prior
+   *
+   * @param warmup Number of warmups.
+   * @param mbs : max-batch-size Max batch size for the models
+   */
+  void WarmpUpRecognizer(int32_t warmup, int32_t mbs) const;
 
   /** Decode multiple streams in parallel
    *

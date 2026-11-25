@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "sherpa-onnx/csrc/context-graph.h"
+#include "sherpa-onnx/csrc/features.h"
 #include "sherpa-onnx/csrc/parse-options.h"
 
 namespace sherpa_onnx {
@@ -25,61 +26,69 @@ struct OfflineRecognitionResult {
   // For instance, for BPE-based models it consists of a list of BPE tokens.
   std::vector<std::string> tokens;
 
+  std::string lang;
+
+  // emotion target of the audio.
+  std::string emotion;
+
+  // event target of the audio.
+  std::string event;
+
   /// timestamps.size() == tokens.size()
   /// timestamps[i] records the time in seconds when tokens[i] is decoded.
   std::vector<float> timestamps;
 
+  /// durations[i] contains the duration (in seconds) for tokens[i] (TDT models
+  /// only)
+  std::vector<float> durations;
+
+  /// ys_log_probs[i] contains the log probability (confidence) for tokens[i].
+  std::vector<float> ys_log_probs;
+
+  // Word IDs from FST decoding (CTC models with FST decoder only).
+  std::vector<int32_t> words;
+
+  // Segment-level data (from Whisper with segment timestamps enabled).
+  // These are parallel vectors: segment_timestamps.size() ==
+  // segment_durations.size() == segment_texts.size()
+  std::vector<float> segment_timestamps;   // start time of each segment
+  std::vector<float> segment_durations;    // duration of each segment
+  std::vector<std::string> segment_texts;  // text of each segment
+
   std::string AsJsonString() const;
 };
 
-struct OfflineFeatureExtractorConfig {
-  // Sampling rate used by the feature extractor. If it is different from
-  // the sampling rate of the input waveform, we will do resampling inside.
-  int32_t sampling_rate = 16000;
-
-  // Feature dimension
-  int32_t feature_dim = 80;
-
-  // Set internally by some models, e.g., paraformer and wenet CTC models set
-  // it to false.
-  // This parameter is not exposed to users from the commandline
-  // If true, the feature extractor expects inputs to be normalized to
-  // the range [-1, 1].
-  // If false, we will multiply the inputs by 32768
-  bool normalize_samples = true;
-
-  // For models from NeMo
-  // This option is not exposed and is set internally when loading models.
-  // Possible values:
-  // - per_feature
-  // - all_features (not implemented yet)
-  // - fixed_mean (not implemented)
-  // - fixed_std (not implemented)
-  // - or just leave it to empty
-  // See
-  // https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/asr/parts/preprocessing/features.py#L59
-  // for details
-  std::string nemo_normalize_type;
-
-  std::string ToString() const;
-
-  void Register(ParseOptions *po);
+struct WhisperTag {
+  int32_t dim = 80;
 };
 
-struct WhisperTag {};
+struct CEDTag {};
+
+// It uses a neural network model, a preprocessor, to convert
+// audio samples to features
+struct MoonshineTag {};
+
+// It is based on Wav2Vec, accepting raw audio samples as input
+struct OmnilingualAsrTag {};
+struct MaliG720Tag {};
 
 class OfflineStream {
  public:
-  explicit OfflineStream(const OfflineFeatureExtractorConfig &config = {},
+  explicit OfflineStream(const FeatureExtractorConfig &config = {},
                          ContextGraphPtr context_graph = {});
 
-  explicit OfflineStream(WhisperTag tag, ContextGraphPtr context_graph = {});
+  explicit OfflineStream(WhisperTag tag);
+  explicit OfflineStream(CEDTag tag);
+  explicit OfflineStream(MoonshineTag tag);
+  explicit OfflineStream(OmnilingualAsrTag tag);
+  explicit OfflineStream(MaliG720Tag tag, ContextGraphPtr context_graph = {});
   ~OfflineStream();
 
   /**
      @param sampling_rate The sampling_rate of the input waveform. If it does
                           not equal to  config.sampling_rate, we will do
-                          resampling inside.
+                          resampling inside for supported backends.
+                          MaliG720 requires exactly 16000 Hz and rejects other rates.
      @param waveform Pointer to a 1-D array of size n. It must be normalized to
                      the range [-1, 1].
      @param n Number of entries in waveform
@@ -90,7 +99,10 @@ class OfflineStream {
   void AcceptWaveform(int32_t sampling_rate, const float *waveform,
                       int32_t n) const;
 
-  /// Return feature dim of this extractor
+  /// Return feature dim of this extractor.
+  ///
+  /// Note: if it is Moonshine, then it returns the number of audio samples
+  /// currently received.
   int32_t FeatureDim() const;
 
   // Get all the feature frames of this stream in a 1-D array, which is
@@ -105,6 +117,17 @@ class OfflineStream {
 
   /** Get the ContextGraph of this stream */
   const ContextGraphPtr &GetContextGraph() const;
+
+  // Generic per-stream option mechanism (key-value string pairs).
+  void SetOption(const std::string &key, const std::string &value);
+  bool HasOption(const std::string &key) const;
+
+  // Returns the value for the given key, or an empty string if the key
+  // does not exist. No exception is thrown for missing keys.
+  const std::string &GetOption(const std::string &key) const;
+  int32_t GetOptionInt(const std::string &key, int32_t default_value = 0) const;
+  float GetOptionFloat(const std::string &key,
+                       float default_value = 0.0f) const;
 
  private:
   class Impl;

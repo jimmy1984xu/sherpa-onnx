@@ -229,10 +229,15 @@ int32_t main(int32_t argc, char *argv[]) {
     ShowUsage();
   }
 
-  SherpaOnnxOfflineTts *tts = SherpaOnnxCreateOfflineTts(&config);
+  const SherpaOnnxOfflineTts *tts = SherpaOnnxCreateOfflineTts(&config);
+
+  SherpaOnnxGenerationConfig cfg = {0};
+  cfg.silence_scale = 0.2f;
+  cfg.sid = sid;
+  cfg.speed = 1.0f;
 
   const SherpaOnnxGeneratedAudio *audio =
-      SherpaOnnxOfflineTtsGenerate(tts, text, sid, 1.0);
+      SherpaOnnxOfflineTtsGenerateWithConfig(tts, text, &cfg, NULL, NULL);
 
   SherpaOnnxWriteWave(audio->samples, audio->n, audio->sample_rate, filename);
 
@@ -240,7 +245,7 @@ int32_t main(int32_t argc, char *argv[]) {
   SherpaOnnxDestroyOfflineTts(tts);
 
   fprintf(stderr, "Input text is: %s\n", text);
-  fprintf(stderr, "Speaker ID is is: %d\n", sid);
+  fprintf(stderr, "Speaker ID is: %d\n", sid);
   fprintf(stderr, "Saved to: %s\n", filename);
 
   free((void *)filename);

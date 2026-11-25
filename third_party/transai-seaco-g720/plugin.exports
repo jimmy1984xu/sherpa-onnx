@@ -1,0 +1,1 @@
+{ global: transai_seaco_create; transai_seaco_destroy; transai_seaco_recognize; local: *; };

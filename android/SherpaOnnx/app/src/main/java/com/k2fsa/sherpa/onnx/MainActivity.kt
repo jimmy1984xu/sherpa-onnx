@@ -12,16 +12,22 @@ import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import com.k2fsa.sherpa.onnx.*
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 import kotlin.concurrent.thread
 
 private const val TAG = "sherpa-onnx"
 private const val REQUEST_RECORD_AUDIO_PERMISSION = 200
 
+// To enable microphone in android emulator, use
+//
+// adb emu avd hostmicon
+
 class MainActivity : AppCompatActivity() {
     private val permissions: Array<String> = arrayOf(Manifest.permission.RECORD_AUDIO)
 
-    private lateinit var model: SherpaOnnx
+    private lateinit var recognizer: OnlineRecognizer
     private var audioRecord: AudioRecord? = null
     private lateinit var recordButton: Button
     private lateinit var textView: TextView
@@ -87,7 +93,6 @@ class MainActivity : AppCompatActivity() {
             audioRecord!!.startRecording()
             recordButton.setText(R.string.stop)
             isRecording = true
-            model.reset(true)
             textView.text = ""
             lastText = ""
             idx = 0
@@ -108,6 +113,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun processSamples() {
         Log.i(TAG, "processing samples")
+        val stream = recognizer.createStream()
 
         val interval = 0.1 // i.e., 100 ms
         val bufferSize = (interval * sampleRateInHz).toInt() // in samples
@@ -117,29 +123,41 @@ class MainActivity : AppCompatActivity() {
             val ret = audioRecord?.read(buffer, 0, buffer.size)
             if (ret != null && ret > 0) {
                 val samples = FloatArray(ret) { buffer[it] / 32768.0f }
-                model.acceptWaveform(samples, sampleRate=sampleRateInHz)
-                while (model.isReady()) {
-                    model.decode()
+                stream.acceptWaveform(samples, sampleRate = sampleRateInHz)
+                while (recognizer.isReady(stream)) {
+                    recognizer.decode(stream)
                 }
 
-                val isEndpoint = model.isEndpoint()
-                val text = model.text
+                val isEndpoint = recognizer.isEndpoint(stream)
+                var text = recognizer.getResult(stream).text
 
-                var textToDisplay = lastText;
+                // For streaming parformer, we need to manually add some
+                // paddings so that it has enough right context to
+                // recognize the last word of this segment
+                if (isEndpoint && recognizer.config.modelConfig.paraformer.encoder.isNotBlank()) {
+                    val tailPaddings = FloatArray((0.8 * sampleRateInHz).toInt())
+                    stream.acceptWaveform(tailPaddings, sampleRate = sampleRateInHz)
+                    while (recognizer.isReady(stream)) {
+                        recognizer.decode(stream)
+                    }
+                    text = recognizer.getResult(stream).text
+                }
 
-                if(text.isNotBlank()) {
-                    if (lastText.isBlank()) {
-                        textToDisplay = "${idx}: ${text}"
+                var textToDisplay = lastText
+
+                if (text.isNotBlank()) {
+                    textToDisplay = if (lastText.isBlank()) {
+                        "${idx}: $text"
                     } else {
-                        textToDisplay = "${lastText}\n${idx}: ${text}"
+                        "${lastText}\n${idx}: $text"
                     }
                 }
 
                 if (isEndpoint) {
-                    model.reset()
+                    recognizer.reset(stream)
                     if (text.isNotBlank()) {
-                        lastText = "${lastText}\n${idx}: ${text}"
-                        textToDisplay = lastText;
+                        lastText = "${lastText}\n${idx}: $text"
+                        textToDisplay = lastText
                         idx += 1
                     }
                 }
@@ -149,6 +167,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        stream.release()
     }
 
     private fun initMicrophone(): Boolean {
@@ -180,16 +199,40 @@ class MainActivity : AppCompatActivity() {
         // See https://k2-fsa.github.io/sherpa/onnx/pretrained_models/index.html
         // for a list of available models
         val type = 0
-        println("Select model type ${type}")
-        val config = OnlineRecognizerConfig(
+        var ruleFsts : String?
+        ruleFsts = null
+
+        val useHr = false
+        val hr =  HomophoneReplacerConfig(
+            // Used only when useHr is true
+            // Please download the following 3 files from
+            // https://github.com/k2-fsa/sherpa-onnx/releases/tag/hr-files
+            //
+            // dict and lexicon.txt can be shared by different apps
+            //
+            // replace.fst is specific for an app
+            lexicon = "lexicon.txt",
+            ruleFsts = "replace.fst",
+        )
+
+        Log.i(TAG, "Select model type $type")
+        var config = OnlineRecognizerConfig(
             featConfig = getFeatureConfig(sampleRate = sampleRateInHz, featureDim = 80),
             modelConfig = getModelConfig(type = type)!!,
-            lmConfig = getOnlineLMConfig(type = type),
+            // lmConfig = getOnlineLMConfig(type = type),
             endpointConfig = getEndpointConfig(),
             enableEndpoint = true,
         )
 
-        model = SherpaOnnx(
+        if (ruleFsts != null) {
+            config.ruleFsts = ruleFsts
+        }
+
+        if (useHr) {
+            config.hr = hr
+        }
+
+        recognizer = OnlineRecognizer(
             assetManager = application.assets,
             config = config,
         )

@@ -11,8 +11,8 @@
 # to download pre-trained models
 
 import argparse
-import sys
 from pathlib import Path
+
 import sherpa_onnx
 
 
@@ -107,6 +107,20 @@ def get_args():
     )
 
     parser.add_argument(
+        "--hr-lexicon",
+        type=str,
+        default="",
+        help="If not empty, it is the lexicon.txt for homophone replacer",
+    )
+
+    parser.add_argument(
+        "--hr-rule-fsts",
+        type=str,
+        default="",
+        help="If not empty, it is the replace.fst for homophone replacer",
+    )
+
+    parser.add_argument(
         "--device-name",
         type=str,
         required=True,
@@ -159,6 +173,8 @@ def create_recognizer(args):
         hotwords_file=args.hotwords_file,
         hotwords_score=args.hotwords_score,
         blank_penalty=args.blank_penalty,
+        hr_rule_fsts=args.hr_rule_fsts,
+        hr_lexicon=args.hr_lexicon,
     )
     return recognizer
 
@@ -178,8 +194,8 @@ def main():
 
     stream = recognizer.create_stream()
 
-    last_result = ""
-    segment_id = 0
+    display = sherpa_onnx.Display()
+
     while True:
         samples = alsa.read(samples_per_read)  # a blocking read
         stream.accept_waveform(sample_rate, samples)
@@ -190,13 +206,14 @@ def main():
 
         result = recognizer.get_result(stream)
 
-        if result and (last_result != result):
-            last_result = result
-            print("\r{}:{}".format(segment_id, result), end="", flush=True)
+        display.update_text(result)
+        display.display()
+
         if is_endpoint:
             if result:
-                print("\r{}:{}".format(segment_id, result), flush=True)
-                segment_id += 1
+                display.finalize_current_sentence()
+                display.display()
+
             recognizer.reset(stream)
 
 

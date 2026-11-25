@@ -4,6 +4,8 @@
 #ifndef SHERPA_ONNX_CSRC_AUDIO_TAGGING_ZIPFORMER_IMPL_H_
 #define SHERPA_ONNX_CSRC_AUDIO_TAGGING_ZIPFORMER_IMPL_H_
 
+#include <assert.h>
+
 #include <memory>
 #include <utility>
 #include <vector>
@@ -29,7 +31,7 @@ class AudioTaggingZipformerImpl : public AudioTaggingImpl {
     if (model_.NumEventClasses() != labels_.NumEventClasses()) {
       SHERPA_ONNX_LOGE("number of classes: %d (model) != %d (label file)",
                        model_.NumEventClasses(), labels_.NumEventClasses());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
   }
 
@@ -42,7 +44,7 @@ class AudioTaggingZipformerImpl : public AudioTaggingImpl {
     if (model_.NumEventClasses() != labels_.NumEventClasses()) {
       SHERPA_ONNX_LOGE("number of classes: %d (model) != %d (label file)",
                        model_.NumEventClasses(), labels_.NumEventClasses());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
   }
 #endif
@@ -71,6 +73,8 @@ class AudioTaggingZipformerImpl : public AudioTaggingImpl {
     std::vector<float> f = s->GetFrames();
 
     int32_t num_frames = f.size() / feat_dim;
+
+    assert(feat_dim * num_frames == static_cast<int32_t>(f.size()));
 
     std::array<int64_t, 3> shape = {1, num_frames, feat_dim};
 

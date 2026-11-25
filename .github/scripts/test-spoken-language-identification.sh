@@ -8,6 +8,8 @@ log() {
   echo -e "$(date '+%Y-%m-%d %H:%M:%S') (${fname}:${BASH_LINENO[0]}:${FUNCNAME[1]}) $*"
 }
 
+export GIT_CLONE_PROTECTION_ACTIVE=false
+
 echo "EXE is $EXE"
 echo "PATH: $PATH"
 
@@ -62,22 +64,22 @@ for wav in ${waves[@]}; do
   ls -lh *.wav
 done
 
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/spoken-language-identification-test-wavs.tar.bz2
+tar xvf spoken-language-identification-test-wavs.tar.bz2
+rm spoken-language-identification-test-wavs.tar.bz2
+data=spoken-language-identification-test-wavs
+
 for name in ${names[@]}; do
   log "------------------------------------------------------------"
   log "Run $name"
   log "------------------------------------------------------------"
+  repo_url=https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-$name.tar.bz2
+  curl -SL -O $repo_url
+  tar xvf sherpa-onnx-whisper-$name.tar.bz2
+  rm sherpa-onnx-whisper-$name.tar.bz2
 
-  repo_url=https://huggingface.co/csukuangfj/sherpa-onnx-whisper-$name
   log "Start testing ${repo_url}"
-  repo=$(basename $repo_url)
-  log "Download pretrained model and test-data from $repo_url"
-
-  GIT_LFS_SKIP_SMUDGE=1 git clone $repo_url
-  pushd $repo
-  git lfs pull --include "*.onnx"
-  # git lfs pull --include "*.ort"
-  ls -lh *.onnx
-  popd
+  repo=sherpa-onnx-whisper-$name
 
   for wav in ${waves[@]}; do
     log "test fp32 onnx"
@@ -85,14 +87,14 @@ for name in ${names[@]}; do
     time $EXE \
       --whisper-encoder=$repo/${name}-encoder.onnx \
       --whisper-decoder=$repo/${name}-decoder.onnx \
-      $wav
+      $data/$wav
 
     log "test int8 onnx"
 
     time $EXE \
       --whisper-encoder=$repo/${name}-encoder.int8.onnx \
       --whisper-decoder=$repo/${name}-decoder.int8.onnx \
-      $wav
+      $data/$wav
   done
   rm -rf $repo
 done

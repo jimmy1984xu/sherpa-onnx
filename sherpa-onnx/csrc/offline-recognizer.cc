@@ -5,11 +5,23 @@
 #include "sherpa-onnx/csrc/offline-recognizer.h"
 
 #include <memory>
+#include <string>
+#include <vector>
+
+#if __ANDROID_API__ >= 9
+#include "android/asset_manager.h"
+#include "android/asset_manager_jni.h"
+#endif
+
+#if __OHOS__
+#include "rawfile/raw_file_manager.h"
+#endif
 
 #include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/offline-lm-config.h"
 #include "sherpa-onnx/csrc/offline-recognizer-impl.h"
+#include "sherpa-onnx/csrc/text-utils.h"
 
 namespace sherpa_onnx {
 
@@ -18,6 +30,7 @@ void OfflineRecognizerConfig::Register(ParseOptions *po) {
   model_config.Register(po);
   lm_config.Register(po);
   ctc_fst_decoder_config.Register(po);
+  hr.Register(po);
 
   po->Register(
       "decoding-method", &decoding_method,
@@ -37,14 +50,23 @@ void OfflineRecognizerConfig::Register(ParseOptions *po) {
 
   po->Register(
       "hotwords-file", &hotwords_file,
-      "The file containing hotwords, one words/phrases per line, and for each"
-      "phrase the bpe/cjkchar are separated by a space. For example: "
-      "▁HE LL O ▁WORLD"
-      "你 好 世 界");
+      "The file containing hotwords, one words/phrases per line, For example: "
+      "HELLO WORLD"
+      "你好世界");
 
   po->Register("hotwords-score", &hotwords_score,
                "The bonus score for each token in context word/phrase. "
                "Used only when decoding_method is modified_beam_search");
+
+  po->Register(
+      "rule-fsts", &rule_fsts,
+      "If not empty, it specifies fsts for inverse text normalization. "
+      "If there are multiple fsts, they are separated by a comma.");
+
+  po->Register(
+      "rule-fars", &rule_fars,
+      "If not empty, it specifies fst archives for inverse text normalization. "
+      "If there are multiple archives, they are separated by a comma.");
 }
 
 bool OfflineRecognizerConfig::Validate() const {
@@ -62,7 +84,7 @@ bool OfflineRecognizerConfig::Validate() const {
   if (!hotwords_file.empty() && decoding_method != "modified_beam_search") {
     SHERPA_ONNX_LOGE(
         "Please use --decoding-method=modified_beam_search if you"
-        " provide --hotwords-file. Given --decoding-method=%s",
+        " provide --hotwords-file. Given --decoding-method='%s'",
         decoding_method.c_str());
     return false;
   }
@@ -70,6 +92,38 @@ bool OfflineRecognizerConfig::Validate() const {
   if (!ctc_fst_decoder_config.graph.empty() &&
       !ctc_fst_decoder_config.Validate()) {
     SHERPA_ONNX_LOGE("Errors in fst_decoder");
+    return false;
+  }
+
+  if (!hotwords_file.empty() && !FileExists(hotwords_file)) {
+    SHERPA_ONNX_LOGE("--hotwords-file: '%s' does not exist",
+                     hotwords_file.c_str());
+    return false;
+  }
+
+  if (!rule_fsts.empty()) {
+    std::vector<std::string> files;
+    SplitStringToVector(rule_fsts, ",", false, &files);
+    for (const auto &f : files) {
+      if (!FileExists(f)) {
+        SHERPA_ONNX_LOGE("Rule fst '%s' does not exist. ", f.c_str());
+        return false;
+      }
+    }
+  }
+
+  if (!rule_fars.empty()) {
+    std::vector<std::string> files;
+    SplitStringToVector(rule_fars, ",", false, &files);
+    for (const auto &f : files) {
+      if (!FileExists(f)) {
+        SHERPA_ONNX_LOGE("Rule far '%s' does not exist. ", f.c_str());
+        return false;
+      }
+    }
+  }
+
+  if (!hr.lexicon.empty() && !hr.rule_fsts.empty() && !hr.Validate()) {
     return false;
   }
 
@@ -84,20 +138,23 @@ std::string OfflineRecognizerConfig::ToString() const {
   os << "model_config=" << model_config.ToString() << ", ";
   os << "lm_config=" << lm_config.ToString() << ", ";
   os << "ctc_fst_decoder_config=" << ctc_fst_decoder_config.ToString() << ", ";
+
   os << "decoding_method=\"" << decoding_method << "\", ";
   os << "max_active_paths=" << max_active_paths << ", ";
   os << "hotwords_file=\"" << hotwords_file << "\", ";
   os << "hotwords_score=" << hotwords_score << ", ";
-  os << "blank_penalty=" << blank_penalty << ")";
+  os << "blank_penalty=" << blank_penalty << ", ";
+  os << "rule_fsts=\"" << rule_fsts << "\", ";
+  os << "rule_fars=\"" << rule_fars << "\", ";
+  os << "hr=" << hr.ToString() << ")";
 
   return os.str();
 }
 
-#if __ANDROID_API__ >= 9
-OfflineRecognizer::OfflineRecognizer(AAssetManager *mgr,
+template <typename Manager>
+OfflineRecognizer::OfflineRecognizer(Manager *mgr,
                                      const OfflineRecognizerConfig &config)
     : impl_(OfflineRecognizerImpl::Create(mgr, config)) {}
-#endif
 
 OfflineRecognizer::OfflineRecognizer(const OfflineRecognizerConfig &config)
     : impl_(OfflineRecognizerImpl::Create(config)) {}
@@ -116,5 +173,23 @@ std::unique_ptr<OfflineStream> OfflineRecognizer::CreateStream() const {
 void OfflineRecognizer::DecodeStreams(OfflineStream **ss, int32_t n) const {
   impl_->DecodeStreams(ss, n);
 }
+
+void OfflineRecognizer::SetConfig(const OfflineRecognizerConfig &config) {
+  impl_->SetConfig(config);
+}
+
+OfflineRecognizerConfig OfflineRecognizer::GetConfig() const {
+  return impl_->GetConfig();
+}
+
+#if __ANDROID_API__ >= 9
+template OfflineRecognizer::OfflineRecognizer(
+    AAssetManager *mgr, const OfflineRecognizerConfig &config);
+#endif
+
+#if __OHOS__
+template OfflineRecognizer::OfflineRecognizer(
+    NativeResourceManager *mgr, const OfflineRecognizerConfig &config);
+#endif
 
 }  // namespace sherpa_onnx

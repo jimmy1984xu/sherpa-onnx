@@ -1,7 +1,34 @@
-cmake_minimum_required(VERSION 3.13 FATAL_ERROR)
+if (CMAKE_VERSION VERSION_GREATER_EQUAL "4.0.0")
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
+endif()
+
+cmake_minimum_required(VERSION 3.15 FATAL_ERROR)
+
+# https://cmake.org/cmake/help/latest/prop_tgt/MSVC_RUNTIME_LIBRARY.html
+cmake_policy(SET CMP0091 NEW)
+
+if(POLICY CMP0169)
+  cmake_policy(SET CMP0169 OLD)
+  set(CMAKE_POLICY_DEFAULT_CMP0169 OLD)
+endif()
+
+if(POLICY CMP0177)
+  cmake_policy(SET CMP0177 NEW)
+endif()
+
+message(STATUS "CMake version: ${CMAKE_VERSION}")
+
+set(CMAKE_OSX_DEPLOYMENT_TARGET "10.14" CACHE STRING "Minimum OS X deployment version. Used only for macOS")
+
+set(CMAKE_POLICY_DEFAULT_CMP0063 NEW)
+set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
+
 project(sherpa-onnx)
 
-set(SHERPA_ONNX_VERSION "1.9.21")
+# Remember to update
+# ./CHANGELOG.md
+# ./new-release.sh
+set(SHERPA_ONNX_VERSION "1.13.2")
 
 # Disable warning about
 #
@@ -9,6 +36,13 @@ set(SHERPA_ONNX_VERSION "1.9.21")
 #  not set.
 if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.24.0")
   cmake_policy(SET CMP0135 NEW)
+endif()
+
+
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  set(SUGGEST_BUILD_BINARIES ON)
+else()
+  set(SUGGEST_BUILD_BINARIES OFF)
 endif()
 
 option(SHERPA_ONNX_ENABLE_PYTHON "Whether to build Python" OFF)
@@ -20,23 +54,96 @@ option(SHERPA_ONNX_ENABLE_JNI "Whether to build JNI internface" OFF)
 option(SHERPA_ONNX_ENABLE_C_API "Whether to build C API" ON)
 option(SHERPA_ONNX_ENABLE_WEBSOCKET "Whether to build webscoket server/client" ON)
 option(SHERPA_ONNX_ENABLE_GPU "Enable ONNX Runtime GPU support" OFF)
+option(SHERPA_ONNX_ENABLE_MALI_G720 "Enable standalone Parakeet Mali-G720 backend (Android arm64)" OFF)
+if(SHERPA_ONNX_ENABLE_MALI_G720 AND NOT (ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a"))
+  message(FATAL_ERROR "MaliG720 requires Android arm64-v8a; use OFF on other platforms")
+endif()
+option(SHERPA_ONNX_ENABLE_DIRECTML "Enable ONNX Runtime DirectML support" OFF)
+option(SHERPA_ONNX_LINK_D3D "Whether static ONNX runtime lib with DML" OFF)
+
 option(SHERPA_ONNX_ENABLE_WASM "Whether to enable WASM" OFF)
+option(SHERPA_ONNX_ENABLE_WASM_SPEAKER_DIARIZATION "Whether to enable WASM for speaker diarization" OFF)
 option(SHERPA_ONNX_ENABLE_WASM_TTS "Whether to enable WASM for TTS" OFF)
 option(SHERPA_ONNX_ENABLE_WASM_ASR "Whether to enable WASM for ASR" OFF)
 option(SHERPA_ONNX_ENABLE_WASM_KWS "Whether to enable WASM for KWS" OFF)
+option(SHERPA_ONNX_ENABLE_WASM_VAD "Whether to enable WASM for VAD" OFF)
+option(SHERPA_ONNX_ENABLE_WASM_VAD_ASR "Whether to enable WASM for VAD+ASR" OFF)
 option(SHERPA_ONNX_ENABLE_WASM_NODEJS "Whether to enable WASM for NodeJS" OFF)
-option(SHERPA_ONNX_ENABLE_BINARY "Whether to build binaries" ON)
+option(SHERPA_ONNX_ENABLE_WASM_SPEECH_ENHANCEMENT "Whether to enable WASM for speech enhancement" OFF)
+option(SHERPA_ONNX_ENABLE_BINARY "Whether to build binaries" ${SUGGEST_BUILD_BINARIES})
 option(SHERPA_ONNX_ENABLE_TTS "Whether to build TTS related code" ON)
+option(SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION "Whether to build speaker diarization related code" ON)
 option(SHERPA_ONNX_LINK_LIBSTDCPP_STATICALLY "True to link libstdc++ statically. Used only when BUILD_SHARED_LIBS is OFF on Linux" ON)
 option(SHERPA_ONNX_USE_PRE_INSTALLED_ONNXRUNTIME_IF_AVAILABLE "True to use pre-installed onnxruntime if available" ON)
+option(SHERPA_ONNX_ENABLE_SANITIZER "Whether to enable ubsan and asan" OFF)
+option(SHERPA_ONNX_BUILD_C_API_EXAMPLES "Whether to enable C API examples" ${SUGGEST_BUILD_BINARIES})
+option(SHERPA_ONNX_ENABLE_RKNN "Whether to build for RKNN NPU " OFF)
+option(SHERPA_ONNX_ENABLE_AXERA "Whether to build for Axera NPU " OFF)
+option(SHERPA_ONNX_ENABLE_AXCL "Whether to build for Axcl NPU " OFF)
+option(SHERPA_ONNX_ENABLE_ASCEND_NPU "Whether to build for Ascend NPU " OFF)
+option(SHERPA_ONNX_ENABLE_QNN "Whether to build for Qualcomm NPU" OFF)
+option(SHERPA_ONNX_ENABLE_SPACEMIT "Whether to build for SpacemiT CPUs " OFF)
+set(SHERPA_ONNX_LINUX_ARM64_GPU_ONNXRUNTIME_VERSION "1.11.0" CACHE STRING "Used only for Linux ARM64 GPU. Set to 1.11.0 if you use CUDA 10.2 and cudnn8. Set it to 1.16.0 if you use CUDA 11.4 and cudnn8. Set it to 1.18.0 if you use CUDA 12.2 and cudnn8. Set it to 1.18.1 if you use CUDA 12.6 and cudnn9")
+
+# SHERPA_ONNX_USE_STATIC_CRT controls whether we use:
+#   - Static CRT:   /MT  (Release), /MTd (Debug)
+#   - Dynamic CRT:  /MD  (Release), /MDd (Debug)
+option(SHERPA_ONNX_USE_STATIC_CRT "For Windows only. ON to use static CRT (/MT /MTd); OFF to use dynamic (/MD /MDd)" ON)
+
+
+# On Windows with MSVC, explicitly control which C runtime (CRT) to use.
+#
+# We rely on CMAKE_MSVC_RUNTIME_LIBRARY (CMake >= 3.15) instead of manually
+# appending /MT, /MTd, /MD, or /MDd to compiler flags.
+#
+# Benefits:
+#   - Correct behavior for multi-config generators (Visual Studio, Ninja Multi-Config)
+#   - No reliance on CMAKE_BUILD_TYPE (which is empty for multi-config generators)
+#   - Cleaner interaction with subprojects and FetchContent dependencies
+#
+# The generator expression automatically selects:
+#   - Debug   -> /MTd or /MDd
+#   - Release -> /MT  or /MD
+#   - RelWithDebInfo / MinSizeRel -> /MT or /MD
+if (MSVC AND NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+  if(DEFINED CMAKE_BUILD_TYPE AND NOT CMAKE_BUILD_TYPE STREQUAL "")
+    if (SHERPA_ONNX_USE_STATIC_CRT)
+      # Use static CRT: /MT (Release) and /MTd (Debug)
+      if(CMAKE_BUILD_TYPE MATCHES Debug)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDebug")
+      else()
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+      endif()
+    else()
+      # Use dynamic CRT: /MD (Release) and /MDd (Debug)
+      if(CMAKE_BUILD_TYPE MATCHES Debug)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDebugDLL")
+      else()
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+      endif()
+    endif()
+  else()
+    if (SHERPA_ONNX_USE_STATIC_CRT)
+      # Use static CRT: /MT (Release) and /MTd (Debug)
+      set(CMAKE_MSVC_RUNTIME_LIBRARY
+          "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    else()
+      # Use dynamic CRT: /MD (Release) and /MDd (Debug)
+      set(CMAKE_MSVC_RUNTIME_LIBRARY
+          "MultiThreadedDLL$<$<CONFIG:Debug>:Debug>")
+    endif()
+  endif()
+endif()
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-set(CMAKE_SKIP_BUILD_RPATH FALSE)
-set(BUILD_RPATH_USE_ORIGIN TRUE)
-set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+if(UNIX)
+  set(CMAKE_SKIP_BUILD_RPATH FALSE)
+  set(BUILD_RPATH_USE_ORIGIN TRUE)
+  set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+endif()
 
 if(NOT APPLE)
   set(SHERPA_ONNX_RPATH_ORIGIN "$ORIGIN")
@@ -44,26 +151,25 @@ else()
   set(SHERPA_ONNX_RPATH_ORIGIN "@loader_path")
 endif()
 
-set(CMAKE_INSTALL_RPATH ${SHERPA_ONNX_RPATH_ORIGIN})
-set(CMAKE_BUILD_RPATH ${SHERPA_ONNX_RPATH_ORIGIN})
+if(UNIX)
+  set(CMAKE_INSTALL_RPATH ${SHERPA_ONNX_RPATH_ORIGIN})
+  set(CMAKE_BUILD_RPATH ${SHERPA_ONNX_RPATH_ORIGIN})
+endif()
 
 if(NOT CMAKE_BUILD_TYPE)
   message(STATUS "No CMAKE_BUILD_TYPE given, default to Release")
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-if(DEFINED ANDROID_ABI AND NOT SHERPA_ONNX_ENABLE_JNI)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "")
+
+if(DEFINED ANDROID_ABI AND NOT SHERPA_ONNX_ENABLE_JNI AND NOT SHERPA_ONNX_ENABLE_C_API)
   message(STATUS "Set SHERPA_ONNX_ENABLE_JNI to ON for Android")
   set(SHERPA_ONNX_ENABLE_JNI ON CACHE BOOL "" FORCE)
 endif()
 
 if(SHERPA_ONNX_ENABLE_PYTHON AND NOT BUILD_SHARED_LIBS)
   message(STATUS "Set BUILD_SHARED_LIBS to ON since SHERPA_ONNX_ENABLE_PYTHON is ON")
-  set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
-endif()
-
-if(SHERPA_ONNX_ENABLE_JNI AND NOT BUILD_SHARED_LIBS)
-  message(STATUS "Set BUILD_SHARED_LIBS to ON since SHERPA_ONNX_ENABLE_JNI is ON")
   set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
 endif()
 
@@ -80,22 +186,28 @@ to install CUDA toolkit if you have not installed it.")
   endif()
 endif()
 
-if(BUILD_SHARED_LIBS AND MSVC)
-  set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+if(SHERPA_ONNX_ENABLE_DIRECTML)
+  message(WARNING "\
+Compiling with DirectML enabled. Please make sure Windows 10 SDK
+is installed on your system. Otherwise, you will get errors at runtime.
+Please refer to
+  https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html#requirements
+to install Windows 10 SDK if you have not installed it.")
+  if(NOT BUILD_SHARED_LIBS)
+    message(STATUS "Set BUILD_SHARED_LIBS to ON since SHERPA_ONNX_ENABLE_DIRECTML is ON")
+    set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+  endif()
 endif()
 
-if(NOT BUILD_SHARED_LIBS AND MSVC)
-  # see https://cmake.org/cmake/help/latest/prop_tgt/MSVC_RUNTIME_LIBRARY.html
-  # https://stackoverflow.com/questions/14172856/compile-with-mt-instead-of-md-using-cmake
-  if(MSVC)
-      add_compile_options(
-          $<$<CONFIG:>:/MT> #---------|
-          $<$<CONFIG:Debug>:/MTd> #---|-- Statically link the runtime libraries
-          $<$<CONFIG:Release>:/MT> #--|
-          $<$<CONFIG:RelWithDebInfo>:/MT>
-          $<$<CONFIG:MinSizeRel>:/MT>
-      )
-  endif()
+if(CMAKE_SYSTEM_NAME STREQUAL OHOS)
+  set(CMAKE_CXX_FLAGS "-Wno-unused-command-line-argument ${CMAKE_CXX_FLAGS}")
+  set(CMAKE_C_FLAGS "-Wno-unused-command-line-argument ${CMAKE_C_FLAGS}")
+endif()
+
+if(ANDROID)
+  # see https://github.com/microsoft/onnxruntime/pull/22076
+  # https://github.com/k2-fsa/sherpa-onnx/issues/2413
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
 endif()
 
 message(STATUS "CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}")
@@ -110,26 +222,98 @@ message(STATUS "SHERPA_ONNX_ENABLE_C_API ${SHERPA_ONNX_ENABLE_C_API}")
 message(STATUS "SHERPA_ONNX_ENABLE_WEBSOCKET ${SHERPA_ONNX_ENABLE_WEBSOCKET}")
 message(STATUS "SHERPA_ONNX_ENABLE_GPU ${SHERPA_ONNX_ENABLE_GPU}")
 message(STATUS "SHERPA_ONNX_ENABLE_WASM ${SHERPA_ONNX_ENABLE_WASM}")
+message(STATUS "SHERPA_ONNX_ENABLE_WASM_SPEAKER_DIARIZATION ${SHERPA_ONNX_ENABLE_WASM_SPEAKER_DIARIZATION}")
 message(STATUS "SHERPA_ONNX_ENABLE_WASM_TTS ${SHERPA_ONNX_ENABLE_WASM_TTS}")
 message(STATUS "SHERPA_ONNX_ENABLE_WASM_ASR ${SHERPA_ONNX_ENABLE_WASM_ASR}")
 message(STATUS "SHERPA_ONNX_ENABLE_WASM_KWS ${SHERPA_ONNX_ENABLE_WASM_KWS}")
+message(STATUS "SHERPA_ONNX_ENABLE_WASM_VAD ${SHERPA_ONNX_ENABLE_WASM_VAD}")
+message(STATUS "SHERPA_ONNX_ENABLE_WASM_VAD_ASR ${SHERPA_ONNX_ENABLE_WASM_VAD_ASR}")
 message(STATUS "SHERPA_ONNX_ENABLE_WASM_NODEJS ${SHERPA_ONNX_ENABLE_WASM_NODEJS}")
+message(STATUS "SHERPA_ONNX_ENABLE_WASM_SPEECH_ENHANCEMENT ${SHERPA_ONNX_ENABLE_WASM_SPEECH_ENHANCEMENT}")
 message(STATUS "SHERPA_ONNX_ENABLE_BINARY ${SHERPA_ONNX_ENABLE_BINARY}")
 message(STATUS "SHERPA_ONNX_ENABLE_TTS ${SHERPA_ONNX_ENABLE_TTS}")
+message(STATUS "SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION ${SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION}")
 message(STATUS "SHERPA_ONNX_LINK_LIBSTDCPP_STATICALLY ${SHERPA_ONNX_LINK_LIBSTDCPP_STATICALLY}")
 message(STATUS "SHERPA_ONNX_USE_PRE_INSTALLED_ONNXRUNTIME_IF_AVAILABLE ${SHERPA_ONNX_USE_PRE_INSTALLED_ONNXRUNTIME_IF_AVAILABLE}")
+message(STATUS "SHERPA_ONNX_ENABLE_SANITIZER: ${SHERPA_ONNX_ENABLE_SANITIZER}")
+message(STATUS "SHERPA_ONNX_BUILD_C_API_EXAMPLES: ${SHERPA_ONNX_BUILD_C_API_EXAMPLES}")
+message(STATUS "SHERPA_ONNX_ENABLE_RKNN: ${SHERPA_ONNX_ENABLE_RKNN}")
+message(STATUS "SHERPA_ONNX_ENABLE_AXERA: ${SHERPA_ONNX_ENABLE_AXERA}")
+message(STATUS "SHERPA_ONNX_ENABLE_AXCL: ${SHERPA_ONNX_ENABLE_AXCL}")
+message(STATUS "SHERPA_ONNX_ENABLE_ASCEND_NPU: ${SHERPA_ONNX_ENABLE_ASCEND_NPU}")
+message(STATUS "SHERPA_ONNX_ENABLE_QNN: ${SHERPA_ONNX_ENABLE_QNN}")
+message(STATUS "SHERPA_ONNX_ENABLE_SPACEMIT: ${SHERPA_ONNX_ENABLE_SPACEMIT}")
+message(STATUS "SHERPA_ONNX_LINK_D3D: ${SHERPA_ONNX_LINK_D3D}")
+message(STATUS "SHERPA_ONNX_USE_STATIC_CRT: ${SHERPA_ONNX_USE_STATIC_CRT}")
+if(MSVC)
+  message(STATUS "CMAKE_MSVC_RUNTIME_LIBRARY ${CMAKE_MSVC_RUNTIME_LIBRARY}")
+endif()
+
+if(BUILD_SHARED_LIBS OR SHERPA_ONNX_ENABLE_JNI)
+  set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+  set(CMAKE_VISIBILITY_INLINES_HIDDEN 1)
+endif()
+
+# Rust on Linux links static sherpa-onnx archives into PIE executables by
+# default, so static objects need PIC as well.
+if(NOT WIN32)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
+if(BUILD_SHARED_LIBS AND NOT CMAKE_SYSTEM_NAME STREQUAL iOS AND CMAKE_BUILD_TYPE STREQUAL Release)
+  # Don't use LTO for iOS since it causes the following error
+  # error: unable to find any architecture information in the binary
+  # at '/Users/fangjun/open-source/sherpa-onnx/build-ios/build/os64/sherpa-onnx.a':
+  # Unknown header: 0xb17c0de
+  # See also https://forums.developer.apple.com/forums/thread/714324
+
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT ipo)
+  if(ipo)
+    message(STATUS "IPO is enabled")
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+  else()
+    message(STATUS "IPO is not available")
+  endif()
+endif()
 
 if(SHERPA_ONNX_ENABLE_TTS)
   message(STATUS "TTS is enabled")
   add_definitions(-DSHERPA_ONNX_ENABLE_TTS=1)
 else()
-  message(WARNING "TTS is disabled")
+  message(STATUS "TTS is disabled")
   add_definitions(-DSHERPA_ONNX_ENABLE_TTS=0)
+endif()
+
+if(SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION)
+  message(STATUS "speaker diarization is enabled")
+  add_definitions(-DSHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=1)
+else()
+  message(STATUS "speaker diarization is disabled")
+  add_definitions(-DSHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=0)
+endif()
+
+if(SHERPA_ONNX_ENABLE_DIRECTML)
+  message(STATUS "DirectML is enabled")
+  add_definitions(-DSHERPA_ONNX_ENABLE_DIRECTML=1)
+else()
+  message(STATUS "DirectML is disabled")
+  add_definitions(-DSHERPA_ONNX_ENABLE_DIRECTML=0)
+endif()
+
+if(SHERPA_ONNX_ENABLE_WASM_SPEAKER_DIARIZATION)
+  if(NOT SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION)
+    message(FATAL_ERROR "Please set SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION to ON if you want to build WASM for speaker diarization")
+  endif()
+
+  if(NOT SHERPA_ONNX_ENABLE_WASM)
+    message(FATAL_ERROR "Please set SHERPA_ONNX_ENABLE_WASM to ON if you enable WASM for speaker diarization")
+  endif()
 endif()
 
 if(SHERPA_ONNX_ENABLE_WASM_TTS)
   if(NOT SHERPA_ONNX_ENABLE_TTS)
-    message(FATAL_ERROR "Please set SHERPA_ONNX_ENABLE_TTS to ON if you want to build wasm TTS")
+    message(FATAL_ERROR "Please set SHERPA_ONNX_ENABLE_TTS to ON if you want to build WASM for TTS")
   endif()
 
   if(NOT SHERPA_ONNX_ENABLE_WASM)
@@ -147,25 +331,146 @@ if(SHERPA_ONNX_ENABLE_WASM_NODEJS)
   if(NOT SHERPA_ONNX_ENABLE_WASM)
     message(FATAL_ERROR "Please set SHERPA_ONNX_ENABLE_WASM to ON if you enable WASM for NodeJS")
   endif()
+  add_definitions(-DSHERPA_ONNX_ENABLE_WASM_KWS=1)
 endif()
 
 if(SHERPA_ONNX_ENABLE_WASM)
   add_definitions(-DSHERPA_ONNX_ENABLE_WASM=1)
+  # Build every wasm artifact with pthread/atomics support so the .a files
+  # can be linked with the threaded ONNX Runtime prebuild and a wasm module
+  # that pre-spawns a worker pool. Browsers require COOP/COEP headers to
+  # expose SharedArrayBuffer; wasm/serve.py is provided for that.
+  string(APPEND CMAKE_C_FLAGS " -pthread")
+  string(APPEND CMAKE_CXX_FLAGS " -pthread -fexceptions")
 endif()
 
 if(SHERPA_ONNX_ENABLE_WASM_KWS)
+  if(NOT SHERPA_ONNX_ENABLE_WASM)
+    message(FATAL_ERROR "Please set SHERPA_ONNX_ENABLE_WASM to ON if you enable WASM for KWS")
+  endif()
   add_definitions(-DSHERPA_ONNX_ENABLE_WASM_KWS=1)
 endif()
 
+if(SHERPA_ONNX_ENABLE_WASM_VAD)
+  if(NOT SHERPA_ONNX_ENABLE_WASM)
+    message(FATAL_ERROR "Please set SHERPA_ONNX_ENABLE_WASM to ON if you enable WASM for VAD")
+  endif()
+endif()
+
+if(SHERPA_ONNX_ENABLE_WASM_VAD_ASR)
+  if(NOT SHERPA_ONNX_ENABLE_WASM)
+    message(FATAL_ERROR "Please set SHERPA_ONNX_ENABLE_WASM to ON if you enable WASM for VAD+ASR")
+  endif()
+endif()
+
+if(SHERPA_ONNX_ENABLE_WASM_SPEECH_ENHANCEMENT)
+  if(NOT SHERPA_ONNX_ENABLE_WASM)
+    message(FATAL_ERROR "Please set SHERPA_ONNX_ENABLE_WASM to ON if you enable WASM for speech enhancement")
+  endif()
+endif()
+
 if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 14 CACHE STRING "The C++ version to be used.")
+  set(CMAKE_CXX_STANDARD 17 CACHE STRING "The C++ version to be used.")
 endif()
 set(CMAKE_CXX_EXTENSIONS OFF)
 message(STATUS "C++ Standard version: ${CMAKE_CXX_STANDARD}")
 
 include(CheckIncludeFileCXX)
 
-if(UNIX AND NOT APPLE AND NOT SHERPA_ONNX_ENABLE_WASM AND NOT CMAKE_SYSTEM_NAME STREQUAL Android)
+if(SHERPA_ONNX_ENABLE_RKNN)
+  add_definitions(-DSHERPA_ONNX_ENABLE_RKNN=1)
+endif()
+
+if(SHERPA_ONNX_ENABLE_AXERA)
+  add_definitions(-DSHERPA_ONNX_ENABLE_AXERA=1)
+endif()
+
+if(SHERPA_ONNX_ENABLE_AXCL)
+  add_definitions(-DSHERPA_ONNX_ENABLE_AXCL=1)
+endif()
+
+if(SHERPA_ONNX_ENABLE_QNN)
+  add_definitions(-DSHERPA_ONNX_ENABLE_QNN=1)
+endif()
+
+if(SHERPA_ONNX_ENABLE_SPACEMIT)
+  add_definitions(-DSHERPA_ONNX_ENABLE_SPACEMIT=1)
+endif()
+
+if(SHERPA_ONNX_ENABLE_ASCEND_NPU)
+  set(ASCEND_TOOLKIT_HOME)
+  if(NOT DEFINED ENV{ASCEND_TOOLKIT_HOME})
+    if(EXISTS /usr/local/Ascend/ascend-toolkit/latest)
+      set(ASCEND_TOOLKIT_HOME /usr/local/Ascend/ascend-toolkit/latest)
+    else()
+      message(FATAL_ERROR "\
+      Please specify the installation directory of the ascend toolkit.
+      For instance, if it is installed in
+
+        /usr/local/Ascend/ascend-toolkit/latest
+
+      You can run
+
+        export ASCEND_TOOLKIT_HOME=/usr/local/Ascend/ascend-toolkit/latest
+      ")
+    endif()
+  else()
+    set(ASCEND_TOOLKIT_HOME $ENV{ASCEND_TOOLKIT_HOME})
+  endif()
+
+  message(STATUS "ASCEND_TOOLKIT_HOME: ${ASCEND_TOOLKIT_HOME}")
+
+  if(NOT EXISTS ${ASCEND_TOOLKIT_HOME}/include/acl/acl.h)
+    message(FATAL_ERROR "${ASCEND_TOOLKIT_HOME}/include/acl/acl.h does not exist")
+  endif()
+
+  if(NOT EXISTS ${ASCEND_TOOLKIT_HOME}/lib64/libascendcl.so)
+    message(FATAL_ERROR "${ASCEND_TOOLKIT_HOME}/lib64/libascendcl.so does not exist")
+  endif()
+
+  add_definitions(-DSHERPA_ONNX_ENABLE_ASCEND_NPU=1)
+  message(STATUS "Build with Ascend NPU")
+endif()
+
+if(SHERPA_ONNX_ENABLE_QNN)
+  if(NOT DEFINED ENV{QNN_SDK_ROOT})
+      message(FATAL_ERROR "\
+      Please specify the installation directory of the QNN SDK toolkit.
+      For instance, if it is installed in
+
+        /mnt/sdb/open-source/qairt/2.33.0.250327
+
+      You can run
+
+        source /mnt/sdb/open-source/qairt/2.33.0.250327/bin/envsetup.sh
+
+      which will give you the following output
+
+      [INFO] AISW SDK environment set
+      [INFO] QNN_SDK_ROOT: /mnt/sdb/open-source/qairt/2.33.0.250327
+      [INFO] SNPE_ROOT: /mnt/sdb/open-source/qairt/2.33.0.250327
+
+      Then run
+
+        echo $QNN_SDK_ROOT
+
+      It should print:
+
+        /mnt/sdb/open-source/qairt/2.33.0.250327
+
+      You can choose a version of QNN SDK by yourself. You don't need
+      to use 2.33.0.250327
+      ")
+  endif()
+
+  set(QNN_SDK_ROOT $ENV{QNN_SDK_ROOT})
+
+  if(NOT EXISTS ${QNN_SDK_ROOT}/include/QNN/QnnInterface.h)
+    message(FATAL_ERROR "${QNN_SDK_ROOT}/include/QNN/QnnInterface.h does not exist")
+  endif()
+endif()
+
+if(UNIX AND NOT APPLE AND NOT SHERPA_ONNX_ENABLE_WASM AND NOT CMAKE_SYSTEM_NAME STREQUAL Android AND NOT CMAKE_SYSTEM_NAME STREQUAL OHOS)
   check_include_file_cxx(alsa/asoundlib.h SHERPA_ONNX_HAS_ALSA)
   if(SHERPA_ONNX_HAS_ALSA)
     message(STATUS "With Alsa")
@@ -175,7 +480,7 @@ if(UNIX AND NOT APPLE AND NOT SHERPA_ONNX_ENABLE_WASM AND NOT CMAKE_SYSTEM_NAME 
 Could not find alsa/asoundlib.h !
 We won't build sherpa-onnx-alsa
 To fix that, please do:
-  (1) sudo apt-get install alsa-utils libasound2-dev
+  (1) sudo apt-get install alsa-utils libasound2-dev pkg-config
   (2) rm -rf build
   (3) re-try
   ")
@@ -188,6 +493,7 @@ check_include_file_cxx(execinfo.h SHERPA_ONNX_HAVE_EXECINFO_H)
 if(WIN32)
   add_definitions(-DNOMINMAX) # Otherwise, std::max() and std::min() won't work
 endif()
+
 
 if(WIN32 AND MSVC)
   # disable various warnings for MSVC
@@ -214,8 +520,10 @@ if(WIN32 AND MSVC)
   add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
 endif()
 
-list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
-list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Modules)
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+
+include(show-info)
 
 if(SHERPA_ONNX_ENABLE_WASM)
   # Enable it for debugging in case there is something wrong.
@@ -231,18 +539,21 @@ if(NOT BUILD_SHARED_LIBS AND CMAKE_SYSTEM_NAME STREQUAL Linux)
   endif()
 endif()
 
+if(SHERPA_ONNX_ENABLE_PYTHON)
+  include(pybind11)
+endif()
+
 include(kaldi-native-fbank)
 include(kaldi-decoder)
 include(onnxruntime)
+include(simple-sentencepiece)
 set(ONNXRUNTIME_DIR ${onnxruntime_SOURCE_DIR})
 message(STATUS "ONNXRUNTIME_DIR: ${ONNXRUNTIME_DIR}")
 
-if(SHERPA_ONNX_ENABLE_PORTAUDIO)
+if(SHERPA_ONNX_ENABLE_PORTAUDIO AND SHERPA_ONNX_ENABLE_BINARY)
+  # portaudio is used only in building demo binaries and the sherpa-onnx-core
+  # library does not depend on it.
   include(portaudio)
-endif()
-
-if(SHERPA_ONNX_ENABLE_PYTHON)
-  include(pybind11)
 endif()
 
 if(SHERPA_ONNX_ENABLE_TESTS)
@@ -255,6 +566,8 @@ if(SHERPA_ONNX_ENABLE_WEBSOCKET)
   include(asio)
 endif()
 
+include(json)
+
 if(SHERPA_ONNX_ENABLE_TTS)
   include(espeak-ng-for-piper)
   set(ESPEAK_NG_DIR ${espeak_ng_SOURCE_DIR})
@@ -262,10 +575,48 @@ if(SHERPA_ONNX_ENABLE_TTS)
   include(piper-phonemize)
 endif()
 
+if(SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION)
+  include(hclust-cpp)
+endif()
+
+# if(NOT MSVC AND CMAKE_BUILD_TYPE STREQUAL Debug AND (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"))
+if(SHERPA_ONNX_ENABLE_SANITIZER)
+  message(WARNING "enable ubsan and asan")
+  set(CMAKE_REQUIRED_LIBRARIES -lubsan -lasan)
+  include(CheckCCompilerFlag)
+
+  set(flags -fsanitize=undefined )
+  string(APPEND flags " -fno-sanitize-recover=undefined ")
+  string(APPEND flags " -fsanitize=integer ")
+  string(APPEND flags " -fsanitize=nullability ")
+  string(APPEND flags " -fsanitize=implicit-conversion ")
+  string(APPEND flags " -fsanitize=bounds ")
+  string(APPEND flags " -fsanitize=address ")
+
+  if(OFF)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${flags} -Wall -Wextra")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${flags} -Wall -Wextra")
+  else()
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${flags}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${flags}")
+  endif()
+
+  set(CMAKE_EXECUTABLE_LINKER_FLAGS "${CMAKE_EXECUTABLE_LINKER_FLAGS} ${flags}")
+
+  add_compile_options(-fno-omit-frame-pointer)
+endif()
+
+if(SHERPA_ONNX_ENABLE_MALI_G720)
+  add_subdirectory(third_party/transai-mali-g720)
+  add_subdirectory(third_party/transai-seaco-g720)
+endif()
+
 add_subdirectory(sherpa-onnx)
 
-if(SHERPA_ONNX_ENABLE_C_API AND SHERPA_ONNX_ENABLE_BINARY)
+if(SHERPA_ONNX_ENABLE_C_API AND SHERPA_ONNX_ENABLE_BINARY AND SHERPA_ONNX_BUILD_C_API_EXAMPLES)
+  set(SHERPA_ONNX_PKG_WITH_CARGS "-lcargs")
   add_subdirectory(c-api-examples)
+  add_subdirectory(cxx-api-examples)
 endif()
 
 if(SHERPA_ONNX_ENABLE_WASM)
@@ -284,11 +635,15 @@ if(NOT BUILD_SHARED_LIBS)
   endif()
 endif()
 
+if(NOT BUILD_SHARED_LIBS)
 # See https://people.freedesktop.org/~dbn/pkg-config-guide.html
-if(SHERPA_ONNX_ENABLE_TTS)
-  configure_file(cmake/sherpa-onnx.pc.in ${PROJECT_BINARY_DIR}/sherpa-onnx.pc @ONLY)
+  if(SHERPA_ONNX_ENABLE_TTS)
+    configure_file(cmake/sherpa-onnx-static.pc.in ${PROJECT_BINARY_DIR}/sherpa-onnx.pc @ONLY)
+  else()
+    configure_file(cmake/sherpa-onnx-static-no-tts.pc.in ${PROJECT_BINARY_DIR}/sherpa-onnx.pc @ONLY)
+  endif()
 else()
-  configure_file(cmake/sherpa-onnx-no-tts.pc.in ${PROJECT_BINARY_DIR}/sherpa-onnx.pc @ONLY)
+  configure_file(cmake/sherpa-onnx-shared.pc.in ${PROJECT_BINARY_DIR}/sherpa-onnx.pc @ONLY)
 endif()
 
 install(

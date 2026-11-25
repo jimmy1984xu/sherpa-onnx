@@ -2,7 +2,8 @@ if(NOT $ENV{SHERPA_ONNX_IS_USING_BUILD_WASM_SH})
   message(FATAL_ERROR "Please use ./build-wasm-simd-tts.sh to build for wasm TTS")
 endif()
 
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/model.onnx")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/tokens.txt" AND
+   NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/lm_flow.int8.onnx")
   message(FATAL_ERROR "Please read ${CMAKE_CURRENT_SOURCE_DIR}/assets/README.md before you continue")
 endif()
 
@@ -13,6 +14,7 @@ set(exported_functions
   SherpaOnnxDestroyOfflineTtsGeneratedAudio
   SherpaOnnxOfflineTtsGenerate
   SherpaOnnxOfflineTtsGenerateWithCallback
+  SherpaOnnxOfflineTtsGenerateWithConfig
   SherpaOnnxOfflineTtsNumSpeakers
   SherpaOnnxOfflineTtsSampleRate
   SherpaOnnxWriteWave
@@ -27,13 +29,21 @@ list(JOIN mangled_exported_functions "," all_exported_functions)
 include_directories(${CMAKE_SOURCE_DIR})
 set(MY_FLAGS " -s FORCE_FILESYSTEM=1 -s INITIAL_MEMORY=512MB -s ALLOW_MEMORY_GROWTH=1")
 string(APPEND MY_FLAGS " -sSTACK_SIZE=10485760 ") # 10MB
+string(APPEND MY_FLAGS " -pthread -sPTHREAD_POOL_SIZE=4 ")
+# EXPORT_ES6 lets the wasm glue load as an ES module from a type:'module'
+# Web Worker. A classic worker calling importScripts() on a pthread-enabled
+# wasm hangs during nested pthread bootstrap.
+string(APPEND MY_FLAGS " -sEXPORT_ES6=1 ")
+string(APPEND MY_FLAGS " -sALLOW_TABLE_GROWTH ")
 string(APPEND MY_FLAGS " -sEXPORTED_FUNCTIONS=[_CopyHeap,_malloc,_free,${all_exported_functions}] ")
 string(APPEND MY_FLAGS "--preload-file ${CMAKE_CURRENT_SOURCE_DIR}/assets@. ")
-string(APPEND MY_FLAGS " -sEXPORTED_RUNTIME_METHODS=['ccall','stringToUTF8','setValue','getValue','lengthBytesUTF8','UTF8ToString'] ")
+string(APPEND MY_FLAGS " -sEXPORTED_RUNTIME_METHODS=['ccall','stringToUTF8','setValue','getValue','lengthBytesUTF8','UTF8ToString','HEAPU8','HEAP16','HEAP32','HEAPU32','HEAPF32','HEAPF64','addFunction','removeFunction'] ")
+
+message(STATUS "MY_FLAGS: ${MY_FLAGS}")
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${MY_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${MY_FLAGS}")
-set(CMAKE_EXECUTBLE_LINKER_FLAGS "${CMAKE_EXECUTBLE_LINKER_FLAGS} ${MY_FLAGS}")
+set(CMAKE_EXECUTABLE_LINKER_FLAGS "${CMAKE_EXECUTABLE_LINKER_FLAGS} ${MY_FLAGS}")
 
 if (NOT CMAKE_EXECUTABLE_SUFFIX STREQUAL ".js")
   message(FATAL_ERROR "The default suffix for building executables should be .js!")
@@ -49,6 +59,7 @@ install(
     "$<TARGET_FILE_DIR:sherpa-onnx-wasm-main-tts>/sherpa-onnx-wasm-main-tts.js"
     "index.html"
     "sherpa-onnx-tts.js"
+    "sherpa-onnx-tts.worker.js"
     "app-tts.js"
     "$<TARGET_FILE_DIR:sherpa-onnx-wasm-main-tts>/sherpa-onnx-wasm-main-tts.wasm"
     "$<TARGET_FILE_DIR:sherpa-onnx-wasm-main-tts>/sherpa-onnx-wasm-main-tts.data"

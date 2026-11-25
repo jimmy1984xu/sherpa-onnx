@@ -5,20 +5,9 @@ on:
     branches:
       - master
     tags:
-      - '*'
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
     paths:
       - '.github/workflows/mfc.yaml'
-      - 'CMakeLists.txt'
-      - 'cmake/**'
-      - 'mfc-examples/**'
-      - 'sherpa-onnx/csrc/*'
-      - 'sherpa-onnx/c-api/*'
-  pull_request:
-    branches:
-      - master
-    paths:
-      - '.github/workflows/mfc.yaml'
-      - 'CMakeLists.txt'
       - 'cmake/**'
       - 'mfc-examples/**'
       - 'sherpa-onnx/csrc/*'
@@ -37,13 +26,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest]
+        os: [windows-2022]
         arch: [x64, x86]
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Update version
+        shell: bash
+        run: |
+          ./new-release.sh
+          git diff .
 
       - name: Display MSBuild info
         shell: cmd
@@ -130,6 +125,9 @@ jobs:
           file_glob: true
           overwrite: true
           file: ./mfc-examples/${{ matrix.arch }}/Release/sherpa-onnx-streaming-*.exe
+          # repo_name: k2-fsa/sherpa-onnx
+          # repo_token: ${{ secrets.UPLOAD_GH_SHERPA_ONNX_TOKEN }}
+          # tag: v1.12.32
 
       - name: Release pre-compiled binaries and libs for Windows ${{ matrix.arch }}
         if: (github.repository_owner == 'csukuangfj' || github.repository_owner == 'k2-fsa') && github.event_name == 'push' && contains(github.ref, 'refs/tags/')
@@ -138,11 +136,17 @@ jobs:
           file_glob: true
           overwrite: true
           file: ./mfc-examples/${{ matrix.arch }}/Release/sherpa-onnx-non-streaming-*.exe
+          # repo_name: k2-fsa/sherpa-onnx
+          # repo_token: ${{ secrets.UPLOAD_GH_SHERPA_ONNX_TOKEN }}
+          # tag: v1.12.32
 
       - name: Release pre-compiled binaries and libs for Windows ${{ matrix.arch }}
-        if: github.repository_owner == 'csukuangfj' || github.repository_owner == 'k2-fsa' && github.event_name == 'push' && contains(github.ref, 'refs/tags/')
+        if: (github.repository_owner == 'csukuangfj' || github.repository_owner == 'k2-fsa') && github.event_name == 'push' && contains(github.ref, 'refs/tags/')
         uses: svenstaro/upload-release-action@v2
         with:
           file_glob: true
           overwrite: true
           file: ./mfc-examples/${{ matrix.arch }}/sherpa-onnx-non-streaming-*.exe
+          # repo_name: k2-fsa/sherpa-onnx
+          # repo_token: ${{ secrets.UPLOAD_GH_SHERPA_ONNX_TOKEN }}
+          # tag: v1.12.32

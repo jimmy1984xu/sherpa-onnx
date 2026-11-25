@@ -3,15 +3,16 @@
 from pathlib import Path
 from typing import List, Optional
 
-from _sherpa_onnx import (
+from sherpa_onnx.lib._sherpa_onnx import (
     FeatureExtractorConfig,
     KeywordSpotterConfig,
     OnlineModelConfig,
     OnlineTransducerModelConfig,
     OnlineStream,
+    ProviderConfig,
 )
 
-from _sherpa_onnx import KeywordSpotter as _KeywordSpotter
+from sherpa_onnx.lib._sherpa_onnx import KeywordSpotter as _KeywordSpotter
 
 
 def _assert_file_exists(f: str):
@@ -41,6 +42,7 @@ class KeywordSpotter(object):
         keywords_threshold: float = 0.25,
         num_trailing_blanks: int = 1,
         provider: str = "cpu",
+        device: int = 0,
     ):
         """
         Please refer to
@@ -85,6 +87,8 @@ class KeywordSpotter(object):
             between each other.
           provider:
             onnxruntime execution providers. Valid values are: cpu, cuda, coreml.
+          device:
+            onnxruntime cuda device index.
         """
         _assert_file_exists(tokens)
         _assert_file_exists(encoder)
@@ -99,11 +103,16 @@ class KeywordSpotter(object):
             joiner=joiner,
         )
 
+        provider_config = ProviderConfig(
+            provider=provider,
+            device=device,
+        )
+
         model_config = OnlineModelConfig(
             transducer=transducer_config,
             tokens=tokens,
             num_threads=num_threads,
-            provider=provider,
+            provider_config=provider_config,
         )
 
         feat_config = FeatureExtractorConfig(
@@ -121,6 +130,9 @@ class KeywordSpotter(object):
             keywords_file=keywords_file,
         )
         self.keyword_spotter = _KeywordSpotter(keywords_spotter_config)
+
+    def reset_stream(self, s: OnlineStream):
+        self.keyword_spotter.reset(s)
 
     def create_stream(self, keywords: Optional[str] = None):
         if keywords is None:

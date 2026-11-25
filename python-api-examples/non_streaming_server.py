@@ -23,36 +23,34 @@ Usage examples:
 (1) Use a non-streaming transducer model
 
 cd /path/to/sherpa-onnx
-GIT_LFS_SKIP_SMUDGE=1 git clone https://huggingface.co/csukuangfj/sherpa-onnx-zipformer-en-2023-06-26
-cd sherpa-onnx-zipformer-en-2023-06-26
-git lfs pull --include "*.onnx"
-cd ..
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-en-2023-06-26.tar.bz2
+tar xvf sherpa-onnx-zipformer-en-2023-06-26.tar.bz2
+rm sherpa-onnx-zipformer-en-2023-06-26.tar.bz2
 
 python3 ./python-api-examples/non_streaming_server.py \
   --encoder ./sherpa-onnx-zipformer-en-2023-06-26/encoder-epoch-99-avg-1.onnx \
   --decoder ./sherpa-onnx-zipformer-en-2023-06-26/decoder-epoch-99-avg-1.onnx \
   --joiner ./sherpa-onnx-zipformer-en-2023-06-26/joiner-epoch-99-avg-1.onnx \
-  --tokens ./sherpa-onnx-zipformer-en-2023-06-26/tokens.txt
-
+  --tokens ./sherpa-onnx-zipformer-en-2023-06-26/tokens.txt \
+  --port 6006
+  
 (2) Use a non-streaming paraformer
 
 cd /path/to/sherpa-onnx
-GIT_LFS_SKIP_SMUDGE=1 git clone https://huggingface.co/csukuangfj/sherpa-onnx-paraformer-bilingual-zh-en
-cd sherpa-onnx-paraformer-bilingual-zh-en/
-git lfs pull --include "*.onnx"
-cd ..
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2
+tar xvf sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2
+rm sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2
 
 python3 ./python-api-examples/non_streaming_server.py \
-  --paraformer ./sherpa-onnx-paraformer-bilingual-zh-en/model.int8.onnx \
-  --tokens ./sherpa-onnx-paraformer-bilingual-zh-en/tokens.txt
+  --paraformer ./sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx \
+  --tokens ./sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt
 
 (3) Use a non-streaming CTC model from NeMo
 
 cd /path/to/sherpa-onnx
-GIT_LFS_SKIP_SMUDGE=1 git clone https://huggingface.co/csukuangfj/sherpa-onnx-nemo-ctc-en-conformer-medium
-cd sherpa-onnx-nemo-ctc-en-conformer-medium
-git lfs pull --include "*.onnx"
-cd ..
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-ctc-en-conformer-medium.tar.bz2
+tar xvf sherpa-onnx-nemo-ctc-en-conformer-medium.tar.bz2
+rm sherpa-onnx-nemo-ctc-en-conformer-medium.tar.bz2
 
 python3 ./python-api-examples/non_streaming_server.py \
   --nemo-ctc ./sherpa-onnx-nemo-ctc-en-conformer-medium/model.onnx \
@@ -61,41 +59,73 @@ python3 ./python-api-examples/non_streaming_server.py \
 (4) Use a non-streaming CTC model from WeNet
 
 cd /path/to/sherpa-onnx
-GIT_LFS_SKIP_SMUDGE=1 git clone https://huggingface.co/csukuangfj/sherpa-onnx-zh-wenet-wenetspeech
-cd sherpa-onnx-zh-wenet-wenetspeech
-git lfs pull --include "*.onnx"
-cd ..
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zh-wenet-wenetspeech.tar.bz2
+tar xvf sherpa-onnx-zh-wenet-wenetspeech.tar.bz2
+rm sherpa-onnx-zh-wenet-wenetspeech.tar.bz2
 
 python3 ./python-api-examples/non_streaming_server.py \
   --wenet-ctc ./sherpa-onnx-zh-wenet-wenetspeech/model.onnx \
   --tokens ./sherpa-onnx-zh-wenet-wenetspeech/tokens.txt
 
-(5) Use a Whisper model
+(5) Use a Moonshine model
 
 cd /path/to/sherpa-onnx
-GIT_LFS_SKIP_SMUDGE=1 git clone https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en
-cd sherpa-onnx-whisper-tiny.en
-git lfs pull --include "*.onnx"
-cd ..
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-moonshine-tiny-en-int8.tar.bz2
+tar xvf sherpa-onnx-moonshine-tiny-en-int8.tar.bz2
+rm sherpa-onnx-moonshine-tiny-en-int8.tar.bz2
+
+python3 ./python-api-examples/non_streaming_server.py \
+  --moonshine-preprocessor=./sherpa-onnx-moonshine-tiny-en-int8/preprocess.onnx \
+  --moonshine-encoder=./sherpa-onnx-moonshine-tiny-en-int8/encode.int8.onnx \
+  --moonshine-uncached-decoder=./sherpa-onnx-moonshine-tiny-en-int8/uncached_decode.int8.onnx \
+  --moonshine-cached-decoder=./sherpa-onnx-moonshine-tiny-en-int8/cached_decode.int8.onnx \
+  --tokens=./sherpa-onnx-moonshine-tiny-en-int8/tokens.txt
+
+(6) Use a Whisper model
+
+cd /path/to/sherpa-onnx
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.en.tar.bz2
+tar xvf sherpa-onnx-whisper-tiny.en.tar.bz2
+rm sherpa-onnx-whisper-tiny.en.tar.bz2
 
 python3 ./python-api-examples/non_streaming_server.py \
   --whisper-encoder=./sherpa-onnx-whisper-tiny.en/tiny.en-encoder.onnx \
   --whisper-decoder=./sherpa-onnx-whisper-tiny.en/tiny.en-decoder.onnx \
   --tokens=./sherpa-onnx-whisper-tiny.en/tiny.en-tokens.txt
 
-(5) Use a tdnn model of the yesno recipe from icefall
+(7) Use a tdnn model of the yesno recipe from icefall
 
 cd /path/to/sherpa-onnx
 
-GIT_LFS_SKIP_SMUDGE=1 git clone https://huggingface.co/csukuangfj/sherpa-onnx-tdnn-yesno
-cd sherpa-onnx-tdnn-yesno
-git lfs pull --include "*.onnx"
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-tdnn-yesno.tar.bz2
+tar xvf sherpa-onnx-tdnn-yesno.tar.bz2
+rm sherpa-onnx-tdnn-yesno.tar.bz2
 
 python3 ./python-api-examples/non_streaming_server.py \
   --sample-rate=8000 \
   --feat-dim=23 \
   --tdnn-model=./sherpa-onnx-tdnn-yesno/model-epoch-14-avg-2.onnx \
   --tokens=./sherpa-onnx-tdnn-yesno/tokens.txt
+
+(8) Use a Non-streaming SenseVoice model
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+tar xvf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+rm sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+
+python3 ./python-api-examples/non_streaming_server.py \
+  --sense-voice=./sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx \
+  --tokens=./sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt
+
+(9) Use a Non-streaming telespeech ctc model
+
+curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-telespeech-ctc-int8-zh-2024-06-04.tar.bz2
+tar xvf sherpa-onnx-telespeech-ctc-int8-zh-2024-06-04.tar.bz2
+rm sherpa-onnx-telespeech-ctc-int8-zh-2024-06-04.tar.bz2
+
+python3 ./python-api-examples/non_streaming_server.py \
+  --telespeech-ctc=./sherpa-onnx-telespeech-ctc-int8-zh-2024-06-04/model.int8.onnx \
+  --tokens=./sherpa-onnx-telespeech-ctc-int8-zh-2024-06-04/tokens.txt
 
 ----
 
@@ -213,12 +243,30 @@ def add_paraformer_model_args(parser: argparse.ArgumentParser):
     )
 
 
+def add_sense_voice_model_args(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--sense-voice",
+        default="",
+        type=str,
+        help="Path to the model.onnx from SenseVoice",
+    )
+
+
 def add_nemo_ctc_model_args(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--nemo-ctc",
         default="",
         type=str,
         help="Path to the model.onnx from NeMo CTC",
+    )
+
+
+def add_telespeech_ctc_model_args(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--telespeech-ctc",
+        default="",
+        type=str,
+        help="Path to the model.onnx from TeleSpeech CTC",
     )
 
 
@@ -237,6 +285,36 @@ def add_tdnn_ctc_model_args(parser: argparse.ArgumentParser):
         default="",
         type=str,
         help="Path to the model.onnx for the tdnn model of the yesno recipe",
+    )
+
+
+def add_moonshine_model_args(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--moonshine-preprocessor",
+        default="",
+        type=str,
+        help="Path to moonshine preprocessor model",
+    )
+
+    parser.add_argument(
+        "--moonshine-encoder",
+        default="",
+        type=str,
+        help="Path to moonshine encoder model",
+    )
+
+    parser.add_argument(
+        "--moonshine-uncached-decoder",
+        default="",
+        type=str,
+        help="Path to moonshine uncached decoder model",
+    )
+
+    parser.add_argument(
+        "--moonshine-cached-decoder",
+        default="",
+        type=str,
+        help="Path to moonshine cached decoder model",
     )
 
 
@@ -292,10 +370,13 @@ def add_whisper_model_args(parser: argparse.ArgumentParser):
 def add_model_args(parser: argparse.ArgumentParser):
     add_transducer_model_args(parser)
     add_paraformer_model_args(parser)
+    add_sense_voice_model_args(parser)
     add_nemo_ctc_model_args(parser)
     add_wenet_ctc_model_args(parser)
+    add_telespeech_ctc_model_args(parser)
     add_tdnn_ctc_model_args(parser)
     add_whisper_model_args(parser)
+    add_moonshine_model_args(parser)
 
     parser.add_argument(
         "--tokens",
@@ -382,6 +463,7 @@ def add_hotwords_args(parser: argparse.ArgumentParser):
         --hotwords-file is given.
         """,
     )
+
 
 def add_blank_penalty_args(parser: argparse.ArgumentParser):
     parser.add_argument(
@@ -580,7 +662,11 @@ class NonStreamingServer:
         path: str,
         request_headers: websockets.Headers,
     ) -> Optional[Tuple[http.HTTPStatus, websockets.Headers, bytes]]:
-        if "sec-websocket-key" not in request_headers:
+        if "sec-websocket-key" not in (
+            request_headers.headers  # For new request_headers
+            if hasattr(request_headers, "headers")
+            else request_headers  # For old request_headers
+        ):
             # This is a normal HTTP request
             if path == "/":
                 path = "/index.html"
@@ -854,11 +940,19 @@ def assert_file_exists(filename: str):
 def create_recognizer(args) -> sherpa_onnx.OfflineRecognizer:
     if args.encoder:
         assert len(args.paraformer) == 0, args.paraformer
+        assert len(args.sense_voice) == 0, args.sense_voice
         assert len(args.nemo_ctc) == 0, args.nemo_ctc
         assert len(args.wenet_ctc) == 0, args.wenet_ctc
+        assert len(args.telespeech_ctc) == 0, args.telespeech_ctc
         assert len(args.whisper_encoder) == 0, args.whisper_encoder
         assert len(args.whisper_decoder) == 0, args.whisper_decoder
         assert len(args.tdnn_model) == 0, args.tdnn_model
+        assert len(args.moonshine_preprocessor) == 0, args.moonshine_preprocessor
+        assert len(args.moonshine_encoder) == 0, args.moonshine_encoder
+        assert (
+            len(args.moonshine_uncached_decoder) == 0
+        ), args.moonshine_uncached_decoder
+        assert len(args.moonshine_cached_decoder) == 0, args.moonshine_cached_decoder
 
         assert_file_exists(args.encoder)
         assert_file_exists(args.decoder)
@@ -880,11 +974,19 @@ def create_recognizer(args) -> sherpa_onnx.OfflineRecognizer:
             provider=args.provider,
         )
     elif args.paraformer:
+        assert len(args.sense_voice) == 0, args.sense_voice
         assert len(args.nemo_ctc) == 0, args.nemo_ctc
         assert len(args.wenet_ctc) == 0, args.wenet_ctc
+        assert len(args.telespeech_ctc) == 0, args.telespeech_ctc
         assert len(args.whisper_encoder) == 0, args.whisper_encoder
         assert len(args.whisper_decoder) == 0, args.whisper_decoder
         assert len(args.tdnn_model) == 0, args.tdnn_model
+        assert len(args.moonshine_preprocessor) == 0, args.moonshine_preprocessor
+        assert len(args.moonshine_encoder) == 0, args.moonshine_encoder
+        assert (
+            len(args.moonshine_uncached_decoder) == 0
+        ), args.moonshine_uncached_decoder
+        assert len(args.moonshine_cached_decoder) == 0, args.moonshine_cached_decoder
 
         assert_file_exists(args.paraformer)
 
@@ -897,11 +999,39 @@ def create_recognizer(args) -> sherpa_onnx.OfflineRecognizer:
             decoding_method=args.decoding_method,
             provider=args.provider,
         )
-    elif args.nemo_ctc:
+    elif args.sense_voice:
+        assert len(args.nemo_ctc) == 0, args.nemo_ctc
         assert len(args.wenet_ctc) == 0, args.wenet_ctc
+        assert len(args.telespeech_ctc) == 0, args.telespeech_ctc
         assert len(args.whisper_encoder) == 0, args.whisper_encoder
         assert len(args.whisper_decoder) == 0, args.whisper_decoder
         assert len(args.tdnn_model) == 0, args.tdnn_model
+        assert len(args.moonshine_preprocessor) == 0, args.moonshine_preprocessor
+        assert len(args.moonshine_encoder) == 0, args.moonshine_encoder
+        assert (
+            len(args.moonshine_uncached_decoder) == 0
+        ), args.moonshine_uncached_decoder
+        assert len(args.moonshine_cached_decoder) == 0, args.moonshine_cached_decoder
+
+        assert_file_exists(args.sense_voice)
+        recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+            model=args.sense_voice,
+            tokens=args.tokens,
+            num_threads=args.num_threads,
+            use_itn=True,
+        )
+    elif args.nemo_ctc:
+        assert len(args.wenet_ctc) == 0, args.wenet_ctc
+        assert len(args.telespeech_ctc) == 0, args.telespeech_ctc
+        assert len(args.whisper_encoder) == 0, args.whisper_encoder
+        assert len(args.whisper_decoder) == 0, args.whisper_decoder
+        assert len(args.tdnn_model) == 0, args.tdnn_model
+        assert len(args.moonshine_preprocessor) == 0, args.moonshine_preprocessor
+        assert len(args.moonshine_encoder) == 0, args.moonshine_encoder
+        assert (
+            len(args.moonshine_uncached_decoder) == 0
+        ), args.moonshine_uncached_decoder
+        assert len(args.moonshine_cached_decoder) == 0, args.moonshine_cached_decoder
 
         assert_file_exists(args.nemo_ctc)
 
@@ -915,9 +1045,16 @@ def create_recognizer(args) -> sherpa_onnx.OfflineRecognizer:
             provider=args.provider,
         )
     elif args.wenet_ctc:
+        assert len(args.telespeech_ctc) == 0, args.telespeech_ctc
         assert len(args.whisper_encoder) == 0, args.whisper_encoder
         assert len(args.whisper_decoder) == 0, args.whisper_decoder
         assert len(args.tdnn_model) == 0, args.tdnn_model
+        assert len(args.moonshine_preprocessor) == 0, args.moonshine_preprocessor
+        assert len(args.moonshine_encoder) == 0, args.moonshine_encoder
+        assert (
+            len(args.moonshine_uncached_decoder) == 0
+        ), args.moonshine_uncached_decoder
+        assert len(args.moonshine_cached_decoder) == 0, args.moonshine_cached_decoder
 
         assert_file_exists(args.wenet_ctc)
 
@@ -930,10 +1067,38 @@ def create_recognizer(args) -> sherpa_onnx.OfflineRecognizer:
             decoding_method=args.decoding_method,
             provider=args.provider,
         )
+    elif args.telespeech_ctc:
+        assert len(args.whisper_encoder) == 0, args.whisper_encoder
+        assert len(args.whisper_decoder) == 0, args.whisper_decoder
+        assert len(args.tdnn_model) == 0, args.tdnn_model
+        assert len(args.moonshine_preprocessor) == 0, args.moonshine_preprocessor
+        assert len(args.moonshine_encoder) == 0, args.moonshine_encoder
+        assert (
+            len(args.moonshine_uncached_decoder) == 0
+        ), args.moonshine_uncached_decoder
+        assert len(args.moonshine_cached_decoder) == 0, args.moonshine_cached_decoder
+
+        assert_file_exists(args.telespeech_ctc)
+
+        recognizer = sherpa_onnx.OfflineRecognizer.from_telespeech_ctc(
+            model=args.telespeech_ctc,
+            tokens=args.tokens,
+            num_threads=args.num_threads,
+            sample_rate=args.sample_rate,
+            feature_dim=args.feat_dim,
+            decoding_method=args.decoding_method,
+            provider=args.provider,
+        )
     elif args.whisper_encoder:
         assert len(args.tdnn_model) == 0, args.tdnn_model
         assert_file_exists(args.whisper_encoder)
         assert_file_exists(args.whisper_decoder)
+        assert len(args.moonshine_preprocessor) == 0, args.moonshine_preprocessor
+        assert len(args.moonshine_encoder) == 0, args.moonshine_encoder
+        assert (
+            len(args.moonshine_uncached_decoder) == 0
+        ), args.moonshine_uncached_decoder
+        assert len(args.moonshine_cached_decoder) == 0, args.moonshine_cached_decoder
 
         recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
             encoder=args.whisper_encoder,
@@ -948,6 +1113,12 @@ def create_recognizer(args) -> sherpa_onnx.OfflineRecognizer:
         )
     elif args.tdnn_model:
         assert_file_exists(args.tdnn_model)
+        assert len(args.moonshine_preprocessor) == 0, args.moonshine_preprocessor
+        assert len(args.moonshine_encoder) == 0, args.moonshine_encoder
+        assert (
+            len(args.moonshine_uncached_decoder) == 0
+        ), args.moonshine_uncached_decoder
+        assert len(args.moonshine_cached_decoder) == 0, args.moonshine_cached_decoder
 
         recognizer = sherpa_onnx.OfflineRecognizer.from_tdnn_ctc(
             model=args.tdnn_model,
@@ -957,6 +1128,21 @@ def create_recognizer(args) -> sherpa_onnx.OfflineRecognizer:
             num_threads=args.num_threads,
             decoding_method=args.decoding_method,
             provider=args.provider,
+        )
+    elif args.moonshine_preprocessor:
+        assert_file_exists(args.moonshine_preprocessor)
+        assert_file_exists(args.moonshine_encoder)
+        assert_file_exists(args.moonshine_uncached_decoder)
+        assert_file_exists(args.moonshine_cached_decoder)
+
+        recognizer = sherpa_onnx.OfflineRecognizer.from_moonshine(
+            preprocessor=args.moonshine_preprocessor,
+            encoder=args.moonshine_encoder,
+            uncached_decoder=args.moonshine_uncached_decoder,
+            cached_decoder=args.moonshine_cached_decoder,
+            tokens=args.tokens,
+            num_threads=args.num_threads,
+            decoding_method=args.decoding_method,
         )
     else:
         raise ValueError("Please specify at least one model")

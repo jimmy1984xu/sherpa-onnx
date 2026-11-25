@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 
+set -ex
+
+export CGO_ENABLED=1
 
 if [ ! -f ./silero_vad.onnx ]; then
-  curl -SL -O https://github.com/snakers4/silero-vad/raw/master/files/silero_vad.onnx
+  curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
 fi
 
 if [ ! -f ./sherpa-onnx-paraformer-trilingual-zh-cantonese-en/model.int8.onnx ]; then

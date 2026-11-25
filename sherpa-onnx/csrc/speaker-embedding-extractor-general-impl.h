@@ -11,6 +11,7 @@
 
 #include "Eigen/Dense"
 #include "sherpa-onnx/csrc/speaker-embedding-extractor-impl.h"
+#include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/speaker-embedding-extractor-model.h"
 
 namespace sherpa_onnx {
@@ -22,11 +23,10 @@ class SpeakerEmbeddingExtractorGeneralImpl
       const SpeakerEmbeddingExtractorConfig &config)
       : model_(config) {}
 
-#if __ANDROID_API__ >= 9
+  template <typename Manager>
   SpeakerEmbeddingExtractorGeneralImpl(
-      AAssetManager *mgr, const SpeakerEmbeddingExtractorConfig &config)
+      Manager *mgr, const SpeakerEmbeddingExtractorConfig &config)
       : model_(mgr, config) {}
-#endif
 
   int32_t Dim() const override { return model_.GetMetaData().output_dim; }
 
@@ -46,9 +46,15 @@ class SpeakerEmbeddingExtractorGeneralImpl
   std::vector<float> Compute(OnlineStream *s) const override {
     int32_t num_frames = s->NumFramesReady() - s->GetNumProcessedFrames();
     if (num_frames <= 0) {
+#if __OHOS__
+      SHERPA_ONNX_LOGE(
+          "Please make sure IsReady(s) returns true. num_frames: %{public}d",
+          num_frames);
+#else
       SHERPA_ONNX_LOGE(
           "Please make sure IsReady(s) returns true. num_frames: %d",
           num_frames);
+#endif
       return {};
     }
 
@@ -64,9 +70,14 @@ class SpeakerEmbeddingExtractorGeneralImpl
       if (meta_data.feature_normalize_type == "global-mean") {
         SubtractGlobalMean(features.data(), num_frames, feat_dim);
       } else {
+#if __OHOS__
+        SHERPA_ONNX_LOGE("Unsupported feature_normalize_type: %{public}s",
+                         meta_data.feature_normalize_type.c_str());
+#else
         SHERPA_ONNX_LOGE("Unsupported feature_normalize_type: %s",
                          meta_data.feature_normalize_type.c_str());
-        exit(-1);
+#endif
+        SHERPA_ONNX_EXIT(-1);
       }
     }
 

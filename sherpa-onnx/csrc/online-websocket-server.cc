@@ -2,7 +2,9 @@
 //
 // Copyright (c)  2022-2023  Xiaomi Corporation
 
-#include "asio.hpp"
+#include <vector>
+
+#include "asio.hpp"  // NOLINT
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/online-websocket-server-impl.h"
 #include "sherpa-onnx/csrc/parse-options.h"
@@ -57,7 +59,7 @@ int32_t main(int32_t argc, char *argv[]) {
 
   if (argc == 1) {
     po.PrintUsage();
-    exit(EXIT_FAILURE);
+    SHERPA_ONNX_EXIT(EXIT_FAILURE);
   }
 
   po.Read(argc, argv);
@@ -65,7 +67,7 @@ int32_t main(int32_t argc, char *argv[]) {
   if (po.NumArgs() != 0) {
     SHERPA_ONNX_LOGE("Unrecognized positional arguments!");
     po.PrintUsage();
-    exit(EXIT_FAILURE);
+    SHERPA_ONNX_EXIT(EXIT_FAILURE);
   }
 
   config.Validate();

@@ -71,20 +71,18 @@ void OnlineTransducerGreedySearchDecoder::StripLeadingBlanks(
   r->tokens = std::vector<int64_t>(start, end);
 }
 
-
 void OnlineTransducerGreedySearchDecoder::Decode(
     Ort::Value encoder_out,
     std::vector<OnlineTransducerDecoderResult> *result) {
-
   std::vector<int64_t> encoder_out_shape =
       encoder_out.GetTensorTypeAndShapeInfo().GetShape();
 
-  if (encoder_out_shape[0] != result->size()) {
+  if (encoder_out_shape[0] != static_cast<int32_t>(result->size())) {
     SHERPA_ONNX_LOGE(
         "Size mismatch! encoder_out.size(0) %d, result.size(0): %d",
         static_cast<int32_t>(encoder_out_shape[0]),
         static_cast<int32_t>(result->size()));
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
   }
 
   int32_t batch_size = static_cast<int32_t>(encoder_out_shape[0]);
@@ -106,7 +104,8 @@ void OnlineTransducerGreedySearchDecoder::Decode(
         r.decoder_out.GetTensorTypeAndShapeInfo().GetShape();
     decoder_out_shape[0] = batch_size;
     decoder_out = Ort::Value::CreateTensor<float>(model_->Allocator(),
-        decoder_out_shape.data(), decoder_out_shape.size());
+                                                  decoder_out_shape.data(),
+                                                  decoder_out_shape.size());
     UseCachedDecoderOut(*result, &decoder_out);
   } else {
     Ort::Value decoder_input = model_->BuildDecoderInput(*result);
@@ -116,8 +115,8 @@ void OnlineTransducerGreedySearchDecoder::Decode(
   for (int32_t t = 0; t != num_frames; ++t) {
     Ort::Value cur_encoder_out =
         GetEncoderOutFrame(model_->Allocator(), &encoder_out, t);
-    Ort::Value logit = model_->RunJoiner(
-        std::move(cur_encoder_out), View(&decoder_out));
+    Ort::Value logit =
+        model_->RunJoiner(std::move(cur_encoder_out), View(&decoder_out));
 
     float *p_logit = logit.GetTensorMutableData<float>();
 
@@ -145,9 +144,13 @@ void OnlineTransducerGreedySearchDecoder::Decode(
 
       // export the per-token log scores
       if (y != 0 && y != unk_id_) {
-        LogSoftmax(p_logit, vocab_size);  // renormalize probabilities,
-                                          // save time by doing it only for
-                                          // emitted symbols
+        // apply temperature-scaling
+        for (int32_t n = 0; n < vocab_size; ++n) {
+          p_logit[n] /= temperature_scale_;
+        }
+        LogSoftmax(p_logit, vocab_size);   // renormalize probabilities,
+                                           // save time by doing it only for
+                                           // emitted symbols
         const float *p_logprob = p_logit;  // rename p_logit as p_logprob,
                                            // now it contains normalized
                                            // probability

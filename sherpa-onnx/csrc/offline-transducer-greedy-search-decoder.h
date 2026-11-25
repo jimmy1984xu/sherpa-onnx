@@ -14,10 +14,10 @@ namespace sherpa_onnx {
 
 class OfflineTransducerGreedySearchDecoder : public OfflineTransducerDecoder {
  public:
-  explicit OfflineTransducerGreedySearchDecoder(OfflineTransducerModel *model,
-                                                float blank_penalty)
-      : model_(model),
-        blank_penalty_(blank_penalty) {}
+  OfflineTransducerGreedySearchDecoder(OfflineTransducerModel *model,
+                                       int32_t unk_id,
+                                       float blank_penalty)
+      : model_(model), unk_id_(unk_id), blank_penalty_(blank_penalty) {}
 
   std::vector<OfflineTransducerDecoderResult> Decode(
       Ort::Value encoder_out, Ort::Value encoder_out_length,
@@ -25,6 +25,7 @@ class OfflineTransducerGreedySearchDecoder : public OfflineTransducerDecoder {
 
  private:
   OfflineTransducerModel *model_;  // Not owned
+  int32_t unk_id_;
   float blank_penalty_;
 };
 

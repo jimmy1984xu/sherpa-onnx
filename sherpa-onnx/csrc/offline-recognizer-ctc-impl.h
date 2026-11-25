@@ -12,11 +12,7 @@
 #include <utility>
 #include <vector>
 
-#if __ANDROID_API__ >= 9
-#include "android/asset_manager.h"
-#include "android/asset_manager_jni.h"
-#endif
-
+#include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/offline-ctc-decoder.h"
 #include "sherpa-onnx/csrc/offline-ctc-fst-decoder.h"
 #include "sherpa-onnx/csrc/offline-ctc-greedy-search-decoder.h"
@@ -27,26 +23,36 @@
 
 namespace sherpa_onnx {
 
-static OfflineRecognitionResult Convert(const OfflineCtcDecoderResult &src,
-                                        const SymbolTable &sym_table,
-                                        int32_t frame_shift_ms,
-                                        int32_t subsampling_factor) {
+OfflineRecognitionResult Convert(const OfflineCtcDecoderResult &src,
+                                 const SymbolTable &sym_table,
+                                 int32_t frame_shift_ms,
+                                 int32_t subsampling_factor) {
   OfflineRecognitionResult r;
   r.tokens.reserve(src.tokens.size());
   r.timestamps.reserve(src.timestamps.size());
+  const bool has_token_log_probs =
+      src.ys_log_probs.size() == src.tokens.size();
+  if (has_token_log_probs) {
+    r.ys_log_probs.reserve(src.ys_log_probs.size());
+  }
 
   std::string text;
 
   for (int32_t i = 0; i != src.tokens.size(); ++i) {
-    if (sym_table.contains("SIL") && src.tokens[i] == sym_table["SIL"]) {
+    if (sym_table.Contains("SIL") && src.tokens[i] == sym_table["SIL"]) {
       // tdnn models from yesno have a SIL token, we should remove it.
+      continue;
+    }
+
+    if (sym_table.Contains("</s>") && src.tokens[i] == sym_table["</s>"]) {
+      // Skip </s> for Google MedASR
       continue;
     }
     auto sym = sym_table[src.tokens[i]];
     text.append(sym);
 
     if (sym.size() == 1 && (sym[0] < 0x20 || sym[0] > 0x7e)) {
-      // for byte bpe models
+      // for bpe models with byte_fallback
       // (but don't rewrite printable characters 0x20..0x7e,
       //  which collide with standard BPE units)
       std::ostringstream os;
@@ -56,7 +62,19 @@ static OfflineRecognitionResult Convert(const OfflineCtcDecoderResult &src,
     }
 
     r.tokens.push_back(std::move(sym));
+    if (has_token_log_probs) {
+      r.ys_log_probs.push_back(src.ys_log_probs[i]);
+    }
   }
+
+  if (sym_table.IsByteBpe()) {
+    text = sym_table.DecodeByteBpe(text);
+  }
+
+  if (!text.empty() && text.front() == ' ') {
+    text.erase(0, 1);
+  }
+
   r.text = std::move(text);
 
   float frame_shift_s = frame_shift_ms / 1000. * subsampling_factor;
@@ -65,33 +83,100 @@ static OfflineRecognitionResult Convert(const OfflineCtcDecoderResult &src,
     r.timestamps.push_back(time);
   }
 
+  r.words = std::move(src.words);
+
   return r;
 }
 
 class OfflineRecognizerCtcImpl : public OfflineRecognizerImpl {
  public:
   explicit OfflineRecognizerCtcImpl(const OfflineRecognizerConfig &config)
-      : config_(config),
+      : OfflineRecognizerImpl(config),
+        config_(config),
         symbol_table_(config_.model_config.tokens),
         model_(OfflineCtcModel::Create(config_.model_config)) {
     Init();
   }
 
-#if __ANDROID_API__ >= 9
-  OfflineRecognizerCtcImpl(AAssetManager *mgr,
-                           const OfflineRecognizerConfig &config)
-      : config_(config),
+  template <typename Manager>
+  OfflineRecognizerCtcImpl(Manager *mgr, const OfflineRecognizerConfig &config)
+      : OfflineRecognizerImpl(mgr, config),
+        config_(config),
         symbol_table_(mgr, config_.model_config.tokens),
         model_(OfflineCtcModel::Create(mgr, config_.model_config)) {
     Init();
   }
-#endif
 
   void Init() {
+    if (!config_.model_config.telespeech_ctc.empty()) {
+      config_.feat_config.snip_edges = true;
+      config_.feat_config.num_ceps = 40;
+      config_.feat_config.feature_dim = 40;
+      config_.feat_config.low_freq = 40;
+      config_.feat_config.high_freq = -200;
+      config_.feat_config.use_energy = false;
+      config_.feat_config.normalize_samples = false;
+      config_.feat_config.is_mfcc = true;
+    }
+
+    if (!config_.model_config.nemo_ctc.model.empty()) {
+      if (model_->IsGigaAM()) {
+        config_.feat_config.low_freq = 0;
+        config_.feat_config.high_freq = 8000;
+        config_.feat_config.remove_dc_offset = false;
+        config_.feat_config.preemph_coeff = 0;
+        config_.feat_config.window_type = "hann";
+        config_.feat_config.feature_dim = 64;
+
+        // see
+        // https://github.com/salute-developers/GigaAM/blob/main/gigaam/preprocess.py#L68
+        //
+        // GigaAM uses n_fft 400
+        config_.feat_config.round_to_power_of_two = false;
+      } else {
+        config_.feat_config.low_freq = 0;
+        config_.feat_config.high_freq = 0;
+        config_.feat_config.is_librosa = true;
+        config_.feat_config.remove_dc_offset = false;
+        config_.feat_config.window_type = "hann";
+      }
+    }
+
+    if (!config_.model_config.dolphin.model.empty()) {
+      config_.feat_config.low_freq = 0;
+      config_.feat_config.high_freq = 8000;
+      config_.feat_config.remove_dc_offset = false;
+      config_.feat_config.dither = 0;
+      config_.feat_config.preemph_coeff = 0;
+      config_.feat_config.window_type = "hann";
+      config_.feat_config.feature_dim = 80;
+      config_.feat_config.is_librosa = true;
+      config_.feat_config.frame_length_ms = 31.25;  // 16000/512 = 31.25
+      config_.feat_config.snip_edges = false;
+    }
+
     if (!config_.model_config.wenet_ctc.model.empty()) {
       // WeNet CTC models assume input samples are in the range
       // [-32768, 32767], so we set normalize_samples to false
       config_.feat_config.normalize_samples = false;
+      config_.feat_config.dither = 1;
+    }
+
+    if (!config_.model_config.medasr.model.empty()) {
+      config_.feat_config.low_freq = 125;
+      config_.feat_config.high_freq = 7500;
+      config_.feat_config.remove_dc_offset = false;
+      config_.feat_config.dither = 0;
+      config_.feat_config.preemph_coeff = 0;
+      config_.feat_config.window_type = "hanning";
+      config_.feat_config.feature_dim = 128;
+      config_.feat_config.snip_edges = true;
+    }
+
+    if (!config_.model_config.fire_red_asr_ctc.model.empty()) {
+      config_.feat_config.normalize_samples = false;
+      config_.feat_config.high_freq = 0;
+      config_.feat_config.snip_edges = true;
     }
 
     config_.feat_config.nemo_normalize_type =
@@ -103,22 +188,24 @@ class OfflineRecognizerCtcImpl : public OfflineRecognizerImpl {
       decoder_ = std::make_unique<OfflineCtcFstDecoder>(
           config_.ctc_fst_decoder_config);
     } else if (config_.decoding_method == "greedy_search") {
-      if (!symbol_table_.contains("<blk>") &&
-          !symbol_table_.contains("<eps>") &&
-          !symbol_table_.contains("<blank>")) {
+      if (!symbol_table_.Contains("<blk>") &&
+          !symbol_table_.Contains("<eps>") &&
+          !symbol_table_.Contains("<blank>") &&
+          config_.model_config.omnilingual.model.empty()) {
+        // for omnilingual asr, its blank id is 0
         SHERPA_ONNX_LOGE(
             "We expect that tokens.txt contains "
             "the symbol <blk> or <eps> or <blank> and its ID.");
-        exit(-1);
+        SHERPA_ONNX_EXIT(-1);
       }
 
       int32_t blank_id = 0;
-      if (symbol_table_.contains("<blk>")) {
+      if (symbol_table_.Contains("<blk>")) {
         blank_id = symbol_table_["<blk>"];
-      } else if (symbol_table_.contains("<eps>")) {
+      } else if (symbol_table_.Contains("<eps>")) {
         // for tdnn models of the yesno recipe from icefall
         blank_id = symbol_table_["<eps>"];
-      } else if (symbol_table_.contains("<blank>")) {
+      } else if (symbol_table_.Contains("<blank>")) {
         // for Wenet CTC models
         blank_id = symbol_table_["<blank>"];
       }
@@ -127,28 +214,38 @@ class OfflineRecognizerCtcImpl : public OfflineRecognizerImpl {
     } else {
       SHERPA_ONNX_LOGE("Only greedy_search is supported at present. Given %s",
                        config_.decoding_method.c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
   }
 
   std::unique_ptr<OfflineStream> CreateStream() const override {
-    return std::make_unique<OfflineStream>(config_.feat_config);
+    if (config_.model_config.omnilingual.model.empty()) {
+      return std::make_unique<OfflineStream>(config_.feat_config);
+    } else {
+      return std::make_unique<OfflineStream>(OmnilingualAsrTag{});
+    }
   }
 
   void DecodeStreams(OfflineStream **ss, int32_t n) const override {
-    if (!model_->SupportBatchProcessing()) {
-      // If the model does not support batch process,
+    if (!model_->SupportBatchProcessing() || (n == 1) ||
+        !config_.model_config.omnilingual.model.empty()) {
+      // If the model does not support batch processing,
       // we process each stream independently.
+      //
+      // omnilingual asr is disabled for batch processing at present
       for (int32_t i = 0; i != n; ++i) {
         DecodeStream(ss[i]);
       }
       return;
     }
 
+    // Even if the omnilingual asr model can process batch input, the following
+    // code does not support batching raw audio samples.
+
     auto memory_info =
         Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
 
-    int32_t feat_dim = config_.feat_config.feature_dim;
+    int32_t feat_dim = ss[0]->FeatureDim();
 
     std::vector<Ort::Value> features;
     features.reserve(n);
@@ -160,6 +257,9 @@ class OfflineRecognizerCtcImpl : public OfflineRecognizerImpl {
       std::vector<float> f = ss[i]->GetFrames();
 
       int32_t num_frames = f.size() / feat_dim;
+
+      model_->NormalizeFeatures(f.data(), num_frames, feat_dim);
+
       features_vec[i] = std::move(f);
 
       features_length_vec[i] = num_frames;
@@ -192,9 +292,13 @@ class OfflineRecognizerCtcImpl : public OfflineRecognizerImpl {
     for (int32_t i = 0; i != n; ++i) {
       auto r = Convert(results[i], symbol_table_, frame_shift_ms,
                        model_->SubsamplingFactor());
+      r.text = ApplyInverseTextNormalization(std::move(r.text));
+      r.text = ApplyHomophoneReplacer(std::move(r.text));
       ss[i]->SetResult(r);
     }
   }
+
+  OfflineRecognizerConfig GetConfig() const override { return config_; }
 
  private:
   // Decode a single stream.
@@ -203,12 +307,17 @@ class OfflineRecognizerCtcImpl : public OfflineRecognizerImpl {
     auto memory_info =
         Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
 
-    int32_t feat_dim = config_.feat_config.feature_dim;
+    int32_t feat_dim = s->FeatureDim();
     std::vector<float> f = s->GetFrames();
 
     int32_t num_frames = f.size() / feat_dim;
 
-    std::array<int64_t, 3> shape = {1, num_frames, feat_dim};
+    model_->NormalizeFeatures(f.data(), num_frames, feat_dim);
+
+    std::vector<int64_t> shape = {1, num_frames, feat_dim};
+    if (!config_.model_config.omnilingual.model.empty()) {
+      shape = {1, feat_dim};
+    }
 
     Ort::Value x = Ort::Value::CreateTensor(memory_info, f.data(), f.size(),
                                             shape.data(), shape.size());
@@ -223,8 +332,14 @@ class OfflineRecognizerCtcImpl : public OfflineRecognizerImpl {
     auto results = decoder_->Decode(std::move(t[0]), std::move(t[1]));
     int32_t frame_shift_ms = 10;
 
+    if (!config_.model_config.omnilingual.model.empty()) {
+      frame_shift_ms = 20;
+    }
+
     auto r = Convert(results[0], symbol_table_, frame_shift_ms,
                      model_->SubsamplingFactor());
+    r.text = ApplyInverseTextNormalization(std::move(r.text));
+    r.text = ApplyHomophoneReplacer(std::move(r.text));
     s->SetResult(r);
   }
 

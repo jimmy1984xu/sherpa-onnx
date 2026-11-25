@@ -5,15 +5,20 @@
 #ifndef SHERPA_ONNX_CSRC_OFFLINE_PARAFORMER_DECODER_H_
 #define SHERPA_ONNX_CSRC_OFFLINE_PARAFORMER_DECODER_H_
 
+#include <cstdint>
 #include <vector>
 
 #include "onnxruntime_cxx_api.h"  // NOLINT
+#include "sherpa-onnx/csrc/offline-stream.h"
 
 namespace sherpa_onnx {
 
 struct OfflineParaformerDecoderResult {
   /// The decoded token IDs
   std::vector<int64_t> tokens;
+
+  /// ys_log_probs[i] contains the log probability (confidence) for tokens[i].
+  std::vector<float> ys_log_probs;
 
   // it contains the start time of each token in seconds
   //
@@ -33,8 +38,9 @@ class OfflineParaformerDecoder {
    * @return Return a vector of size `N` containing the decoded results.
    */
   virtual std::vector<OfflineParaformerDecoderResult> Decode(
-      Ort::Value log_probs, Ort::Value token_num,
-      Ort::Value us_cif_peak = Ort::Value(nullptr)) = 0;
+      Ort::Value logits, Ort::Value logits_length,
+      Ort::Value us_cif_peak = Ort::Value(nullptr),
+      OfflineStream **ss = nullptr, int32_t n = 0) = 0;
 };
 
 }  // namespace sherpa_onnx

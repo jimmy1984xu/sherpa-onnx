@@ -8,8 +8,11 @@
 #include <algorithm>
 #include <cctype>  // std::tolower
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include "sherpa-onnx/csrc/alsa.h"
+#include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/display.h"
 #include "sherpa-onnx/csrc/online-recognizer.h"
 #include "sherpa-onnx/csrc/parse-options.h"
@@ -67,7 +70,7 @@ as the device_name.
   if (po.NumArgs() != 1) {
     fprintf(stderr, "Please provide only 1 argument: the device name\n");
     po.PrintUsage();
-    exit(EXIT_FAILURE);
+    SHERPA_ONNX_EXIT(EXIT_FAILURE);
   }
 
   fprintf(stderr, "%s\n", config.ToString().c_str());
@@ -87,8 +90,10 @@ as the device_name.
   if (alsa.GetExpectedSampleRate() != expected_sample_rate) {
     fprintf(stderr, "sample rate: %d != %d\n", alsa.GetExpectedSampleRate(),
             expected_sample_rate);
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
   }
+
+  fprintf(stderr, "Started! Please speak\n");
 
   int32_t chunk = 0.1 * alsa.GetActualSampleRate();
 
@@ -112,6 +117,20 @@ as the device_name.
     auto text = recognizer.GetResult(stream.get()).text;
 
     bool is_endpoint = recognizer.IsEndpoint(stream.get());
+
+    if (is_endpoint && !config.model_config.paraformer.encoder.empty()) {
+      // For streaming paraformer models, since it has a large right chunk size
+      // we need to pad it on endpointing so that the last character
+      // can be recognized
+      std::vector<float> tail_paddings(
+          static_cast<int>(1.0 * expected_sample_rate));
+      stream->AcceptWaveform(expected_sample_rate, tail_paddings.data(),
+                             tail_paddings.size());
+      while (recognizer.IsReady(stream.get())) {
+        recognizer.DecodeStream(stream.get());
+      }
+      text = recognizer.GetResult(stream.get()).text;
+    }
 
     if (!text.empty() && last_text != text) {
       last_text = text;

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "sherpa-onnx/csrc/offline-paraformer-decoder.h"
+#include "sherpa-onnx/csrc/offline-stream.h"
 
 namespace sherpa_onnx {
 
@@ -18,7 +19,8 @@ class OfflineParaformerGreedySearchDecoder : public OfflineParaformerDecoder {
 
   std::vector<OfflineParaformerDecoderResult> Decode(
       Ort::Value log_probs, Ort::Value token_num,
-      Ort::Value us_cif_peak = Ort::Value(nullptr)) override;
+      Ort::Value us_cif_peak = Ort::Value(nullptr),
+      OfflineStream **ss = nullptr, int32_t n = 0) override;
 
  private:
   int32_t eos_id_;

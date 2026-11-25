@@ -10,11 +10,6 @@
 #include <utility>
 #include <vector>
 
-#if __ANDROID_API__ >= 9
-#include "android/asset_manager.h"
-#include "android/asset_manager_jni.h"
-#endif
-
 #include "onnxruntime_cxx_api.h"  // NOLINT
 #include "sherpa-onnx/csrc/online-model-config.h"
 #include "sherpa-onnx/csrc/online-transducer-model.h"
@@ -25,10 +20,8 @@ class OnlineConformerTransducerModel : public OnlineTransducerModel {
  public:
   explicit OnlineConformerTransducerModel(const OnlineModelConfig &config);
 
-#if __ANDROID_API__ >= 9
-  OnlineConformerTransducerModel(AAssetManager *mgr,
-                                 const OnlineModelConfig &config);
-#endif
+  template <typename Manager>
+  OnlineConformerTransducerModel(Manager *mgr, const OnlineModelConfig &config);
 
   std::vector<Ort::Value> StackStates(
       const std::vector<std::vector<Ort::Value>> &states) const override;
@@ -95,7 +88,7 @@ class OnlineConformerTransducerModel : public OnlineTransducerModel {
   int32_t cnn_module_kernel_ = 0;
   int32_t context_size_ = 0;
   int32_t left_context_ = 0;
-  // TODO(jingzhaoou): to retrieve from model medadata
+  // TODO(jingzhaoou): to retrieve from model metadata
   int32_t right_context_ = 4;
   int32_t encoder_dim_ = 0;
   int32_t pad_length_ = 0;

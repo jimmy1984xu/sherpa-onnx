@@ -14,19 +14,19 @@ if(NOT BUILD_SHARED_LIBS)
   message(FATAL_ERROR "This file is for building shared libraries. BUILD_SHARED_LIBS: ${BUILD_SHARED_LIBS}")
 endif()
 
-set(onnxruntime_URL  "https://github.com/csukuangfj/onnxruntime-libs/releases/download/v1.17.1/onnxruntime-linux-aarch64-glibc2_17-Release-1.17.1.zip")
-set(onnxruntime_URL2 "https://hub.nuaa.cf/csukuangfj/onnxruntime-libs/releases/download/v1.17.1/onnxruntime-linux-aarch64-glibc2_17-Release-1.17.1.zip")
-set(onnxruntime_HASH "SHA256=2ed01996da79d11ea486f738010bd411096ab91e744306fbd30d09f37e6d43a0")
+set(onnxruntime_URL  "https://github.com/csukuangfj/onnxruntime-libs/releases/download/v1.24.4/onnxruntime-linux-aarch64-glibc2_17-Release-1.24.4.zip")
+set(onnxruntime_URL2 "https://hf-mirror.com/csukuangfj/onnxruntime-libs/resolve/main/1.24.4/onnxruntime-linux-aarch64-glibc2_17-Release-1.24.4.zip")
+set(onnxruntime_HASH "SHA256=c6a1971a8bfc8eaa07d48478d796245a747e75f510859574c9253dc7f1e9dc9a")
 
 # If you don't have access to the Internet,
 # please download onnxruntime to one of the following locations.
 # You can add more if you want.
 set(possible_file_locations
-  $ENV{HOME}/Downloads/onnxruntime-linux-aarch64-glibc2_17-Release-1.17.1.zip
-  ${CMAKE_SOURCE_DIR}/onnxruntime-linux-aarch64-glibc2_17-Release-1.17.1.zip
-  ${CMAKE_BINARY_DIR}/onnxruntime-linux-aarch64-glibc2_17-Release-1.17.1.zip
-  /tmp/onnxruntime-linux-aarch64-glibc2_17-Release-1.17.1.zip
-  /star-fj/fangjun/download/github/onnxruntime-linux-aarch64-glibc2_17-Release-1.17.1.zip
+  $ENV{HOME}/Downloads/onnxruntime-linux-aarch64-glibc2_17-Release-1.24.4.zip
+  ${CMAKE_SOURCE_DIR}/onnxruntime-linux-aarch64-glibc2_17-Release-1.24.4.zip
+  ${CMAKE_BINARY_DIR}/onnxruntime-linux-aarch64-glibc2_17-Release-1.24.4.zip
+  /tmp/onnxruntime-linux-aarch64-glibc2_17-Release-1.24.4.zip
+  /star-fj/fangjun/download/github/onnxruntime-linux-aarch64-glibc2_17-Release-1.24.4.zip
 )
 
 foreach(f IN LISTS possible_file_locations)
@@ -53,11 +53,7 @@ if(NOT onnxruntime_POPULATED)
 endif()
 message(STATUS "onnxruntime is downloaded to ${onnxruntime_SOURCE_DIR}")
 
-find_library(location_onnxruntime onnxruntime
-  PATHS
-  "${onnxruntime_SOURCE_DIR}/lib"
-  NO_CMAKE_SYSTEM_PATH
-)
+set(location_onnxruntime "${onnxruntime_SOURCE_DIR}/lib/libonnxruntime.so")
 
 message(STATUS "location_onnxruntime: ${location_onnxruntime}")
 

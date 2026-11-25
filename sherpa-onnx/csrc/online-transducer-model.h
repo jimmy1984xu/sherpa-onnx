@@ -8,11 +8,6 @@
 #include <utility>
 #include <vector>
 
-#if __ANDROID_API__ >= 9
-#include "android/asset_manager.h"
-#include "android/asset_manager_jni.h"
-#endif
-
 #include "onnxruntime_cxx_api.h"  // NOLINT
 #include "sherpa-onnx/csrc/hypothesis.h"
 #include "sherpa-onnx/csrc/online-model-config.h"
@@ -30,10 +25,9 @@ class OnlineTransducerModel {
   static std::unique_ptr<OnlineTransducerModel> Create(
       const OnlineModelConfig &config);
 
-#if __ANDROID_API__ >= 9
+  template <typename Manager>
   static std::unique_ptr<OnlineTransducerModel> Create(
-      AAssetManager *mgr, const OnlineModelConfig &config);
-#endif
+      Manager *mgr, const OnlineModelConfig &config);
 
   /** Stack a list of individual states into a batch.
    *
@@ -69,7 +63,7 @@ class OnlineTransducerModel {
    * This has to be called before GetEncoderInitStates(), so the `encoder_embed`
    * init state has the correct `embed_dim` of its output.
    */
-  virtual void SetFeatureDim(int32_t feature_dim) { }
+  virtual void SetFeatureDim(int32_t /*feature_dim*/) {}
 
   /** Run the encoder.
    *
@@ -137,6 +131,8 @@ class OnlineTransducerModel {
   virtual int32_t VocabSize() const = 0;
 
   virtual int32_t SubsamplingFactor() const { return 4; }
+
+  virtual bool UseWhisperFeature() const { return false; }
 
   virtual OrtAllocator *Allocator() = 0;
 

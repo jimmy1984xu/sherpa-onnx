@@ -4,6 +4,10 @@
 
 #include "sherpa-onnx/csrc/audio-tagging.h"
 
+#include <memory>
+#include <string>
+#include <vector>
+
 #if __ANDROID_API__ >= 9
 #include "android/asset_manager.h"
 #include "android/asset_manager_jni.h"
@@ -46,7 +50,7 @@ bool AudioTaggingConfig::Validate() const {
   }
 
   if (!FileExists(labels)) {
-    SHERPA_ONNX_LOGE("--labels %s does not exist", labels.c_str());
+    SHERPA_ONNX_LOGE("--labels '%s' does not exist", labels.c_str());
     return false;
   }
 

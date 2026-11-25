@@ -8,9 +8,13 @@
 
 #include <algorithm>
 #include <fstream>
-#include <mutex>  // NOLINT
+#include <mutex>
 #include <sstream>
-#include <thread>  // NOLINT
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "portaudio.h"  // NOLINT
 #include "sherpa-onnx/csrc/macros.h"
@@ -93,8 +97,8 @@ static std::vector<std::vector<float>> ComputeEmbeddings(
         sherpa_onnx::ReadWave(f, &sampling_rate, &is_ok);
 
     if (!is_ok) {
-      fprintf(stderr, "Failed to read %s\n", f.c_str());
-      exit(-1);
+      fprintf(stderr, "Failed to read '%s'\n", f.c_str());
+      SHERPA_ONNX_EXIT(-1);
     }
 
     auto s = extractor->CreateStream();
@@ -113,7 +117,7 @@ ReadSpeakerFile(const std::string &filename) {
   std::ifstream is(filename);
   if (!is) {
     fprintf(stderr, "Failed to open %s", filename.c_str());
-    exit(0);
+    SHERPA_ONNX_EXIT(0);
   }
 
   std::string line;
@@ -128,7 +132,7 @@ ReadSpeakerFile(const std::string &filename) {
     iss >> name >> path;
     if (!iss || !iss.eof() || name.empty() || path.empty()) {
       fprintf(stderr, "Invalid line: %s\n", line.c_str());
-      exit(-1);
+      SHERPA_ONNX_EXIT(-1);
     }
     ans[name].push_back(path);
   }
@@ -195,7 +199,7 @@ Note that `zh` means Chinese, while `en` means English.
     fprintf(stderr,
             "This program does not support any positional arguments.\n");
     po.PrintUsage();
-    exit(EXIT_FAILURE);
+    SHERPA_ONNX_EXIT(EXIT_FAILURE);
   }
 
   fprintf(stderr, "%s\n", config.ToString().c_str());
@@ -220,16 +224,13 @@ Note that `zh` means Chinese, while `en` means English.
 
   sherpa_onnx::Microphone mic;
 
-  PaDeviceIndex num_devices = Pa_GetDeviceCount();
-  fprintf(stderr, "Num devices: %d\n", num_devices);
-
   int32_t device_index = Pa_GetDefaultInputDevice();
   if (device_index == paNoDevice) {
     fprintf(stderr, "No default input device found\n");
     fprintf(stderr, "If you are using Linux, please switch to \n");
     fprintf(stderr,
             " ./bin/sherpa-onnx-alsa-offline-speaker-identification \n");
-    exit(EXIT_FAILURE);
+    SHERPA_ONNX_EXIT(EXIT_FAILURE);
   }
 
   const char *pDeviceIndex = std::getenv("SHERPA_ONNX_MIC_DEVICE");
@@ -238,53 +239,19 @@ Note that `zh` means Chinese, while `en` means English.
     device_index = atoi(pDeviceIndex);
   }
 
-  for (int32_t i = 0; i != num_devices; ++i) {
-    const PaDeviceInfo *info = Pa_GetDeviceInfo(i);
-    fprintf(stderr, " %s %d %s\n", (i == device_index) ? "*" : " ", i,
-            info->name);
-  }
+  mic.PrintDevices(device_index);
 
-  PaStreamParameters param;
-  param.device = device_index;
-
-  fprintf(stderr, "Use device: %d\n", param.device);
-
-  const PaDeviceInfo *info = Pa_GetDeviceInfo(param.device);
-  fprintf(stderr, "  Name: %s\n", info->name);
-  fprintf(stderr, "  Max input channels: %d\n", info->maxInputChannels);
-
-  param.channelCount = 1;
-  param.sampleFormat = paFloat32;
-
-  param.suggestedLatency = info->defaultLowInputLatency;
-  param.hostApiSpecificStreamInfo = nullptr;
   float mic_sample_rate = 16000;
   const char *pSampleRateStr = std::getenv("SHERPA_ONNX_MIC_SAMPLE_RATE");
   if (pSampleRateStr) {
-    fprintf(stderr, "Use sample rate %f for mic\n", mic_sample_rate);
     mic_sample_rate = atof(pSampleRateStr);
-  }
-  float sample_rate = 16000;
-
-  PaStream *stream;
-  PaError err =
-      Pa_OpenStream(&stream, &param, nullptr, /* &outputParameters, */
-                    mic_sample_rate,
-                    0,          // frames per buffer
-                    paClipOff,  // we won't output out of range samples
-                                // so don't bother clipping them
-                    RecordCallback, nullptr);
-  if (err != paNoError) {
-    fprintf(stderr, "portaudio error: %s\n", Pa_GetErrorText(err));
-    exit(EXIT_FAILURE);
+    fprintf(stderr, "Use sample rate %f for mic\n", mic_sample_rate);
   }
 
-  err = Pa_StartStream(stream);
-  fprintf(stderr, "Started\n");
-
-  if (err != paNoError) {
-    fprintf(stderr, "portaudio error: %s\n", Pa_GetErrorText(err));
-    exit(EXIT_FAILURE);
+  if (!mic.OpenDevice(device_index, mic_sample_rate, 1, RecordCallback,
+                      nullptr /* user_data */)) {
+    fprintf(stderr, "portaudio error: %d\n", device_index);
+    SHERPA_ONNX_EXIT(EXIT_FAILURE);
   }
 
   std::thread t(DetectKeyPress);
@@ -322,12 +289,6 @@ Note that `zh` means Chinese, while `en` means English.
     Pa_Sleep(20);  // sleep for 20ms
   }
   t.join();
-
-  err = Pa_CloseStream(stream);
-  if (err != paNoError) {
-    fprintf(stderr, "portaudio error: %s\n", Pa_GetErrorText(err));
-    exit(EXIT_FAILURE);
-  }
 
   return 0;
 }

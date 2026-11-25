@@ -1,193 +1,169 @@
-0.Introduction
---------------
+# Introduction
 
-Java wrapper `com.k2fsa.sherpa.onnx.OnlineRecognizer` for `sherpa-onnx`. Java is a cross-platform language; you can build jni .so lib according to your system, and then use the same java api for all your platform.
-now support multiple threads for websocket server
+This directory contains examples for the JAVA API of sherpa-onnx.
 
-```xml
-Depend on:
-  Openjdk 1.8
-```
+# Usage
 
----
-
-1.Compile libsherpa-onnx-jni.so
--------------------------------
-
-Compile sherpa-onnx/jni/jni.cc according to your system.
-Example for Ubuntu 18.04 LTS, Openjdk 1.8.0_362:
-
-```xml
-  git clone https://github.com/k2-fsa/sherpa-onnx
-  cd sherpa-onnx
-  mkdir build
-  cd build
-  cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DSHERPA_ONNX_ENABLE_JNI=ON ..
-  make -j6
-```
-
----
-
-2.Download asr model files
---------------------------
-
-[click here for more detail](https://k2-fsa.github.io/sherpa/onnx/pretrained_models/index.html)
---------------------------
-
-3.Config model config.cfg
--------------------------
-/**change model path in config.cfg according to your env**/
-```xml
-  #model config 
-  sample_rate=16000 
-  feature_dim=80
-  rule1_min_trailing_silence=2.4
-  rule2_min_trailing_silence=1.2
-  rule3_min_utterance_length=20
-  encoder=/sherpa-onnx/build/bin/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/encoder-epoch-99-avg-1.onnx
-  decoder=/sherpa-onnx/build/bin/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/decoder-epoch-99-avg-1.onnx
-  joiner=/sherpa-onnx/build/bin/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/joiner-epoch-99-avg-1.onnx
-  tokens=/sherpa-onnx/build/bin/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/tokens.txt
-  num_threads=4
-  enable_endpoint_detection=false
-  decoding_method=greedy_search
-  max_active_paths=4
-
-  #websocket server config
-  port=8890
-  #number of threads pool for network io
-  connection_thread_num=16 
-  #number of threads pool for stream
-  stream_thread_num=16 
-  #number of threads pool for decoder 
-  decoder_thread_num=16 
-  #size of streams for parallel decoding
-  parallel_decoder_num=16
-  #time(ms) idle for decoder thread when no job
-  decoder_time_idle=10
-  #time(ms) out for connection data
-  deocder_time_out=3000
-```
-
----
-
-4.A simple java example
------------------------
-
-refer to [java_api_example](https://github.com/k2-fsa/sherpa-onnx/blob/master/java-api-examples/src/DecodeFile.java) for more detail.
-
-```java
-    import com.k2fsa.sherpa.onnx.OnlineRecognizer;
-    import com.k2fsa.sherpa.onnx.OnlineStream;
-    String cfgpath=appdir+"/modelconfig.cfg";
-    OnlineRecognizer.setSoPath(soPath);   //set so lib path
-
-    OnlineRecognizer rcgOjb = new OnlineRecognizer();   //create a recognizer
-    rcgOjb = new OnlineRecognizer(cfgFile);    //set model config file 
-    CreateStream streamObj=rcgOjb.CreateStream();       //create a stream for read wav data
-    float[] buffer = rcgOjb.readWavFile(wavfilename); // read data from file
-    streamObj.acceptWaveform(buffer); // feed stream with data
-    streamObj.inputFinished(); // tell engine you done with all data
-    OnlineStream ssObj[] = new OnlineStream[1];
-    while (rcgOjb.isReady(streamObj)) { // engine is ready for unprocessed data
-                ssObj[0] = streamObj;
-                rcgOjb.decodeStreams(ssObj); // decode for multiple stream
-                // rcgOjb.DecodeStream(streamObj);   // decode for single stream
-            }
-
-    String recText = "simple:" + rcgOjb.getResult(streamObj) + "\n";
-    byte[] utf8Data = recText.getBytes(StandardCharsets.UTF_8);
-    System.out.println(new String(utf8Data));
-    rcgOjb.reSet(streamObj);
-    rcgOjb.releaseStream(streamObj); // release stream
-    rcgOjb.release(); // release recognizer
-```
-
----
-
-5.Makefile
-----------
-
-OS Ubuntu 18.04 LTS
-Build package path: /sherpa-onnx/java-api-examples/lib/sherpaonnx.jar
-
-5.1 Build
+## Non-streaming speech enhancement
 
 ```bash
-    cd sherpa-onnx/java-api-examples
-    make all
+./run-non-streaming-speech-enhancement-gtcrn.sh
+./run-non-streaming-speech-enhancement-dpdfnet.sh
 ```
 
-5.2 Run DecodeFile example
+Use 16 kHz DPDFNet models such as
+`dpdfnet_baseline.onnx`, `dpdfnet2.onnx`, `dpdfnet4.onnx`, or `dpdfnet8.onnx` for
+downstream ASR and `dpdfnet2_48khz_hr.onnx` for 48 kHz enhancement output.
+
+## Non-streaming speaker diarization
 
 ```bash
-    make runfile
+./run-offline-speaker-diarization.sh
 ```
 
-5.3 Run DecodeMic example
+## Streaming Speech recognition
 
 ```bash
-    make runmic
+./run-streaming-asr-from-mic-transducer.sh
+./run-streaming-decode-file-ctc-hlg.sh
+./run-streaming-decode-file-ctc.sh
+./run-streaming-decode-file-paraformer.sh
+./run-streaming-decode-file-tone-ctc.sh
+./run-streaming-decode-file-transducer.sh
 ```
 
----
-
-6.WebSocket Server
-----------
-
-support multiple threads for websocket server
-6.0 Protocol for communication
-1) client connect to server
-```shell
-   ws client -> srv ws address
-   ws address example: ws://127.0.0.1:8889/
-```
-2) client send 16k pcm_s16le binary stream data to server
-```shell
-   PCM   sampleRate 16000
-         single channel
-		 sampleSize 16bit
-		 little endian
-		 type short
-```
-3) client send "Done" text to server when all data is sent
-```shell
-	ws_socket.send("Done")
-```
-4) client will receive json message from server whenever asr engine decoded new text
-```shell
-   json example: {"text":"甚至出现交易几乎停滞的情况","eof":false"}
-``` 
- 
-
-6.1 Build
+## Non-Streaming Speech recognition
 
 ```bash
-    cd sherpa-onnx/java-api-examples
-    make all
+./run-non-streaming-decode-file-dolphin-ctc.sh
+./run-non-streaming-decode-file-fire-red-asr-ctc.sh
+./run-non-streaming-decode-file-fire-red-asr.sh
+./run-non-streaming-decode-file-funasr-nano.sh
+./run-non-streaming-decode-file-medasr-ctc.sh
+./run-non-streaming-decode-file-moonshine.sh
+./run-non-streaming-decode-file-moonshine-v2.sh
+./run-non-streaming-decode-file-nemo-canary.sh
+./run-non-streaming-decode-file-nemo.sh
+./run-non-streaming-decode-file-omnilingual-asr-ctc.sh
+./run-non-streaming-decode-file-paraformer.sh
+./run-non-streaming-decode-file-sense-voice-with-hr.sh
+./run-non-streaming-decode-file-sense-voice.sh
+./run-non-streaming-decode-file-tele-speech-ctc.sh
+./run-non-streaming-decode-file-transducer-hotwords.sh
+./run-non-streaming-decode-file-transducer.sh
+./run-non-streaming-decode-file-wenet-ctc.sh
+./run-non-streaming-decode-file-whisper-multiple.sh
+./run-non-streaming-decode-file-whisper.sh
+./run-non-streaming-decode-file-zipformer-ctc.sh
 ```
 
-6.2 Run srv example
-
-usage: AsrWebsocketServer soPath modelCfgPath
+## Non-Streaming Speech recognition with homophone replacer
 
 ```bash
-    make runsrv  /**change path in Makefile according to your env**/
+./run-non-streaming-decode-file-sense-voice-with-hr.sh
 ```
 
-6.3 Run multiple threads client example
-
-usage: AsrWebsocketClient soPath srvIp srvPort wavPath numThreads
-
-json result example: {"text":"甚至出现交易几乎停滞的情况","eof":"true"}
+## Non-Streaming text-to-speech
 
 ```bash
-    make runclient  /**change path in Makefile according to your env**/
+./run-non-streaming-tts-coqui-de.sh
+./run-non-streaming-tts-kitten-en.sh
+./run-non-streaming-tts-kokoro-en.sh
+./run-non-streaming-tts-kokoro-zh-en.sh
+./run-non-streaming-tts-matcha-en.sh
+./run-non-streaming-tts-matcha-zh.sh
+./run-non-streaming-tts-piper-en-with-callback.sh
+./run-non-streaming-tts-piper-en.sh
+./run-non-streaming-tts-vits-zh.sh
+./run-pocket-tts.sh
+./run-zipvoice-tts.sh
 ```
 
-7 runtest
-this script will download model, compile codes and run test
+## Non-Streaming text-to-speech (Playback the audio as it is being generated)
+
 ```bash
-    cd sherpa-onnx/java-api-examples
-    runtest.sh
+./run-non-streaming-tts-piper-en-with-callback.sh
+```
+
+## Spoken language identification
+
+```bash
+./run-spoken-language-identification-whisper.sh
+```
+
+## Add punctuations to text
+
+The punctuation model supports both English and Chinese.
+
+```bash
+./run-offline-add-punctuation-zh-en.sh
+./run-online-add-punctuation-zh-en.sh
+```
+
+## Audio tagging
+
+```bash
+./run-audio-tagging-zipformer-from-file.sh
+./run-audio-tagging-ced-from-file.sh
+```
+
+## Speaker identification
+
+```bash
+./run-speaker-identification.sh
+```
+
+## VAD with a microphone
+
+```bash
+./run-vad-from-mic.sh
+```
+
+## VAD with a microphone + Non-streaming SenseVoice for speech recognition
+
+```bash
+./run-vad-from-mic-non-streaming-sense-voice.sh
+```
+
+## VAD with a microphone + Non-streaming Paraformer for speech recognition
+
+```bash
+./run-vad-from-mic-non-streaming-paraformer.sh
+```
+
+## VAD with a microphone + Non-streaming Whisper tiny.en for speech recognition
+
+```bash
+./run-vad-from-mic-non-streaming-whisper.sh
+```
+
+## VAD (Remove silence)
+
+```bash
+./run-vad-remove-slience.sh
+./run-ten-vad-remove-slience.sh
+```
+
+## VAD + Non-streaming Dolphin CTC for speech recognition
+
+```bash
+./run-vad-non-streaming-dolphin-ctc.sh
+```
+
+## VAD + Non-streaming SenseVoice for speech recognition
+
+```bash
+./run-vad-non-streaming-sense-voice.sh
+```
+
+## VAD + Non-streaming Paraformer for speech recognition
+
+```bash
+./run-vad-non-streaming-paraformer.sh
+```
+
+## Keyword spotter
+
+```bash
+./run-kws-from-file.sh
 ```

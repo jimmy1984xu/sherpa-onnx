@@ -4,12 +4,16 @@
 
 #include "sherpa-onnx/csrc/audio-tagging.h"
 
+#include <memory>
+#include <vector>
+
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/jni/common.h"
 
 namespace sherpa_onnx {
 
-static AudioTaggingConfig GetAudioTaggingConfig(JNIEnv *env, jobject config) {
+static AudioTaggingConfig GetAudioTaggingConfig(JNIEnv *env, jobject config,
+                                                bool *ok) {
   AudioTaggingConfig ans;
 
   jclass cls = env->GetObjectClass(config);
@@ -25,42 +29,70 @@ static AudioTaggingConfig GetAudioTaggingConfig(JNIEnv *env, jobject config) {
   jobject zipformer = env->GetObjectField(model, fid);
   jclass zipformer_cls = env->GetObjectClass(zipformer);
 
-  fid = env->GetFieldID(zipformer_cls, "model", "Ljava/lang/String;");
-  jstring s = (jstring)env->GetObjectField(zipformer, fid);
-  const char *p = env->GetStringUTFChars(s, nullptr);
-  ans.model.zipformer.model = p;
-  env->ReleaseStringUTFChars(s, p);
+  SHERPA_ONNX_JNI_READ_STRING(ans.model.zipformer.model, model, zipformer_cls,
+                              zipformer);
 
-  fid = env->GetFieldID(model_cls, "numThreads", "I");
-  ans.model.num_threads = env->GetIntField(model, fid);
+  SHERPA_ONNX_JNI_READ_STRING(ans.model.ced, ced, model_cls, model);
 
-  fid = env->GetFieldID(model_cls, "debug", "Z");
-  ans.model.debug = env->GetBooleanField(model, fid);
+  SHERPA_ONNX_JNI_READ_INT(ans.model.num_threads, numThreads, model_cls, model);
 
-  fid = env->GetFieldID(model_cls, "provider", "Ljava/lang/String;");
-  s = (jstring)env->GetObjectField(model, fid);
-  p = env->GetStringUTFChars(s, nullptr);
-  ans.model.provider = p;
-  env->ReleaseStringUTFChars(s, p);
+  SHERPA_ONNX_JNI_READ_BOOL(ans.model.debug, debug, model_cls, model);
 
-  fid = env->GetFieldID(cls, "labels", "Ljava/lang/String;");
-  s = (jstring)env->GetObjectField(config, fid);
-  p = env->GetStringUTFChars(s, nullptr);
-  ans.labels = p;
-  env->ReleaseStringUTFChars(s, p);
+  SHERPA_ONNX_JNI_READ_STRING(ans.model.provider, provider, model_cls, model);
 
-  fid = env->GetFieldID(cls, "topK", "I");
-  ans.top_k = env->GetIntField(config, fid);
+  SHERPA_ONNX_JNI_READ_STRING(ans.labels, labels, cls, config);
 
+  SHERPA_ONNX_JNI_READ_INT(ans.top_k, topK, cls, config);
+
+  *ok = true;
   return ans;
 }
 
 }  // namespace sherpa_onnx
 
 SHERPA_ONNX_EXTERN_C
+JNIEXPORT jlong JNICALL Java_com_k2fsa_sherpa_onnx_AudioTagging_newFromAsset(
+    JNIEnv *env, jobject /*obj*/, jobject asset_manager, jobject _config) {
+#if __ANDROID_API__ >= 9
+  AAssetManager *mgr = AAssetManager_fromJava(env, asset_manager);
+  if (!mgr) {
+    SHERPA_ONNX_LOGE("Failed to get asset manager: %p", mgr);
+    return 0;
+  }
+#endif
+
+  bool ok = false;
+  auto config = sherpa_onnx::GetAudioTaggingConfig(env, _config, &ok);
+
+  if (!ok) {
+    SHERPA_ONNX_LOGE("Please read the error message carefully");
+    return 0;
+  }
+
+  SHERPA_ONNX_LOGE("audio tagging newFromAsset config:\n%s",
+                   config.ToString().c_str());
+
+  auto tagger = new sherpa_onnx::AudioTagging(
+#if __ANDROID_API__ >= 9
+      mgr,
+#endif
+      config);
+
+  return (jlong)tagger;
+}
+
+SHERPA_ONNX_EXTERN_C
 JNIEXPORT jlong JNICALL Java_com_k2fsa_sherpa_onnx_AudioTagging_newFromFile(
     JNIEnv *env, jobject /*obj*/, jobject _config) {
-  auto config = sherpa_onnx::GetAudioTaggingConfig(env, _config);
+  bool ok = false;
+
+  auto config = sherpa_onnx::GetAudioTaggingConfig(env, _config, &ok);
+
+  if (!ok) {
+    SHERPA_ONNX_LOGE("Please read the error message carefully");
+    return 0;
+  }
+
   SHERPA_ONNX_LOGE("audio tagging newFromFile config:\n%s",
                    config.ToString().c_str());
 
@@ -101,26 +133,37 @@ JNIEXPORT jobjectArray JNICALL Java_com_k2fsa_sherpa_onnx_AudioTagging_compute(
   auto stream = reinterpret_cast<sherpa_onnx::OfflineStream *>(streamPtr);
   std::vector<sherpa_onnx::AudioEvent> events = tagger->Compute(stream, top_k);
 
-  // TODO(fangjun): Return an array of AudioEvent directly
-  jobjectArray obj_arr = (jobjectArray)env->NewObjectArray(
-      events.size(), env->FindClass("java/lang/Object"), nullptr);
-
-  int32_t i = 0;
-  for (const auto &e : events) {
-    jobjectArray a = (jobjectArray)env->NewObjectArray(
-        3, env->FindClass("java/lang/Object"), nullptr);
-
-    // 0 name
-    // 1 index
-    // 2 prob
-    jstring js = env->NewStringUTF(e.name.c_str());
-    env->SetObjectArrayElement(a, 0, js);
-    env->SetObjectArrayElement(a, 1, NewInteger(env, e.index));
-    env->SetObjectArrayElement(a, 2, NewFloat(env, e.prob));
-
-    env->SetObjectArrayElement(obj_arr, i, a);
-    i += 1;
+  // Find the AudioEvent class
+  jclass cls = env->FindClass("com/k2fsa/sherpa/onnx/AudioEvent");
+  if (cls == nullptr) {
+    SHERPA_ONNX_LOGE("Failed to find class com/k2fsa/sherpa/onnx/AudioEvent");
+    return nullptr;
   }
+
+  // Get the constructor: AudioEvent(String name, int index, float prob)
+  jmethodID ctor = env->GetMethodID(cls, "<init>", "(Ljava/lang/String;IF)V");
+  if (ctor == nullptr) {
+    SHERPA_ONNX_LOGE("Failed to get AudioEvent constructor");
+    env->DeleteLocalRef(cls);
+    return nullptr;
+  }
+
+  // Create a jobjectArray of AudioEvent
+  jobjectArray obj_arr = env->NewObjectArray(events.size(), cls, nullptr);
+
+  for (size_t i = 0; i < events.size(); ++i) {
+    const auto &e = events[i];
+
+    jstring name = SafeNewStringUTF(env, e.name);
+    jobject event_obj = env->NewObject(cls, ctor, name, e.index, e.prob);
+
+    env->SetObjectArrayElement(obj_arr, i, event_obj);
+
+    env->DeleteLocalRef(name);
+    env->DeleteLocalRef(event_obj);
+  }
+
+  env->DeleteLocalRef(cls);
 
   return obj_arr;
 }

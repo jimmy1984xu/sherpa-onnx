@@ -4,6 +4,7 @@
 #include <chrono>  // NOLINT
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/parse-options.h"
@@ -51,7 +52,7 @@ class Client {
     c_.init_asio(&io_);
     c_.set_open_handler([this](connection_hdl hdl) { OnOpen(hdl); });
     c_.set_close_handler(
-        [this](connection_hdl /*hdl*/) { SHERPA_ONNX_LOGE("Disconnected"); });
+        [](connection_hdl /*hdl*/) { SHERPA_ONNX_LOGE("Disconnected"); });
     c_.set_message_handler(
         [this](connection_hdl hdl, message_ptr msg) { OnMessage(hdl, msg); });
 
@@ -65,7 +66,7 @@ class Client {
     if (ec) {
       SHERPA_ONNX_LOGE("Could not create connection to %s because %s",
                        uri_.str().c_str(), ec.message().c_str());
-      exit(EXIT_FAILURE);
+      SHERPA_ONNX_EXIT(EXIT_FAILURE);
     }
 
     c_.connect(con);
@@ -85,7 +86,7 @@ class Client {
       c_.close(hdl, websocketpp::close::status::normal, "I'm exiting now", ec);
       if (ec) {
         SHERPA_ONNX_LOGE("Failed to close because %s", ec.message().c_str());
-        exit(EXIT_FAILURE);
+        SHERPA_ONNX_EXIT(EXIT_FAILURE);
       }
     } else {
       SHERPA_ONNX_LOGE("%s", payload.c_str());
@@ -122,7 +123,7 @@ class Client {
       if (ec) {
         SHERPA_ONNX_LOGE("Failed to send audio samples because %s",
                          ec.message().c_str());
-        exit(EXIT_FAILURE);
+        SHERPA_ONNX_EXIT(EXIT_FAILURE);
       }
 
       ec.clear();
@@ -141,7 +142,7 @@ class Client {
         if (ec) {
           SHERPA_ONNX_LOGE("Failed to send audio samples because %s",
                            ec.message().c_str());
-          exit(EXIT_FAILURE);
+          SHERPA_ONNX_EXIT(EXIT_FAILURE);
         }
         ec.clear();
       }
@@ -153,7 +154,7 @@ class Client {
       if (ec) {
         SHERPA_ONNX_LOGE("Failed to send audio samples because %s",
                          ec.message().c_str());
-        exit(EXIT_FAILURE);
+        SHERPA_ONNX_EXIT(EXIT_FAILURE);
       }
     } else {
       asio::post(io_, [this, hdl, start_time]() {
@@ -253,7 +254,7 @@ int32_t main(int32_t argc, char *argv[]) {
       sherpa_onnx::ReadWave(wave_filename, &actual_sample_rate, &is_ok);
 
   if (!is_ok) {
-    SHERPA_ONNX_LOGE("Failed to read %s", wave_filename.c_str());
+    SHERPA_ONNX_LOGE("Failed to read '%s'", wave_filename.c_str());
     return -1;
   }
 

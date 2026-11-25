@@ -1,4 +1,4 @@
-package com.k2fsa.sherpa.onnx
+package com.k2fsa.sherpa.onnx.vad.asr
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -8,12 +8,24 @@ import android.media.MediaRecorder
 import android.os.Bundle
 import android.text.method.ScrollingMovementMethod
 import android.util.Log
-import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import com.k2fsa.sherpa.onnx.OfflineRecognizer
+import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.R
+import com.k2fsa.sherpa.onnx.Vad
+import com.k2fsa.sherpa.onnx.getFeatureConfig
+import com.k2fsa.sherpa.onnx.getOfflineModelConfig
+import com.k2fsa.sherpa.onnx.getVadModelConfig
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.concurrent.thread
+import androidx.lifecycle.lifecycleScope
 
 
 private const val TAG = "sherpa-onnx"
@@ -40,7 +52,7 @@ class MainActivity : AppCompatActivity() {
     private val permissions: Array<String> = arrayOf(Manifest.permission.RECORD_AUDIO)
 
     // Non-streaming ASR
-    private lateinit var offlineRecognizer: SherpaOnnxOffline
+    private lateinit var offlineRecognizer: OfflineRecognizer
 
     private var idx: Int = 0
     private var lastText: String = ""
@@ -72,19 +84,30 @@ class MainActivity : AppCompatActivity() {
 
         ActivityCompat.requestPermissions(this, permissions, REQUEST_RECORD_AUDIO_PERMISSION)
 
-        Log.i(TAG, "Start to initialize model")
-        initVadModel()
-        Log.i(TAG, "Finished initializing model")
-
-        Log.i(TAG, "Start to initialize non-streaimng recognizer")
-        initOfflineRecognizer()
-        Log.i(TAG, "Finished initializing non-streaming recognizer")
-
-        recordButton = findViewById(R.id.record_button)
-        recordButton.setOnClickListener { onclick() }
-
         textView = findViewById(R.id.my_text)
         textView.movementMethod = ScrollingMovementMethod()
+
+        recordButton = findViewById(R.id.record_button)
+        recordButton.isEnabled = false
+        recordButton.setOnClickListener { onclick() }
+
+        textView.text = "Initializing models... Please wait."
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            Log.i(TAG, "Start to initialize model")
+            initVadModel()
+            Log.i(TAG, "Finished initializing model")
+
+            Log.i(TAG, "Start to initialize non-streaming recognizer")
+            initOfflineRecognizer()
+            Log.i(TAG, "Finished initializing non-streaming recognizer")
+
+            withContext(Dispatchers.Main) {
+                recordButton.isEnabled = true
+                textView.text = "" 
+                Log.i(TAG, "Model initialization completed, button enabled")
+            }
+        }
     }
 
     private fun onclick() {
@@ -122,7 +145,7 @@ class MainActivity : AppCompatActivity() {
 
     private  fun initVadModel() {
         val type = 0
-        println("Select VAD model type ${type}")
+        Log.i(TAG, "Select VAD model type ${type}")
         val config = getVadModelConfig(type)
 
         vad = Vad(
@@ -160,6 +183,8 @@ class MainActivity : AppCompatActivity() {
 
         val bufferSize = 512 // in samples
         val buffer = ShortArray(bufferSize)
+        val coroutineScope = CoroutineScope(Dispatchers.IO)
+
 
         while (isRecording) {
             val ret = audioRecord?.read(buffer, 0, buffer.size)
@@ -168,46 +193,56 @@ class MainActivity : AppCompatActivity() {
 
                 vad.acceptWaveform(samples)
                 while(!vad.empty()) {
-                    var objArray = vad.front()
-                    val samples = objArray[1] as FloatArray
-                    val text = runSecondPass(samples)
-
-                    if (text.isNotBlank()) {
-                        lastText = "${lastText}\n${idx}: ${text}"
-                        idx += 1
+                    var segment = vad.front()
+                    coroutineScope.launch {
+                        val text = runSecondPass(segment.samples)
+                        if (text.isNotBlank()) {
+                            withContext(Dispatchers.Main) {
+                                lastText = "${lastText}\n${idx}: ${text}"
+                                idx += 1
+                                textView.text = lastText.lowercase()
+                            }
+                        }
                     }
 
                     vad.pop();
                 }
-
-                val isSpeechDetected = vad.isSpeechDetected()
-
-                runOnUiThread {
-                    textView.text = lastText.lowercase()
-                }
             }
         }
+
+        // Clean up the coroutine scope when done
+        coroutineScope.cancel()
     }
 
     private fun initOfflineRecognizer() {
         // Please change getOfflineModelConfig() to add new models
         // See https://k2-fsa.github.io/sherpa/onnx/pretrained_models/index.html
         // for a list of available models
-        val secondType = 0
-        println("Select model type ${secondType} for the second pass")
+        val asrModelType = 0
+        val asrRuleFsts: String?
+        asrRuleFsts = null
+        Log.i(TAG, "Select model type ${asrModelType} for ASR")
 
         val config = OfflineRecognizerConfig(
             featConfig = getFeatureConfig(sampleRate = sampleRateInHz, featureDim = 80),
-            modelConfig = getOfflineModelConfig(type = secondType)!!,
+            modelConfig = getOfflineModelConfig(type = asrModelType)!!,
         )
+        if (asrRuleFsts != null) {
+            config.ruleFsts = asrRuleFsts;
+        }
 
-        offlineRecognizer = SherpaOnnxOffline(
+        offlineRecognizer = OfflineRecognizer(
             assetManager = application.assets,
             config = config,
         )
     }
 
     private fun runSecondPass(samples: FloatArray): String {
-        return offlineRecognizer.decode(samples, sampleRateInHz)
+        val stream = offlineRecognizer.createStream()
+        stream.acceptWaveform(samples, sampleRateInHz)
+        offlineRecognizer.decode(stream)
+        val result = offlineRecognizer.getResult(stream)
+        stream.release()
+        return result.text
     }
 }

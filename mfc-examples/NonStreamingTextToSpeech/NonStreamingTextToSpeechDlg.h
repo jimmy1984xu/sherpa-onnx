@@ -53,12 +53,15 @@ public:
 	CButton generate_btn_;
 	afx_msg void OnBnClickedOk();
 
-	SherpaOnnxOfflineTts *tts_ = nullptr;
+	const SherpaOnnxOfflineTts *tts_ = nullptr;
 	CEdit my_text_;
 	CEdit output_filename_;
 
 private:
     Microphone mic_;
 	std::unique_ptr<std::thread> play_thread_;
+	std::unique_ptr<std::thread> generate_thread_;
 
+   public:
+    afx_msg void OnBnClickedStop();
 };

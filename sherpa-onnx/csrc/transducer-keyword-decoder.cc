@@ -3,6 +3,7 @@
 // Copyright (c)  2023-2024  Xiaomi Corporation
 
 #include "sherpa-onnx/csrc/transducer-keyword-decoder.h"
+#include "sherpa-onnx/csrc/macros.h"
 
 #include <algorithm>
 #include <cmath>
@@ -38,7 +39,7 @@ void TransducerKeywordDecoder::Decode(
         "Size mismatch! encoder_out.size(0) %d, result.size(0): %d\n",
         static_cast<int32_t>(encoder_out_shape[0]),
         static_cast<int32_t>(result->size()));
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
   }
 
   int32_t batch_size = static_cast<int32_t>(encoder_out_shape[0]);
@@ -151,7 +152,6 @@ void TransducerKeywordDecoder::Decode(
 
       if (matched) {
         float ys_prob = 0.0;
-        int32_t length = best_hyp.ys_probs.size();
         for (int32_t i = 0; i < matched_state->level; ++i) {
           ys_prob += best_hyp.ys_probs[i];
         }

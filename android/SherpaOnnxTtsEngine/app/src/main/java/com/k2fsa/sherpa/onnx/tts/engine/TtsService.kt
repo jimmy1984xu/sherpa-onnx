@@ -1,12 +1,12 @@
 package com.k2fsa.sherpa.onnx.tts.engine
 
 import android.media.AudioFormat
+import com.k2fsa.sherpa.onnx.GenerationConfig
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.util.Log
-import com.k2fsa.sherpa.onnx.*
 
 /*
 https://developer.android.com/reference/java/util/Locale#getISO3Language()
@@ -61,6 +61,9 @@ class TtsService : TextToSpeechService() {
 
         // see https://github.com/Miserlou/Android-SDK-Samples/blob/master/TtsEngine/src/com/example/android/ttsengine/RobotSpeakTtsService.java#L68
         onLoadLanguage(TtsEngine.lang, "", "")
+        if (TtsEngine.lang2 != null) {
+            onLoadLanguage(TtsEngine.lang2, "", "")
+        }
     }
 
     override fun onDestroy() {
@@ -72,7 +75,7 @@ class TtsService : TextToSpeechService() {
     override fun onIsLanguageAvailable(_lang: String?, _country: String?, _variant: String?): Int {
         val lang = _lang ?: ""
 
-        if (lang == TtsEngine.lang) {
+        if (lang == TtsEngine.lang || lang == TtsEngine.lang2) {
             return TextToSpeech.LANG_AVAILABLE
         }
 
@@ -88,12 +91,12 @@ class TtsService : TextToSpeechService() {
         Log.i(TAG, "onLoadLanguage: $_lang, $_country")
         val lang = _lang ?: ""
 
-        return if (lang == TtsEngine.lang) {
+        return if (lang == TtsEngine.lang || lang == TtsEngine.lang2) {
             Log.i(TAG, "creating tts, lang :$lang")
             TtsEngine.createTts(application)
             TextToSpeech.LANG_AVAILABLE
         } else {
-            Log.i(TAG, "lang $lang not supported, tts engine lang: ${TtsEngine.lang}")
+            Log.i(TAG, "lang $lang not supported, tts engine lang: ${TtsEngine.lang}, ${TtsEngine.lang2}")
             TextToSpeech.LANG_NOT_SUPPORTED
         }
     }
@@ -108,13 +111,24 @@ class TtsService : TextToSpeechService() {
         val country = request.country
         val variant = request.variant
         val text = request.charSequenceText.toString()
+        // Map Android TTS speech rate (where 100 == normal) to engine speed (1.0 == normal)
+        // Allow per-request override from external apps; fallback to engine default if absent.
+        val rate = runCatching { request.speechRate }.getOrDefault(-1)
+        val engineSpeed = if (rate > 0) {
+            // Map 100 -> 1.0f
+            val mapped = rate / 100.0f
+            mapped.coerceIn(MIN_TTS_SPEED, MAX_TTS_SPEED)
+        } else {
+            // Fallback to current engine/global setting
+            TtsEngine.speed
+        }
 
         val ret = onIsLanguageAvailable(language, country, variant)
         if (ret == TextToSpeech.LANG_NOT_SUPPORTED) {
             callback.error()
             return
         }
-        Log.i(TAG, "text: $text")
+        Log.i(TAG, "text: $text, engineSpeed: $engineSpeed")
         val tts = TtsEngine.tts!!
 
         // Note that AudioFormat.ENCODING_PCM_FLOAT requires API level >= 24
@@ -127,7 +141,7 @@ class TtsService : TextToSpeechService() {
             return
         }
 
-        val ttsCallback = { floatSamples: FloatArray ->
+        val ttsCallback: (FloatArray) -> Int = fun(floatSamples): Int {
             // convert FloatArray to ByteArray
             val samples = floatArrayToByteArray(floatSamples)
             val maxBufferSize: Int = callback.maxBufferSize
@@ -138,13 +152,15 @@ class TtsService : TextToSpeechService() {
                 offset += bytesToWrite
             }
 
+            // 1 means to continue
+            // 0 means to stop
+            return 1
         }
 
         Log.i(TAG, "text: $text")
-        tts.generateWithCallback(
+        tts.generateWithConfigAndCallback(
             text = text,
-            sid = TtsEngine.speakerId,
-            speed = TtsEngine.speed,
+            config = GenerationConfig(sid = TtsEngine.speakerId, speed = engineSpeed),
             callback = ttsCallback,
         )
 

@@ -5,7 +5,6 @@
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const clearBtn = document.getElementById('clearBtn');
-const hint = document.getElementById('hint');
 const soundClips = document.getElementById('sound-clips');
 
 let textArea = document.getElementById('results');
@@ -37,11 +36,53 @@ function getDisplayResult() {
   return ans;
 }
 
-
 Module = {};
+
+// https://emscripten.org/docs/api_reference/module.html#Module.locateFile
+Module.locateFile = function(path, scriptDirectory = '') {
+  console.log(`path: ${path}, scriptDirectory: ${scriptDirectory}`);
+  return scriptDirectory + path;
+};
+
+// https://emscripten.org/docs/api_reference/module.html#Module.locateFile
+Module.setStatus = function(status) {
+  console.log(`status ${status}`);
+  const statusElement = document.getElementById('status');
+  if (status == 'Running...') {
+    status = 'Model downloaded. Initializing recognizer...'
+  }
+
+  const downloadMatch = status.match(/Downloading data... \((\d+)\/(\d+)\)/);
+  if (downloadMatch) {
+    const downloaded = BigInt(downloadMatch[1]);
+    const total = BigInt(downloadMatch[2]);
+    const percent =
+        total === 0 ? 0.00 : Number((downloaded * 10000n) / total) / 100;
+    const downloadedMB = Number(downloaded) / (1024 * 1024);
+    const totalMB = Number(total) / (1024 * 1024);
+    status = `Downloading data... ${percent.toFixed(2)}% (${downloadedMB.toFixed(2)} MB/${
+        totalMB.toFixed(2)} MB)`;
+    console.log(`here ${status}`)
+  }
+
+  statusElement.textContent = status;
+  if (status === '') {
+    statusElement.style.display = 'none';
+    // statusElement.parentNode.removeChild(statusElement);
+
+    document.querySelectorAll('.tab-content').forEach((tabContentElement) => {
+      tabContentElement.classList.remove('loading');
+    });
+  } else {
+    statusElement.style.display = 'block';
+    document.querySelectorAll('.tab-content').forEach((tabContentElement) => {
+      tabContentElement.classList.add('loading');
+    });
+  }
+};
+
 Module.onRuntimeInitialized = function() {
   console.log('inited!');
-  hint.innerText = 'Model loaded! Please click start';
 
   startBtn.disabled = false;
 
@@ -108,8 +149,17 @@ if (navigator.mediaDevices.getUserMedia) {
       }
 
       let isEndpoint = recognizer.isEndpoint(recognizer_stream);
+
       let result = recognizer.getResult(recognizer_stream).text;
 
+      if (recognizer.config.modelConfig.paraformer.encoder != '') {
+        let tailPaddings = new Float32Array(expectedSampleRate);
+        recognizer_stream.acceptWaveform(expectedSampleRate, tailPaddings);
+        while (recognizer.isReady(recognizer_stream)) {
+          recognizer.decode(recognizer_stream);
+        }
+        result = recognizer.getResult(recognizer_stream).text;
+      }
 
       if (result.length > 0 && lastResult != result) {
         lastResult = result;
@@ -212,7 +262,7 @@ if (navigator.mediaDevices.getUserMedia) {
   };
 
   let onError = function(err) {
-    console.log('The following error occured: ' + err);
+    console.log('The following error occurred: ' + err);
   };
 
   navigator.mediaDevices.getUserMedia(constraints).then(onSuccess, onError);
@@ -220,7 +270,6 @@ if (navigator.mediaDevices.getUserMedia) {
   console.log('getUserMedia not supported on your browser!');
   alert('getUserMedia not supported on your browser!');
 }
-
 
 // this function is copied/modified from
 // https://gist.github.com/meziantou/edb7217fddfbb70e899e

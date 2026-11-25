@@ -4,6 +4,7 @@
 // Copyright (c)  2023  Xiaomi Corporation
 
 #include "sherpa-onnx/csrc/online-transducer-modified-beam-search-decoder.h"
+#include "sherpa-onnx/csrc/macros.h"
 
 #include <algorithm>
 #include <utility>
@@ -17,7 +18,7 @@ namespace sherpa_onnx {
 static void UseCachedDecoderOut(
     const std::vector<int32_t> &hyps_row_splits,
     const std::vector<OnlineTransducerDecoderResult> &results,
-    int32_t context_size, Ort::Value *decoder_out) {
+    Ort::Value *decoder_out) {
   std::vector<int64_t> shape =
       decoder_out->GetTensorTypeAndShapeInfo().GetShape();
 
@@ -80,12 +81,13 @@ void OnlineTransducerModifiedBeamSearchDecoder::Decode(
   std::vector<int64_t> encoder_out_shape =
       encoder_out.GetTensorTypeAndShapeInfo().GetShape();
 
-  if (encoder_out_shape[0] != result->size()) {
+  if (static_cast<int32_t>(encoder_out_shape[0]) !=
+      static_cast<int32_t>(result->size())) {
     SHERPA_ONNX_LOGE(
         "Size mismatch! encoder_out.size(0) %d, result.size(0): %d\n",
         static_cast<int32_t>(encoder_out_shape[0]),
         static_cast<int32_t>(result->size()));
-    exit(-1);
+    SHERPA_ONNX_EXIT(-1);
   }
 
   int32_t batch_size = static_cast<int32_t>(encoder_out_shape[0]);
@@ -117,8 +119,7 @@ void OnlineTransducerModifiedBeamSearchDecoder::Decode(
     Ort::Value decoder_input = model_->BuildDecoderInput(prev);
     Ort::Value decoder_out = model_->RunDecoder(std::move(decoder_input));
     if (t == 0) {
-      UseCachedDecoderOut(hyps_row_splits, *result, model_->ContextSize(),
-                          &decoder_out);
+      UseCachedDecoderOut(hyps_row_splits, *result, &decoder_out);
     }
 
     Ort::Value cur_encoder_out =
@@ -129,6 +130,21 @@ void OnlineTransducerModifiedBeamSearchDecoder::Decode(
         model_->RunJoiner(std::move(cur_encoder_out), View(&decoder_out));
 
     float *p_logit = logit.GetTensorMutableData<float>();
+
+    // copy raw logits, apply temperature-scaling  (for confidences)
+    // Note: temperature scaling is used only for the confidences,
+    //       the decoding algorithm uses the original logits
+    int32_t p_logit_items = vocab_size * num_hyps;
+    std::vector<float> logit_with_temperature(p_logit_items);
+    {
+      std::copy(p_logit, p_logit + p_logit_items,
+                logit_with_temperature.begin());
+      for (float &elem : logit_with_temperature) {
+        elem /= temperature_scale_;
+      }
+      LogSoftmax(logit_with_temperature.data(), vocab_size, num_hyps);
+    }
+
     if (blank_penalty_ > 0.0) {
       // assuming blank id is 0
       SubtractBlank(p_logit, vocab_size, num_hyps, 0, blank_penalty_);
@@ -141,7 +157,11 @@ void OnlineTransducerModifiedBeamSearchDecoder::Decode(
 
     // add log_prob of each hypothesis to p_logprob before taking top_k
     for (int32_t i = 0; i != num_hyps; ++i) {
-      float log_prob = prev[i].log_prob + prev[i].lm_log_prob;
+      float log_prob = prev[i].log_prob;
+      if (lm_ && shallow_fusion_) {
+         log_prob += prev[i].lm_log_prob;
+      }
+
       for (int32_t k = 0; k != vocab_size; ++k, ++p_logprob) {
         *p_logprob += log_prob;
       }
@@ -177,25 +197,31 @@ void OnlineTransducerModifiedBeamSearchDecoder::Decode(
             context_score = std::get<0>(context_res);
             new_hyp.context_state = std::get<1>(context_res);
           }
-          if (lm_) {
-            lm_->ComputeLMScore(lm_scale_, &new_hyp);
+          if (lm_ && shallow_fusion_) {
+            lm_->ComputeLMScoreSF(lm_scale_, &new_hyp);
           }
         } else {
           ++new_hyp.num_trailing_blanks;
         }
-        new_hyp.log_prob = p_logprob[k] + context_score -
+        if (lm_ && shallow_fusion_) {
+           new_hyp.log_prob = p_logprob[k] + context_score -
                            prev_lm_log_prob;  // log_prob only includes the
                                               // score of the transducer
+        } else {
+           new_hyp.log_prob = p_logprob[k] + context_score;  // rescore or no LM
+                                                             // previous token
+                                                             // score is ignored
+        }
+
         // export the per-token log scores
         if (new_token != 0 && new_token != unk_id_) {
-          const Hypothesis& prev_i = prev[hyp_index];
-          // subtract 'prev[i]' path scores, which were added before
-          // getting topk tokens
-          float y_prob = p_logprob[k] - prev_i.log_prob - prev_i.lm_log_prob;
+          float y_prob = logit_with_temperature[start * vocab_size + k];
           new_hyp.ys_probs.push_back(y_prob);
 
-          if (lm_) {  // export only when LM is used
+          if (lm_ && shallow_fusion_) {  // export only if
+                                         // LM shallow fusion is used
             float lm_prob = new_hyp.lm_log_prob - prev_lm_log_prob;
+
             if (lm_scale_ != 0.0) {
               lm_prob /= lm_scale_;  // remove lm-scale
             }
@@ -213,6 +239,11 @@ void OnlineTransducerModifiedBeamSearchDecoder::Decode(
       cur.push_back(std::move(hyps));
       p_logprob += (end - start) * vocab_size;
     }  // for (int32_t b = 0; b != batch_size; ++b)
+  }    // for (int32_t t = 0; t != num_frames; ++t)
+
+  // classic lm rescore
+  if (lm_ && !shallow_fusion_) {
+    lm_->ComputeLMScore(lm_scale_, model_->ContextSize(), &cur);
   }
 
   for (int32_t b = 0; b != batch_size; ++b) {
@@ -229,7 +260,7 @@ void OnlineTransducerModifiedBeamSearchDecoder::Decode(
 
 void OnlineTransducerModifiedBeamSearchDecoder::UpdateDecoderOut(
     OnlineTransducerDecoderResult *result) {
-  if (result->tokens.size() == model_->ContextSize()) {
+  if (static_cast<int32_t>(result->tokens.size()) == model_->ContextSize()) {
     result->decoder_out = Ort::Value{nullptr};
     return;
   }

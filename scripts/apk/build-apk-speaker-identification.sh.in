@@ -20,6 +20,8 @@ SHERPA_ONNX_VERSION=$(grep "SHERPA_ONNX_VERSION" ./CMakeLists.txt  | cut -d " " 
 
 log "Building Speaker identification APK for sherpa-onnx v${SHERPA_ONNX_VERSION}"
 
+export SHERPA_ONNX_ENABLE_TTS=OFF
+
 log "====================arm64-v8a================="
 ./build-android-arm64-v8a.sh
 log "====================armv7-eabi================"
@@ -51,7 +53,7 @@ popd
 
 for arch in arm64-v8a armeabi-v7a x86_64 x86; do
   log "------------------------------------------------------------"
-  log "build tts apk for $arch"
+  log "build speaker identification apk for $arch"
   log "------------------------------------------------------------"
   src_arch=$arch
   if [ $arch == "armeabi-v7a" ]; then

@@ -112,7 +112,7 @@ def get_features(test_wav_filename):
         audio = torchaudio.functional.resample(
             audio, orig_freq=sample_rate, new_freq=16000
         )
-    audio *= 372768
+    audio *= 32768
 
     opts = knf.FbankOptions()
     opts.frame_opts.dither = 0
@@ -136,14 +136,14 @@ def main():
     filename = "./0.wav"
     x = get_features(filename)
 
-    padding = torch.zeros(int(16000 * 0.5), 80)
+    padding = torch.zeros(50, 80)
     x = torch.cat([x, padding], dim=0)
 
     chunk_length = (
         (model.chunk_size - 1) * model.subsampling_factor + model.right_context + 1
     )
     chunk_length = int(chunk_length)
-    chunk_shift = int(model.required_cache_size)
+    chunk_shift = int(model.chunk_size * model.subsampling_factor)
     print(chunk_length, chunk_shift)
 
     num_frames = x.shape[0]
